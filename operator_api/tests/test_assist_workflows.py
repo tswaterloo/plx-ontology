@@ -158,9 +158,53 @@ class WorkflowRoutes(unittest.TestCase):
             ("post", f"/api/assist/workflows/{wid}/pause", {}),
             ("post", f"/api/assist/workflows/{wid}/resume", {}),
             ("post", f"/api/assist/workflows/{wid}/stop", {}),
+            ("delete", f"/api/assist/workflows/{wid}", {}),
             ("post", f"/api/assist/workflows/{wid}/run", {}),
         ):
             self.assertEqual(getattr(cc, method)(path, **kw).status_code, 404, path)
+
+    def test_edit_and_delete_workflow_routes(self):
+        c = self.client(OWNER)
+        wid = c.post(
+            "/api/assist/workflows",
+            json={"plain_text": "every Monday 8 AM send me late POs"},
+        ).json()["workflow_id"]
+
+        edited = c.patch(
+            f"/api/assist/workflows/{wid}",
+            json={
+                "name": "Tuesday late POs",
+                "instruction": "Group overdue POs by supplier and draft follow-ups",
+                "trigger_kind": "schedule",
+                "trigger": {"cadence": "weekly", "weekday": "tuesday", "hour": 9, "minute": 0},
+            },
+        )
+        self.assertEqual(edited.status_code, 200, edited.text)
+        eb = edited.json()
+        self.assertEqual(eb["name"], "Tuesday late POs")
+        self.assertEqual(eb["trigger"]["weekday"], "tuesday")
+        self.assertEqual(eb["trigger_summary"], "Every Tuesday at 9:00 AM ET")
+
+        # Run once so there is a live job, then delete -> stops live job & removes from list
+        ran = c.post(f"/api/assist/workflows/{wid}/run")
+        self.assertEqual(ran.status_code, 200, ran.text)
+        deleted = c.delete(f"/api/assist/workflows/{wid}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual(deleted.json()["status"], "stopped")
+        self.assertEqual(deleted.json()["runs"][0]["job"]["status"], "stopping")
+
+        # Deleted workflow is gone from list and 404 on every subsequent route
+        self.assertEqual(c.get("/api/assist/workflows").json()["workflows"], [])
+        self.assertEqual(c.patch(f"/api/assist/workflows/{wid}", json={"name": "again"}).status_code, 404)
+        self.assertEqual(c.post(f"/api/assist/workflows/{wid}/run").status_code, 404)
+        self.assertEqual(c.delete(f"/api/assist/workflows/{wid}").status_code, 404)
+
+        # Already-stopped workflow can still be deleted from the list
+        wid2 = c.post("/api/assist/workflows", json={"plain_text": "reconcile open invoices"}).json()["workflow_id"]
+        self.assertEqual(c.post(f"/api/assist/workflows/{wid2}/stop").status_code, 200)
+        self.assertEqual(len(c.get("/api/assist/workflows").json()["workflows"]), 1)
+        self.assertEqual(c.delete(f"/api/assist/workflows/{wid2}").status_code, 200)
+        self.assertEqual(c.get("/api/assist/workflows").json()["workflows"], [])
 
     def test_pause_resume_run_now_and_stop_cascades_to_live_job(self):
         c = self.client(OWNER)

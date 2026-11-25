@@ -3,8 +3,9 @@
 // names it by its id (operating/ask_uploads.py, operating/ask_attachments.py). The server
 // decides what a file is from its bytes; a picture over the model's size is scaled down there.
 import { removeAskFile, uploadAskFile } from "./api";
+import { plainError } from "./errors";
 
-export const ACCEPT = ".pdf,.xlsx,.docx,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation";
+export const ACCEPT = ".pdf,.xlsx,.xls,.docx,.doc,.pptx,.csv,.txt,.md,.png,.jpg,.jpeg,.gif,.webp,application/pdf,text/csv,text/plain,image/png,image/jpeg,image/gif,image/webp,application/vnd.ms-excel,application/msword,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
 export interface Attachment {
   id: string;
@@ -15,7 +16,7 @@ export interface Attachment {
   upload: string;
 }
 
-const EXT = /\.(pdf|xlsx|docx|csv|txt|md|png|jpe?g|gif|webp)$/i;
+const EXT = /\.(pdf|xlsx?|docx?|pptx|csv|txt|md|png|jpe?g|gif|webp)$/i;
 const IMAGE = /^image\/(png|jpeg|gif|webp)$/;
 
 export function sizeWords(bytes: number): string {
@@ -24,10 +25,12 @@ export function sizeWords(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Why a file cannot be attached, or null when it can (its kind only: a file has no size limit). */
+/** Why a file cannot be attached, or null when it can (its kind and non-empty check: a file has no size limit). */
 export function refusal(file: { name: string; size: number; type: string }, have: { size: number }[]): string | null {
+  void have;
   const image = IMAGE.test(file.type);
-  if (!image && !EXT.test(file.name)) return `${file.name}: attach a PDF, a Word file, a spreadsheet (.xlsx, .csv), text or an image.`;
+  if (!image && !EXT.test(file.name)) return `${file.name}: attach a PDF, a Word or PowerPoint file, a spreadsheet (.xlsx, .xls, .csv), text or an image.`;
+  if (file.size === 0) return `${file.name} is empty: attach a file with content.`;
   return null;
 }
 
@@ -51,8 +54,9 @@ export async function addFiles(files: Iterable<File>, have: Attachment[]): Promi
     try {
       const sent = await uploadAskFile(file, name);
       next.push({ id: `${Date.now()}-${next.length}`, name, size: file.size, image: IMAGE.test(file.type), upload: sent.id });
-    } catch {
-      problems.push(`${name} could not be sent: attach it again.`);
+    } catch (err) {
+      const detail = plainError(err);
+      problems.push(detail && detail !== "Could not upload this file; please try again." ? `${name}: ${detail}` : `${name} could not be sent: attach it again.`);
     }
   }
   return { next, problems };

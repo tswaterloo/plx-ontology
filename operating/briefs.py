@@ -240,6 +240,7 @@ class Reads:
         self.held = frozenset(held)
         self.declared = declared
         self.today = datetime.now(timezone.utc).date()
+        self._labels: dict[str, tuple[str, str | None]] = {}
 
     def finance(self) -> bool:
         return FINANCE in self.held
@@ -281,6 +282,8 @@ class Reads:
 
     def label(self, oid: str) -> tuple[str, str | None]:
         """The record's display words as this reader reads them, and its citation."""
+        if oid in self._labels:
+            return self._labels[oid]
         out = self.call("plx.object", {"object_id": oid}) if not self.cited.over() else None
         obj = (out or {}).get("object") if isinstance(out, Mapping) else None
         display = (obj or {}).get("display")
@@ -289,7 +292,10 @@ class Reads:
         if isinstance(display, Mapping):
             origin = display.get("origin") or {}
             handle = origin.get("citation") if isinstance(origin.get("citation"), str) else None
-        return words or type_of(oid), handle
+        res = (words or type_of(oid), handle)
+        if obj is not None:
+            self._labels[oid] = res
+        return res
 
     def gaps(self) -> list[dict[str, str]]:
         """The typed gaps of the reads, without any count of what was withheld."""
@@ -928,8 +934,9 @@ def meeting_brief(call: Call, held: Iterable[str], alerts: Mapping[str, Any] | N
                   note=RD_NOTE if inbox else UNREAD_NOTE)),
         (_withheld("notes", "Last meeting: notes and action items") if blocked else
          _section("notes", "Last meeting: notes and action items", notes + actions,
+                  state=None if (notes or actions) else "not_available",
                   note=None if notes or actions else
-                  "No earlier meeting with a captured transcript or action item.")),
+                  "No transcript captured yet; brief built from mail, Teams, and open records.")),
     ]
     # a standing internal review (no outside party, a title naming a review): its pack
     reviews = review_families(title) if otype in MEETING_TYPES and not parties else []
@@ -1044,8 +1051,8 @@ def review_agenda(sections: Sequence[Mapping[str, Any]]) -> dict[str, Any] | Non
             "rows": rows, "more": 0, "figures": []}
 
 
-POINT_SOURCES = (("orders", "late"), ("promises", None), ("alerts", None), ("money", "overdue"),
-                 ("quality", None), ("notes", "action"), ("threads", None))
+POINT_SOURCES = (("orders", "late"), ("promises", None), ("alerts", None), ("decisions", None),
+                 ("money", "overdue"), ("quality", None), ("notes", "action"), ("threads", None))
 
 
 def talking_points(sections: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1072,6 +1079,7 @@ def talking_points(sections: list[dict[str, Any]]) -> dict[str, Any]:
             words = {"orders": f"Agree a new date for {row['label']} ({detail})",
                      "promises": f"Where our promise stands: {row['label']}",
                      "alerts": f"Raise: {row['label']}",
+                     "decisions": f"Follow up: {row['label']}",
                      "money": "Ask about the overdue balance",
                      "quality": f"Quality: {row['label']}",
                      "notes": f"Follow up on last meeting's {row['label'].lower()}",
@@ -1446,10 +1454,59 @@ def _delta(now: Decimal | int | None, before: Decimal | int | None) -> str | Non
                                                 change.quantize(Decimal(1)), "f")
 
 
+def _on_time_sql(reads: Reads, start: date, end: date) -> dict[str, Any] | None:
+    """Read weekly shipments on-time counts in one door-guarded ``plx.sql`` statement over
+    the typed ``shipments`` view (PLAN-P2-A5). Returns None when ``plx.sql`` or the
+    ``shipments`` view is unavailable so ``_on_time`` falls back to ``plx.find``."""
+    out = reads.call("plx.sql", {
+        "sql": (f"SELECT ship_date, required_date, on_time, handle FROM shipments "
+                f"WHERE ship_date >= '{start.isoformat()}' AND ship_date < '{end.isoformat()}' "
+                "AND NOT COALESCE(pilot, false)")
+    })
+    if not isinstance(out, Mapping) or out.get("error"):
+        return None
+    cols = out.get("columns")
+    rows = out.get("rows")
+    if not isinstance(cols, list) or not isinstance(rows, list):
+        return None
+    col_names = [c.get("name") if isinstance(c, Mapping) else c for c in cols]
+    try:
+        i_on = col_names.index("on_time")
+        i_handle = col_names.index("handle")
+    except ValueError:
+        return None
+    on, late, undated, sources, late_sources = 0, 0, 0, [], []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) <= max(i_on, i_handle):
+            continue
+        verdict = row[i_on]
+        handle = row[i_handle] if isinstance(row[i_handle], str) else None
+        if verdict is None:
+            undated += 1
+        elif verdict in (True, "true", "t", 1):
+            on += 1
+            if handle:
+                sources.append(handle)
+        elif verdict in (False, "false", "f", 0):
+            late += 1
+            if handle:
+                sources.append(handle)
+                late_sources.append(handle)
+        else:
+            undated += 1
+    partial = bool(out.get("truncated") or out.get("more") or reads.cited.over())
+    return {"on_time": on, "late": late, "undated": undated, "partial": partial,
+            "sources": sources, "late_sources": late_sources}
+
+
 def _on_time(reads: Reads, start: date, end: date) -> dict[str, Any]:
     """Shipments dated in [start, end) against their order's required date (the reader's
     reads only): on time, late, and those whose order or date it cannot read (``undated``,
-    never counted either way)."""
+    never counted either way). Prefers one door-guarded read of ``shipments`` via
+    ``plx.sql``, falling back to ``plx.find`` when ``shipments`` is not served."""
+    via_sql = _on_time_sql(reads, start, end)
+    if via_sql is not None:
+        return via_sql
     ids = reads.cited.find("Shipment", [
         {"property": "ship_date", "op": "gte", "value": start.isoformat()},
         {"property": "ship_date", "op": "lt", "value": end.isoformat()}],
@@ -1464,8 +1521,10 @@ def _on_time(reads: Reads, start: date, end: date) -> dict[str, Any]:
         shipped, s_handle = reads.cell(record, "ship_date")
         orders = reads.linked(oid, "Shipment.ships", "forward") if record is not None else []
         due, d_handle = None, None
-        for order in orders[:1]:
+        for order in orders:
             due, d_handle = reads.cell(reads.read(order, ("required_date",)), "required_date")
+            if _day(due) is not None:
+                break
         ship_day, due_day = _day(shipped), _day(due)
         if reads.cited.over():
             partial = True

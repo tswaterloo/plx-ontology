@@ -16,7 +16,7 @@ export function LabelRevisionsView({ data }: { data: LabelRevisions }) {
     <section data-testid="label-revisions" className="space-y-2">
       <SectionTitle>Label revisions</SectionTitle>
       {onOrders.map((o) => (
-        <p key={o.id} data-testid="label-revision-on-order" className="text-[13px] text-red-700">
+        <p key={o.id} data-testid="label-revision-on-order" className="text-[13px] text-late">
           Points at {o.name ?? "a label file"} revision {o.revision}; current is {o.current}
           {o.superseded_on ? ` (since ${o.superseded_on})` : ""}
         </p>
@@ -37,7 +37,7 @@ export function LabelRevisionsView({ data }: { data: LabelRevisions }) {
                 {r.current ? " · current" : r.superseded_on ? ` · superseded ${r.superseded_on}` : ""}
                 {r.first_seen ? ` · first seen ${r.first_seen}` : ""}
                 {r.approved_on ? ` · approved ${r.approved_on}${r.approved_by ? ` by ${r.approved_by}` : ""}` : ""}
-                {!r.approved_on && r.current && <span className="ml-1 text-amber-700">· no approval recorded</span>}
+                {!r.approved_on && r.current && <span className="ml-1 text-risk">· no approval recorded</span>}
               </li>
             ))}
           </ul>

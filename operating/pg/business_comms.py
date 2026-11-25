@@ -354,8 +354,9 @@ MEETING = Spec(
     _ts(_START) + ", " + _day(_START) + ", " + _ts(_END) + ", p.subject, "
     f"{_json_field('p.organizer', 'address')}, {_json_list('p.attendees', 'address')}, "
     "p.location, p.is_cancelled = 'true', p.is_online_meeting = 'true', "
-    "p.is_organizer = 'true', p.is_all_day = 'true', p.ical_uid, lower(btrim(p.mailbox))",
-    (), header="subject, organizer, array_to_string(attendees, ' '), location")
+    "p.is_organizer = 'true', p.is_all_day = 'true', p.ical_uid, lower(btrim(p.mailbox)), "
+    "'calendar'::text",
+    (), header="subject, organizer, array_to_string(attendees, ' '), location", version=2)
 MEETING_COLS = (
     ("start_at", "timestamp", "when it starts"),
     ("start_date", "date", "the day it starts (business time zone)"),
@@ -371,11 +372,16 @@ MEETING_COLS = (
     ("ical_uid", "text", "the meeting's id: every attendee's copy shares it (count "
                          "distinct ical_uid for meetings); meeting_transcripts joins on it"),
     ("mailbox", "text", "the calendar owner's id (one row per calendar copy)"),
+    ("source_kind", "text", "where this meeting fact came from: 'calendar' (Graph calendar), "
+                            "'mail_invite' (invitation/update email when calendar is "
+                            "unreadable), or 'calendar_updated_by_mail' (calendar row updated "
+                            "by a newer mail move or cancellation)"),
 )
-_register(MEETING, "Calendar events (meetings) on the calendars you may read, one row per "
-          "calendar copy (count distinct ical_uid for meetings): when, subject, organizer, "
-          "attendees, place, online or not, cancelled or not, and the customers, suppliers "
-          "and records it names. Join meeting_transcripts on ical_uid for what was said.",
+_register(MEETING, "Calendar events (meetings) on the calendars and invitation/update emails "
+          "you may read, one row per mailbox copy (count distinct ical_uid for meetings): "
+          "when, subject, organizer, attendees, place, online or not, cancelled or not, "
+          "source_kind, and the customers, suppliers and records it names. Join "
+          "meeting_transcripts on ical_uid for what was said.",
           MEETING_COLS)
 
 
@@ -428,7 +434,7 @@ FILES = Spec(
     "CASE WHEN btrim(p.size) ~ '^[0-9]{1,18}$' THEN btrim(p.size)::numeric END, "
     "p.mime_type, p.content_status",
     (), text_in_fields=True, header="name, path", scope="files", cells_ok=True,
-    listed=True, covers=False)
+    listed=True, covers=False, version=2)
 FILES_COLS = (
     ("modified_at", "timestamp", "when the file was last modified"),
     ("modified_date", "date", "the day it was last modified (business time zone)"),
@@ -436,7 +442,8 @@ FILES_COLS = (
     ("path", "text", "its folder path in the drive (untrusted text)"),
     ("size", "numeric", "its size in bytes"),
     ("mime_type", "text", "its content type"),
-    ("content_status", "text", "whether its content was captured"),
+    ("content_status", "text", "whether its content was captured (captured, not_text for "
+                               "non-text binaries, or unavailable:<reason>)"),
 )
 _register(FILES, "SharePoint and OneDrive files as captured (full readers only; any other "
           "reader reads none here: plx.search finds files by name or text): name, folder, size, "
@@ -1281,6 +1288,9 @@ def fill(spec: Spec, write: Any, table: str, *, connect: Any = None) -> dict[str
         got["members"] = teams_members.apply(write, t)
         write.execute(f"UPDATE {t} SET words = {_words(spec)}")
         got["teams_links"] = teams_links.apply(write, t)
+    if spec.view == "meetings":
+        from operating.pg import mail_calendar
+        got["mail_calendar"] = mail_calendar.apply(write, t)
     if spec.view in ("emails", "teams_messages"):
         # the parties a message's addresses and words name, before the indexes (no index
         # to keep up with the rows it sets)
@@ -1428,6 +1438,9 @@ def refresh_changed(write: Any, view: str, since: Mapping[str, Any], *,
             got["members"] = teams_members.apply(write, t_name, teams_scope)
             write.execute(f"UPDATE {t_name} SET words = {_words(spec)} WHERE ({teams_scope})")
             got["teams_links"] = teams_links.apply(write, t_name, teams_scope)
+        if spec.view == "meetings":
+            from operating.pg import mail_calendar
+            got["mail_calendar"] = mail_calendar.apply(write, f"{bv.SCHEMA}.{view}")
         if spec.view in ("emails", "teams_messages"):
             from operating.pg import message_parties
             stamp = links_rule(spec)

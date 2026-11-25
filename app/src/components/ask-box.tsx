@@ -401,7 +401,7 @@ export function AskBox({
 
   const big = size === "lg";
   const sm = size === "sm";
-  const pop = "absolute inset-x-0 z-40 rounded-xl bg-raised shadow-pop";
+  const pop = "absolute inset-x-0 z-40 rounded-lg border border-border-strong bg-raised shadow-pop";
   return (
     <div className="relative w-full" ref={boxRef}>
       <form
@@ -410,11 +410,11 @@ export function AskBox({
           submit();
         }}
         className={cn(
-          "group relative flex flex-col bg-bg transition-shadow",
+          "group relative flex flex-col bg-bg transition-colors dark:bg-surface",
           sm
-            ? "rounded-xl border border-border shadow-lift focus-within:border-accent"
-            : "rounded-2xl shadow-[var(--lift)] focus-within:shadow-[0_0_0_1px_var(--accent)]",
-          big ? "px-3 pt-2 pb-2" : sm ? "px-2 py-1" : "px-2.5 pt-1.5 pb-1.5",
+            ? "rounded-lg border border-border-strong focus-within:border-accent/65"
+            : "rounded-xl border border-border-strong focus-within:border-accent/65",
+          big ? "px-3.5 pt-2.5 pb-2.5" : sm ? "px-2 py-1" : "px-3 pt-2 pb-2",
         )}
       >
         {attachable && files.length > 0 && (
@@ -491,8 +491,8 @@ export function AskBox({
             onFocus={() => warmAsk()}
             onBlur={() => setTimeout(close, 120)}
             className={cn(
-              "max-h-[220px] flex-1 resize-none bg-transparent px-2 text-fg placeholder:text-faint focus:outline-none",
-              sm ? "min-h-[36px] py-2 text-[14px] leading-5" : big ? "min-h-[72px] py-2.5 text-[16px] leading-6" : "min-h-[36px] py-2 text-[14px] leading-5",
+              "max-h-[220px] flex-1 resize-none bg-transparent px-1.5 text-fg placeholder:text-faint outline-none focus:outline-none focus-visible:outline-none",
+              sm ? "min-h-[36px] py-2 text-[14px] leading-5" : big ? "min-h-[72px] py-2.5 text-[15px] leading-6" : "min-h-[38px] py-1.5 text-[14px] leading-5",
             )}
           />
           {sm ? (
@@ -527,8 +527,8 @@ export function AskBox({
             <button
               type="button"
               onClick={onStop}
-              aria-label="Stop answering"
-              title="Stop (Esc)"
+              aria-label="Stop"
+              title="Stop"
               className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "size-9")}
             >
               <Square className="size-3 fill-current" aria-hidden />
@@ -596,8 +596,8 @@ export function AskBox({
             <button
               type="button"
               onClick={onStop}
-              aria-label="Stop answering"
-              title="Stop (Esc)"
+              aria-label="Stop"
+              title="Stop"
               className={cn("flex shrink-0 items-center justify-center rounded-lg bg-fg text-bg hover:opacity-85 cursor-pointer", sm ? "m-0.5 size-[30px]" : "size-9")}
             >
               <Square className="size-3 fill-current" aria-hidden />

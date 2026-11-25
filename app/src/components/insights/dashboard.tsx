@@ -1,8 +1,11 @@
 "use client";
 
+import { BarChart3, ChevronDown, Download, HelpCircle, RotateCw, Search, Table2 } from "lucide-react";
 import Link from "next/link";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { AnswerCharts } from "@/components/answer-chart";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnswerCharts, ChartSaves } from "@/components/answer-chart";
+import { saveCsv } from "@/components/charts/export";
+import { cn } from "@/lib/cn";
 import { ExcelExportButton } from "@/components/excel-export-button";
 import { DefinitionLines } from "@/components/definition-lines";
 import { QueryToggle, ShowWork } from "@/components/query-work";
@@ -18,18 +21,48 @@ import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
 // a button that looks like one: hairline, a warm hover, a pressed state, 13 px (legible, 32 px tall)
-const quiet = "h-8 rounded-md border border-border px-2.5 text-[13px] font-medium text-fg transition-colors duration-100 hover:border-control hover:bg-hover active:bg-surface-2 cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent";
-const primary = "h-9 rounded-md bg-accent px-4 text-[14px] font-semibold text-accent-fg transition-opacity duration-100 hover:opacity-90 active:opacity-80 cursor-pointer";
+const quiet = "h-8 rounded-md border border-border px-2.5 text-[13px] font-medium text-fg transition-[background-color,border-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-control hover:bg-hover active:scale-[0.98] active:bg-surface-2 cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent disabled:active:scale-100";
+const primary = "h-9 rounded-md bg-accent px-4 text-[14px] font-semibold text-accent-fg transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:opacity-90 active:scale-[0.98] active:opacity-80 cursor-pointer";
 
 // a chart with more names than this shows its first ones (the tile's own order: the largest
 // first) and a "Show all" switch that opens the rest in the same tile; nothing is cut
 export const TOP = 8;
 type Drawn = NonNullable<InsightResult["drawn"]>;
 
+/** Pure: total plotted items across a single-panel or multi-panel chart (never 0 when panels hold labels). */
+export function chartPointCount(chart: Drawn, fallbackRows = 0): number {
+  if (chart.panels?.length) {
+    const panelTotal = chart.panels.reduce((sum, p) => sum + p.labels.length, 0);
+    if (panelTotal > 0) return panelTotal;
+  }
+  if (chart.labels.length > 0) return chart.labels.length;
+  return chart.rows ?? fallbackRows;
+}
+
+const CURRENCY_FACET = /(^|_)(currency|currency_code|ccy)$/i;
+
 /** Pure: a chart cut to its first `n` names (bars, lines and their series alike); a chart
  * with no more names than that, or of a kind with no names along an axis, as it is. */
 export function topOf(chart: Drawn, n = TOP): Drawn {
-  if (!["bar", "line", "area", "combo", "stacked_bar"].includes(chart.kind) || chart.panels?.length || chart.labels.length <= n) return chart;
+  if (!["bar", "line", "area", "combo", "stacked_bar"].includes(chart.kind)) return chart;
+  if (chart.panels?.length) {
+    if (!["bar", "stacked_bar"].includes(chart.kind)) return chart;
+    const needsCut = chart.panels.some((p) => p.labels.length > n);
+    if (!needsCut) return chart;
+    return {
+      ...chart,
+      panels: chart.panels.map((p) =>
+        p.labels.length <= n
+          ? p
+          : {
+              ...p,
+              labels: p.labels.slice(0, n),
+              series: p.series.map((s) => ({ ...s, values: s.values.slice(0, n) })),
+            },
+      ),
+    };
+  }
+  if (chart.labels.length <= n) return chart;
   return {
     ...chart,
     labels: chart.labels.slice(0, n),
@@ -104,17 +137,27 @@ export function cellText(cell: string | null | undefined, column: string, row: r
 /** The rows behind an insight, as read now (cells as text). */
 function Rows({ data }: { data: InsightResult }) {
   if (data.rows.length === 0) return <p className="text-[13px] text-muted">No rows you can see right now.</p>;
+  const numericCol = data.columns.map((_, j) => {
+    const filled = data.rows.map((r) => r[j]).filter((c): c is string => c !== null && c !== undefined && c.trim() !== "");
+    return filled.length > 0 && filled.every((c) => /^-?\d+(?:\.\d+)?$/.test(c.trim()));
+  });
   return (
     <div className="max-h-80 overflow-auto">
-      <table className="w-full text-left text-[12px]">
+      <table className="w-full border-collapse text-left text-[12px]">
         <thead className="sticky top-0 bg-bg text-muted">
-          <tr>{data.columns.map((c) => <th key={c} className="px-2 py-1 font-medium">{human(c)}</th>)}</tr>
+          <tr className="border-b border-border">
+            {data.columns.map((c, j) => (
+              <th key={c} className={cn("px-2 py-1.5 font-medium whitespace-nowrap", numericCol[j] && "text-right")}>
+                {human(c)}
+              </th>
+            ))}
+          </tr>
         </thead>
         <tbody>
           {data.rows.map((r, i) => (
-            <tr key={i} className="border-t border-border">
+            <tr key={i} className="border-t border-border/70 first:border-t-0 hover:bg-hover/40">
               {r.map((c, j) => (
-                <td key={j} className={`px-2 py-1 tabular-nums${/^-?\d+\.\d+$/.test(c ?? "") ? " text-right" : ""}`}>
+                <td key={j} className={cn("px-2 py-1.5 tabular-nums", (numericCol[j] || /^-?\d+\.\d+$/.test(c ?? "")) && "text-right whitespace-nowrap")}>
                   {PEOPLE.has(data.columns[j]) && c ? <Link href={`/team?person=${encodeURIComponent(data.people?.[i] || c)}`} className="hover:underline">{c}</Link> : cellText(c, data.columns[j], r, data.columns)}
                 </td>
               ))}
@@ -123,7 +166,16 @@ function Rows({ data }: { data: InsightResult }) {
         </tbody>
       </table>
       {data.truncated && <p className="pt-1 text-[12px] text-muted">{data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows.` : `Only the first ${data.row_count} rows are shown.`}</p>}
-      <div className="pt-1">
+      <div className="flex flex-wrap items-center gap-1.5 pt-1.5">
+        <button
+          type="button"
+          onClick={() => saveCsv(data.columns, data.rows, data.title)}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-muted hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer"
+          data-testid="csv-export-btn"
+        >
+          <Download className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+          CSV
+        </button>
         <ExcelExportButton
           title={data.title}
           req={() => ({
@@ -182,7 +234,7 @@ export function ScheduleControl({ item, columns = [] }: { item: InsightInfo; col
       save({ schedule: now.schedule, notify, watch: null });
     }
   };
-  const field = "h-7 rounded-md border border-border bg-bg px-1 text-[12px]";
+  const field = "h-7 rounded-md border border-border bg-bg px-1.5 text-[12px] text-fg dark:bg-surface";
   const numeric = columns.length ? columns : now.watch ? [now.watch.column] : [];
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted" data-testid={`schedule-${item.id}`}>
@@ -281,9 +333,11 @@ export type TileEntry = { result?: InsightResult; error?: { code: string; messag
 export type Arrange = { up?: () => void; down?: () => void; off: () => void; start: () => void; drop: () => void; dragging: boolean };
 
 export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, streaming, arrange }: { item: InsightInfo; onRemoved?: () => void; entry?: TileEntry; streaming?: boolean; arrange?: Arrange }) {
-  const [data, setData] = useState<InsightResult | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [data, setData] = useState<InsightResult | null>(() => (streaming !== undefined && !entry?.later && entry?.result ? entry.result : null));
+  const [error, setError] = useState<unknown>(() => (streaming !== undefined && !entry?.later && entry?.error ? new ApiError(entry.error.status, entry.error.code, undefined, entry.error.message) : null));
   const [open, setOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [view, setView] = useState<"chart" | "table">("chart");
   const [round, setRound] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [all, setAll] = useState(false);
@@ -360,32 +414,67 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
       setProposeState("failed");
     }
   };
+  const asOfDate = data?.drawn?.as_of ?? data?.as_of ?? null;
+  const isMultiPanel = Boolean(data?.drawn?.panels?.length);
+  const isCurrencyFacet = isMultiPanel && CURRENCY_FACET.test(data?.drawn?.spec?.facet ?? "");
+  const totalPoints = data?.drawn ? chartPointCount(data.drawn, data.total_rows ?? data.row_count) : 0;
+  const isCut = Boolean(data?.drawn && topOf(data.drawn) !== data.drawn);
+  const countText = data
+    ? isCut && !all
+      ? isMultiPanel
+        ? isCurrencyFacet
+          ? `Top ${TOP} per currency`
+          : `Top ${TOP} per group`
+        : `Top ${TOP} of ${totalPoints}`
+      : data.truncated
+        ? data.total_rows
+          ? `First ${data.row_count} of ${data.total_rows} rows`
+          : `First ${data.row_count} rows (more not counted)`
+        : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`
+    : "";
+  const footerMeta = [
+    asOfDate ? `As of ${formatDate(asOfDate, { short: true })}` : null,
+    countText || null,
+    data?.read_at && (data.truncated || isBeforeToday(asOfDate)) ? `read ${ago(data.read_at)}` : null,
+    refreshing ? "updating" : round > 0 && error ? "refresh failed" : null,
+  ].filter(Boolean);
+
   return (
     <section id={`insight-${item.id}`} ref={here}
-      className={`cv-auto cv-tile flex min-w-0 scroll-mt-24 flex-col gap-3.5 rounded-lg border bg-surface/50 p-5 transition-colors duration-100 ${arrange ? "cursor-grab border-dashed border-control hover:border-accent" : "border-border"} ${arrange?.dragging ? "opacity-50" : ""}`}
+      className={cn(
+        "cv-auto cv-tile flex min-w-0 scroll-mt-24 flex-col gap-2.5 rounded-md border bg-bg p-3.5 transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)]",
+        arrange ? "cursor-grab border-dashed border-control hover:border-accent" : "border-border",
+        arrange?.dragging && "opacity-50",
+      )}
       draggable={!!arrange}
       onDragStart={arrange ? (e) => { e.dataTransfer?.setData("text/plain", item.id); arrange.start(); } : undefined}
       onDragOver={arrange ? (e) => e.preventDefault() : undefined}
       onDrop={arrange ? (e) => { e.preventDefault(); arrange.drop(); } : undefined}
       data-testid={`insight-${item.id}`} aria-labelledby={`insight-${item.id}-title`}>
-      <div className="space-y-1">
+      <div className="space-y-2">
         <div className="flex items-start gap-2">
-          <h3 id={`insight-${item.id}-title`} className="flex-1 text-[16px] font-semibold leading-6 text-fg">{item.title}</h3>
+          <h3 id={`insight-${item.id}-title`} className="flex-1 text-[14.5px] font-semibold leading-5 tracking-[-0.015em] text-fg">{item.title}</h3>
+          {data?.about && !data.not_measurable && (
+            <button
+              type="button"
+              onClick={() => setInfoOpen((v) => !v)}
+              aria-expanded={infoOpen}
+              aria-label="How this is calculated"
+              title="How this is calculated"
+              className={cn(
+                "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer",
+                infoOpen && "bg-accent-soft text-accent",
+              )}
+            >
+              <HelpCircle className="size-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          )}
           {item.saved && <button type="button" className={quiet} onClick={remove}>Remove</button>}
         </div>
-        {data?.about && !data.not_measurable && (
-          data.about.length > 110 ? (
-            <details className="group" data-testid={`takeaway-${item.id}`}>
-              <summary className="flex cursor-pointer list-none items-center gap-2 text-[13px] leading-5 text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
-                <span className="min-w-0 truncate">{data.about}</span>
-                <span className="shrink-0 text-[12px] font-medium text-accent group-open:hidden">How this is calculated</span>
-                <span className="hidden shrink-0 text-[12px] font-medium text-muted group-open:inline">Hide</span>
-              </summary>
-              <p className="mt-2 rounded-md border border-border/70 bg-bg/70 p-3 text-[13px] leading-relaxed text-muted">{data.about}</p>
-            </details>
-          ) : (
-            <p className="text-[13px] leading-5 text-muted" data-testid={`takeaway-${item.id}`}>{data.about}</p>
-          )
+        {infoOpen && data?.about && !data.not_measurable && (
+          <p className="rounded-lg border border-border/80 bg-surface/70 px-3 py-2 text-[12.5px] leading-5 text-muted" data-testid={`takeaway-${item.id}`}>
+            {data.about}
+          </p>
         )}
       </div>
       {arrange && (
@@ -406,56 +495,131 @@ export const InsightTile = memo(function InsightTile({ item, onRemoved, entry, s
       ) : !inView ? (
         <div style={{ height: drawnHeight.current }} data-testid={`undrawn-${item.id}`} aria-hidden />
       ) : (
-        <div ref={body} className="space-y-3">
+        <div ref={body} className="flex flex-1 flex-col gap-3">
           {data.not_measurable && <p className="text-[13px] text-muted" data-testid={`unmeasurable-${item.id}`}>{data.not_measurable}</p>}
-          {data.not_measurable ? null : data.drawn ? (
+          {data.not_measurable ? null : data.drawn && view === "chart" ? (
             <div className={all ? "max-h-[28rem] overflow-y-auto" : ""} data-testid={`chart-body-${item.id}`}>
-              <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} />
+              <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} hideFooter />
             </div>
           ) : <Rows data={data} />}
           {(data.excluded ?? []).map((x) => (
-            <p key={x.parameter} className="text-[13px] text-muted" data-testid={`excluded-${item.id}-${x.parameter}`}>
+            <p key={x.parameter} className="text-[12.5px] text-muted" data-testid={`excluded-${item.id}-${x.parameter}`}>
               {x.n === null || x.n === undefined ? `Not counted: what is ${x.says} (${x.why ?? "not read"})` : `${x.n.toLocaleString()} more ${x.says}`}
             </p>
           ))}
           {/* a "not checked" line says nothing a reader can use (no second figure exists): only a reconciliation or a difference is shown */}
           {["reconciles", "differs"].includes((data as InsightResult & { checked?: { status: string } | null }).checked?.status ?? "") && (
-            <p className={`text-[13px] ${(data as InsightResult & { checked?: { status: string } | null }).checked?.status === "differs" ? "text-red-700" : "text-muted"}`} data-testid={`checked-${item.id}`}>
+            <p className={`text-[12.5px] ${(data as InsightResult & { checked?: { status: string } | null }).checked?.status === "differs" ? "text-late" : "text-muted"}`} data-testid={`checked-${item.id}`}>
               Checked: {(data as InsightResult & { checked?: { says: string } | null }).checked?.says}
             </p>
           )}
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted">
-            {item.fixed_dates && <span data-testid={`fixed-${item.id}`}>Dates fixed when pinned: {item.fixed_dates}</span>}
-            {filtered && <span data-testid={`filtered-${item.id}`}>Your filters (not saved)</span>}
-            <span>
-              {data.drawn && !all && topOf(data.drawn) !== data.drawn ? `Top ${TOP} of ${data.drawn.labels.length}` : data.truncated ? (data.total_rows ? `First ${data.row_count} of ${data.total_rows} rows` : `First ${data.row_count} rows (more not counted)`) : `${data.row_count} ${data.row_count === 1 ? "row" : "rows"}`}
-              {isBeforeToday(data.drawn?.as_of ?? data.as_of) ? `, data as of ${formatDate(data.drawn?.as_of ?? data.as_of)}` : ""}
-              {data.read_at && (data.truncated || isBeforeToday(data.drawn?.as_of ?? data.as_of)) ? `, value read ${ago(data.read_at)}` : ""}
-              {refreshing ? ", updating" : round > 0 && error ? ", refresh failed" : ""}
+          {(item.fixed_dates || filtered) && (
+            <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+              {item.fixed_dates && <span data-testid={`fixed-${item.id}`}>Dates fixed when pinned: {item.fixed_dates}</span>}
+              {filtered && <span data-testid={`filtered-${item.id}`}>Your filters (not saved)</span>}
+            </p>
+          )}
+          <footer className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-2.5">
+            <span className="text-[12px] text-muted tabular-nums">
+              {footerMeta.join(" · ")}
             </span>
-            {data.drawn && topOf(data.drawn) !== data.drawn && (
-              <button type="button" className={quiet} onClick={() => setAll((a) => !a)}>{all ? `Show top ${TOP}` : `Show all ${data.drawn.labels.length}`}</button>
-            )}
-            <button type="button" className={quiet} onClick={() => { setFiltered(false); retry(); }}>Refresh</button>
-          </p>
-          <div className="flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
-            <Link prefetch={false} href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`} className={`${quiet} inline-flex items-center`}>Ask about this</Link>
-            <button type="button" className={quiet} aria-expanded={open} onClick={() => setOpen((o) => !o)}>{open ? "Hide details" : "Details"}</button>
-            {item.saved && data.sql && (
-              proposeState === "sent" ? (
-                <span className="px-2 text-[12px] text-muted" data-testid={`proposed-${item.id}`}>Proposed for review</span>
-              ) : (
-                <button type="button" className={quiet} disabled={proposeState === "saving"} onClick={propose} data-testid={`propose-${item.id}`}>
-                  {proposeState === "saving" ? "Proposing" : "Propose as shared definition"}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {data.drawn && !data.not_measurable && data.drawn.kind !== "table" && (
+                <div
+                  className="inline-flex items-center rounded-md border border-border bg-bg p-0.5"
+                  role="group"
+                  aria-label={`View mode for ${item.title}`}
+                  data-testid={`tile-view-toggle-${item.id}`}
+                >
+                  <button
+                    type="button"
+                    aria-pressed={view === "chart"}
+                    onClick={() => setView("chart")}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 rounded px-2 text-[11.5px] font-medium cursor-pointer",
+                      view === "chart" ? "bg-selected text-fg" : "text-muted hover:text-fg",
+                    )}
+                  >
+                    <BarChart3 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                    Chart
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={view === "table"}
+                    onClick={() => setView("table")}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 rounded px-2 text-[11.5px] font-medium cursor-pointer",
+                      view === "table" ? "bg-selected text-fg" : "text-muted hover:text-fg",
+                    )}
+                  >
+                    <Table2 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                    Table
+                  </button>
+                </div>
+              )}
+              {isCut && view === "chart" && (
+                <button
+                  type="button"
+                  className="inline-flex h-7 items-center rounded-md px-2 text-[12px] font-medium text-accent transition-[background-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:bg-hover active:scale-[0.98] cursor-pointer"
+                  onClick={() => setAll((a) => !a)}
+                >
+                  {all ? `Show top ${TOP}` : `Show all ${totalPoints}`}
                 </button>
-              )
-            )}
-            {proposeState === "failed" && proposeProblem && <span className="text-[12px] text-muted" role="alert">{proposeProblem}</span>}
-          </div>
+              )}
+              {data.drawn && (
+                <ChartSaves
+                  chart={all ? data.drawn : topOf(data.drawn)}
+                  figure={here}
+                  label="Export / Share"
+                  align="right"
+                  includeEmail
+                  question={item.title}
+                />
+              )}
+              <Link
+                prefetch={false}
+                href={`/ask?q=${encodeURIComponent(askAbout(item.title))}`}
+                className="inline-flex h-8 items-center rounded-md px-2 text-[12.5px] font-medium text-muted transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:bg-hover hover:text-fg active:scale-[0.98]"
+              >
+                Ask about this
+              </Link>
+              <button
+                type="button"
+                className="inline-flex h-8 items-center rounded-md px-2 text-[12.5px] font-medium text-muted transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:bg-hover hover:text-fg active:scale-[0.98] cursor-pointer"
+                aria-expanded={open}
+                onClick={() => setOpen((o) => !o)}
+              >
+                {open ? "Hide details" : "Details"}
+              </button>
+              {item.saved && data.sql && (
+                proposeState === "sent" ? (
+                  <span className="px-2 text-[12px] text-muted" data-testid={`proposed-${item.id}`}>Proposed for review</span>
+                ) : (
+                  <button type="button" className={quiet} disabled={proposeState === "saving"} onClick={propose} data-testid={`propose-${item.id}`}>
+                    {proposeState === "saving" ? "Proposing" : "Propose as shared definition"}
+                  </button>
+                )
+              )}
+              {proposeState === "failed" && proposeProblem && <span className="text-[12px] text-muted" role="alert">{proposeProblem}</span>}
+              <button
+                type="button"
+                aria-label="Refresh"
+                title="Refresh"
+                onClick={() => { setFiltered(false); retry(); }}
+                className="inline-flex size-8 items-center justify-center rounded-md border border-border bg-bg text-muted transition-[background-color,border-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover hover:text-fg active:scale-[0.98] cursor-pointer"
+              >
+                <RotateCw className={cn("size-3.5", refreshing && "animate-spin")} strokeWidth={2} aria-hidden />
+                <span className="sr-only">Refresh</span>
+              </button>
+            </div>
+          </footer>
           {item.measure && <DefinitionLines definitions={[item.measure]} testId={`measure-definition-${item.id}`} />}
           {item.measure && item.id.startsWith("measure_") && data.columns.includes("month") && <WhyDidItChange id={item.id} testId={`why-${item.id}`} />}
           {open && (
-            <div className="space-y-2" data-testid="insight-definition">
+            <div className="space-y-2 border-t border-border/60 pt-2.5" data-testid="insight-definition">
+              {!infoOpen && data.about && !data.not_measurable && (
+                <p className="text-[12.5px] leading-5 text-muted">{data.about}</p>
+              )}
               {work && (
                 <ShowWork
                   key={round}
@@ -658,17 +822,105 @@ export function InsightsDashboard({
   };
   const allGroups = grouped(list.items);
   const measureGroups = allGroups.filter(([g]) => /^Measures:\s*/i.test(g));
-  const viewGroups = allGroups.filter(([g]) => !/^Measures:\s*/i.test(g));
-  const groupChip = (group: string, items: InsightInfo[], label: string) => (
-    <a
-      key={group}
-      href={`#insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
-      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg"
-    >
-      <span>{label}</span>
-      <span className="num text-[11px] text-faint">{items.length}</span>
-    </a>
+  const totalMeasures = measureGroups.reduce((n, [, items]) => n + items.length, 0);
+  const categoryOf = (group: string) => group.replace(/^Measures:\s*/i, "");
+  const PRIMARY_ORDER = [
+    "Pinned by you",
+    "Finance",
+    "Sales",
+    "Purchasing",
+    "Operations",
+    "Quality",
+    "Customer Service",
+    "Customers",
+    "Decisions",
+    "Team",
+  ];
+  const ALL_SECTION_ORDER = [
+    "Finance",
+    "Sales",
+    "Purchasing",
+    "Operations",
+    "Quality",
+    "Customer Service",
+    "Customers",
+    "Decisions",
+    "Team",
+    "Pinned by you",
+  ];
+  const sectionRank = (cat: string) => {
+    const idx = ALL_SECTION_ORDER.indexOf(cat);
+    return idx >= 0 ? idx : ALL_SECTION_ORDER.length;
+  };
+  const orderedGroups = useMemo(
+    () =>
+      [...allGroups].sort(([ga], [gb]) => {
+        const ra = sectionRank(categoryOf(ga));
+        const rb = sectionRank(categoryOf(gb));
+        if (ra !== rb) return ra - rb;
+        const ma = /^Measures:\s*/i.test(ga) ? 1 : 0;
+        const mb = /^Measures:\s*/i.test(gb) ? 1 : 0;
+        if (ma !== mb) return ma - mb;
+        return 0;
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allGroups],
   );
+  const categories = useMemo(() => {
+    const seen = new Map<string, { charts: number; measures: number }>();
+    for (const [g, items] of orderedGroups) {
+      const cat = categoryOf(g);
+      const cur = seen.get(cat) ?? { charts: 0, measures: 0 };
+      if (/^Measures:\s*/i.test(g)) cur.measures += items.length;
+      else cur.charts += items.length;
+      seen.set(cat, cur);
+    }
+    const keys = [...seen.keys()].sort((a, b) => {
+      const ia = PRIMARY_ORDER.indexOf(a);
+      const ib = PRIMARY_ORDER.indexOf(b);
+      if (ia >= 0 && ib >= 0) return ia - ib;
+      if (ia >= 0) return -1;
+      if (ib >= 0) return 1;
+      return a.localeCompare(b);
+    });
+    return keys.map((cat) => {
+      const counts = seen.get(cat) ?? { charts: 0, measures: 0 };
+      return { cat, charts: counts.charts, measures: counts.measures, total: counts.charts + counts.measures };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderedGroups]);
+  const [activeCategory, setActiveCategory] = useState<string>("All");
+  const [measuresOpen, setMeasuresOpen] = useState(false);
+  const [measureQuery, setMeasureQuery] = useState("");
+  const measuresRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!measuresOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMeasuresOpen(false);
+    };
+    const onDown = (e: PointerEvent) => {
+      if (measuresRef.current && !measuresRef.current.contains(e.target as Node)) {
+        setMeasuresOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown);
+    };
+  }, [measuresOpen]);
+  const visibleGroups = activeCategory === "All"
+    ? orderedGroups
+    : orderedGroups.filter(([g]) => categoryOf(g) === activeCategory);
+  const filteredMeasureGroups = useMemo(() => {
+    const q = measureQuery.trim().toLowerCase();
+    if (!q) return measureGroups;
+    return measureGroups
+      .map(([g, items]) => [g, items.filter((it) => `${it.title} ${g}`.toLowerCase().includes(q))] as [string, InsightInfo[]])
+      .filter(([, items]) => items.length > 0);
+  }, [measureGroups, measureQuery]);
+
   return (
     <div className="mx-auto w-full max-w-[1800px] space-y-6 text-[14px] leading-6">
       {list.saving && onArrange && (
@@ -679,35 +931,157 @@ export function InsightsDashboard({
         <p className="text-[13px] text-muted">The team views show your own row only.</p>
       )}
       {list.saving && <Monitors items={list.items} />}
-      {/* many charts: sticky filter pill bar split into Views and Measures when both are present */}
+      {/* one clean top category tab bar + compact Browse measures dropdown */}
       {allGroups.length > 2 && (
-        <nav aria-label="Groups" className="sticky top-0 z-10 space-y-2 rounded-lg border border-border/80 bg-bg/95 px-3.5 py-2.5 backdrop-blur-sm" data-testid="insight-groups">
-          {measureGroups.length > 0 && viewGroups.length > 0 ? (
-            <>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">Views</span>
-                {viewGroups.map(([group, items]) => groupChip(group, items, group))}
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">Measures</span>
-                {measureGroups.map(([group, items]) => groupChip(group, items, group.replace(/^Measures:\s*/i, "")))}
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {allGroups.map(([group, items]) => groupChip(group, items, group))}
+        <nav aria-label="Groups" className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-bg/95 py-2 backdrop-blur-sm" data-testid="insight-groups">
+          <div role="tablist" aria-label="Categories" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pb-0.5">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeCategory === "All"}
+              onClick={() => setActiveCategory("All")}
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium whitespace-nowrap transition-colors cursor-pointer",
+                activeCategory === "All" ? "bg-selected text-fg" : "text-muted hover:bg-hover hover:text-fg",
+              )}
+            >
+              All
+              <span className="num text-[11px] text-faint">{list.items.length}</span>
+            </button>
+            {categories.map(({ cat, charts, measures, total }) => (
+              <button
+                key={cat}
+                type="button"
+                role="tab"
+                aria-selected={activeCategory === cat}
+                title={charts > 0 && measures > 0 ? `${cat}: ${charts} ${charts === 1 ? "chart" : "charts"}, ${measures} ${measures === 1 ? "measure" : "measures"}` : undefined}
+                onClick={() => setActiveCategory(cat)}
+                className={cn(
+                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.98] cursor-pointer",
+                  activeCategory === cat ? "bg-selected text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                )}
+              >
+                {cat}
+                <span className="num text-[11px] text-faint">{total}</span>
+              </button>
+            ))}
+          </div>
+          {totalMeasures > 0 && (
+            <div ref={measuresRef} className="relative shrink-0">
+              <button
+                type="button"
+                aria-expanded={measuresOpen}
+                onClick={() => setMeasuresOpen((v) => !v)}
+                data-testid="browse-measures"
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover active:scale-[0.98] cursor-pointer",
+                  measuresOpen && "border-accent/60 bg-accent-soft/40",
+                )}
+              >
+                <span>Browse measures ({totalMeasures})</span>
+                <ChevronDown className={cn("size-3.5 text-muted transition-transform", measuresOpen && "rotate-180")} strokeWidth={2} aria-hidden />
+              </button>
+              {measuresOpen && (
+                <div className="absolute right-0 z-30 mt-1.5 w-[340px] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-raised p-3 shadow-pop" data-testid="measures-drawer">
+                  <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-bg px-2.5 text-[12.5px] focus-within:border-accent/60">
+                    <Search className="size-3.5 shrink-0 text-faint" strokeWidth={2} aria-hidden />
+                    <input
+                      type="search"
+                      value={measureQuery}
+                      onChange={(e) => setMeasureQuery(e.target.value)}
+                      placeholder="Filter measures"
+                      aria-label="Filter measures"
+                      className="min-w-0 flex-1 bg-transparent outline-none focus-visible:outline-none placeholder:text-faint"
+                    />
+                  </label>
+                  <div className="mt-2.5 max-h-80 space-y-3 overflow-y-auto pr-1">
+                    {filteredMeasureGroups.length === 0 ? (
+                      <p className="px-1 py-2 text-[12px] text-muted">No measure matches that.</p>
+                    ) : (
+                      filteredMeasureGroups.map(([group, items]) => {
+                        const cat = categoryOf(group);
+                        return (
+                          <div key={group} className="space-y-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveCategory(cat);
+                                setMeasuresOpen(false);
+                              }}
+                              className="flex w-full items-center justify-between px-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint hover:text-fg cursor-pointer"
+                            >
+                              <span>{cat}</span>
+                              <span className="num">{items.length}</span>
+                            </button>
+                            <ul className="space-y-0.5">
+                              {items.map((it) => (
+                                <li key={it.id}>
+                                  <a
+                                    href={`#insight-${it.id}`}
+                                    onClick={() => {
+                                      setActiveCategory("All");
+                                      setMeasuresOpen(false);
+                                    }}
+                                    className="block truncate rounded-md px-2 py-1 text-[12.5px] text-fg hover:bg-hover"
+                                  >
+                                    {it.title}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </nav>
       )}
-      {allGroups.map(([group, items]) => (
-        <section key={group} id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="scroll-mt-16 space-y-3" aria-label={group}>
-          <h2 className="flex items-baseline gap-2 border-b border-border pb-2 text-[17px] font-semibold">{group}<span className="num text-[13px] font-normal text-muted">{items.length}</span></h2>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-            {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} arrange={arrangeOf(it)} />)}
+      {activeCategory !== "All" && visibleGroups.length > 1 && (() => {
+        const activeMeta = categories.find((c) => c.cat === activeCategory);
+        const measureGroup = visibleGroups.find(([g]) => /^Measures:\s*/i.test(g));
+        if (!activeMeta || activeMeta.charts === 0 || activeMeta.measures === 0) return null;
+        const measureAnchor = measureGroup ? `#insight-group-${measureGroup[0].toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : null;
+        return (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[12.5px] text-muted" data-testid="category-breakdown">
+            <span className="tabular-nums">
+              <span className="font-medium text-fg">{activeCategory}</span>
+              {" · "}
+              {activeMeta.charts} {activeMeta.charts === 1 ? "chart" : "charts"}
+              {" · "}
+              {activeMeta.measures} {activeMeta.measures === 1 ? "measure" : "measures"}
+            </span>
+            {measureAnchor && (
+              <a href={measureAnchor} className="text-[12px] font-medium text-accent hover:underline">
+                Jump to measures ({activeMeta.measures})
+              </a>
+            )}
           </div>
-        </section>
-      ))}
+        );
+      })()}
+      {visibleGroups.map(([group, items]) => {
+        const isMeasureGroup = /^Measures:\s*/i.test(group);
+        const cat = categoryOf(group);
+        const catMeta = categories.find((c) => c.cat === cat);
+        const hasBoth = Boolean(catMeta && catMeta.charts > 0 && catMeta.measures > 0);
+        const unitLabel = isMeasureGroup ? (items.length === 1 ? "measure" : "measures") : (items.length === 1 ? "chart" : "charts");
+        return (
+          <section key={group} id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} className="scroll-mt-16 space-y-3" aria-label={group}>
+            <h2 className="flex items-baseline gap-2 border-b border-border pb-2 text-[15px] font-semibold tracking-[-0.02em]">
+              <span>{group}</span>
+              <span className="num text-[12px] font-normal text-muted">
+                {hasBoth ? `${items.length} ${unitLabel}` : items.length}
+              </span>
+            </h2>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+              {items.map((it) => <InsightTile key={it.id} item={it} onRemoved={onChanged} entry={feed?.[it.id]} streaming={feed ? !!streaming : undefined} arrange={arrangeOf(it)} />)}
+            </div>
+          </section>
+        );
+      })}
       {list.saving && !list.items.some((i) => i.saved) && (
         <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live. Set it to check by itself and it is listed under Monitors.</p>
       )}

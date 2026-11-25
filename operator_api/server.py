@@ -174,6 +174,22 @@ def mock_ticket(expected: str, identity: Any) -> Any:
     return check
 
 
+def _make_server(config: Any) -> Any:
+    """A uvicorn Server that signals ``app.state.event_center`` to close long-lived SSE
+    streams as soon as shutdown starts (before uvicorn waits ``GRACE_SECONDS`` for
+    in-flight requests like streaming Ask answers to drain)."""
+    import uvicorn
+
+    class _Server(uvicorn.Server):
+        async def shutdown(self, sockets: Any = None) -> None:
+            center = getattr(getattr(self.config.app, "state", None), "event_center", None)
+            if center is not None:
+                center.shutdown()
+            await super().shutdown(sockets=sockets)
+
+    return _Server(config)
+
+
 def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = None,
          planner: Any = None) -> int:
     """``fixtures``/``planner``: the console's fixture world and a scripted planner, passed
@@ -219,7 +235,7 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
                                 access_log=False, proxy_headers=mode == "entra",
                                 forwarded_allow_ips="127.0.0.1",
                                 timeout_graceful_shutdown=GRACE_SECONDS)
-        server = uvicorn.Server(config)
+        server = _make_server(config)
         from .feedback import start_nightly   # yesterday's feedback digest, once a night
         start_nightly(app.state.feedback)
         owner_loop = getattr(backend, "loop", None)
@@ -262,8 +278,12 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
             return 0
         if threading.current_thread() is threading.main_thread():
             # uvicorn on its own thread sets no signal handler: SIGTERM (systemctl stop)
-            # closes the port and lets the requests under way end, then this returns
-            signal.signal(signal.SIGTERM, lambda *_: setattr(server, "should_exit", True))
+            # closes long-lived SSE streams at once, closes the port and lets real
+            # in-flight requests (e.g. streaming Ask answers) drain, then returns
+            def _on_sigterm(*_: Any) -> None:
+                app.state.event_center.shutdown()
+                server.should_exit = True
+            signal.signal(signal.SIGTERM, _on_sigterm)
         thread = threading.Thread(target=server.run, name="uvicorn", daemon=True)
         thread.start()
         try:
@@ -271,6 +291,7 @@ def main(argv: list[str] | None = None, *, ready: Any = None, fixtures: Any = No
         except KeyboardInterrupt:
             pass
         finally:
+            app.state.event_center.shutdown()
             server.should_exit = True
             thread.join(timeout=10)
         return 0

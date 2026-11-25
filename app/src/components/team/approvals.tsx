@@ -126,7 +126,7 @@ export function TeamApprovals() {
               const family = item.family ? item.family.replace(/_/g, " ") : null;
               const also = (item.waiting_on ?? []).filter((p) => p !== g.waiting_on);
               return (
-                <li key={item.id} className={cn("grid grid-cols-[52px_minmax(0,1fr)] gap-x-4 gap-y-1 px-3 py-2 text-[13px] lg:items-start", COLS, item.days >= 5 && "shadow-[inset_2px_0_0_var(--late)]")} data-testid="approval-item">
+                <li key={item.id} className={cn("grid grid-cols-[52px_minmax(0,1fr)] gap-x-4 gap-y-1 px-3 py-2 text-[13px] transition-colors hover:bg-hover/60 lg:items-start", COLS, item.days >= 5 && "shadow-[inset_2px_0_0_var(--late)]")} data-testid="approval-item">
                   <span className={cn("num pt-px text-[13px] tabular-nums", ageTone(item.days))} title={plural(item.days, "business day")}>
                     {item.days} d<span className="sr-only">: {plural(item.days, "business day")}</span>
                   </span>

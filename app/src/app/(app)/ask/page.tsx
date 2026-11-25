@@ -1,32 +1,34 @@
 "use client";
 
 import { AskNote } from "@/components/ask-note";
-import { MessagesSquare, SquarePen } from "lucide-react";
+import { MessagesSquare, PanelLeftOpen, SquarePen } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { AnswerCard, isSimple } from "@/components/answer-card";
 import { AskBox } from "@/components/ask-box";
 import { AskChatList } from "@/components/ask-chats";
 import { AskStart } from "@/components/ask-start";
+import { ClarifyPart } from "@/components/clarify-part";
 import { PageIntro } from "@/components/ui/page-intro";
 import { ErrorNotice } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
 import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { cn } from "@/lib/cn";
 import { takePending } from "@/lib/pending";
-import { askUrlKey, conversationOf, useThread } from "@/lib/thread";
+import { askUrlKey, conversationOf, lastActiveAskId, useThread } from "@/lib/thread";
 import { getWorkThread } from "@/lib/api";
 import { FINAL_ERRORS, plainError } from "@/lib/errors";
 import type { Answer } from "@/lib/types";
 
-/** The conversation column and the answer's rail share this frame, and the composer lines up with the column. */
-const FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
-const COLUMN = "xl:pr-[296px]";
+/** Clean centered reading measure for simple Ask conversations and composer; full-rail cards expand only when needed. */
+const READING_FRAME = "mx-auto w-full max-w-[780px] px-4 sm:px-6";
+const FULL_FRAME = "mx-auto w-full max-w-[1048px] px-4 sm:px-8";
+const FULL_COLUMN = "xl:pr-[296px]";
 
 function Ask() {
   const params = useSearchParams();
   const router = useRouter();
-  const { turns, run, retry, deeper, followUp, stop, reset, busy, seed } = useThread();
+  const { turns, run, retry, deeper, followUp, stop, reset, busy, seed, select, claimUrlKey, conversationId } = useThread();
   const started = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const lastTurn = useRef<HTMLElement>(null);
@@ -53,33 +55,44 @@ function Ask() {
   useEffect(() => {
     // the whole of what the URL asks: the question and every scope or page it carries
     const key = askUrlKey({ q, object: scope, source, meeting: meetingId, item: itemId, page: pagePath, brief: briefType });
-    if (q && started.current !== key) {
+    const claimed = typeof claimUrlKey === "function" ? claimUrlKey(key) : started.current !== key;
+    if (q && started.current !== key && claimed) {
       started.current = key;
       if (turns.length > 0) reset();
       void run(q, scope ?? takePending(q)[0]?.object_id, source, [], page);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page follows the same URL params
-  }, [q, scope, source, meetingId, itemId, pagePath, briefType, run, reset, turns.length]);
+  }, [q, scope, source, meetingId, itemId, pagePath, briefType, run, reset, claimUrlKey, turns.length]);
 
   // "Continue" from the work log: the session's turns as they were answered; a follow-up
-  // carries their history and conversation id like any other.
+  // carries their history and conversation id like any other. When the conversation is
+  // already live in the client store (e.g. clicking away and back), switch to it immediately
+  // without refetching or interrupting its stream.
   const resumeId = params.get("c");
   const resumed = useRef<string | null>(null);
   // a conversation that could not be opened says so, with a way to try again (never a blank page)
   const [resumeFailed, setResumeFailed] = useState<string | null>(null);
   const [resumeTry, setResumeTry] = useState(0);
+  const selectRef = useRef(select);
+  selectRef.current = select;
   useEffect(() => {
     const key = `${resumeId}#${resumeTry}`;
     if (!resumeId || q || resumed.current === key) return;
     resumed.current = key;
     setResumeFailed(null);
+    if (typeof selectRef.current === "function" && selectRef.current(resumeId)) return;
     const c = new AbortController();
     let settled = false;
     getWorkThread(`ask:${resumeId}`, c.signal)
       .finally(() => {
         settled = true;
       })
-      .then((t) => seed((t.resume.turns ?? []).map((x) => ({ question: x.question, answer: (x.answer ?? null) as unknown as Answer | null, withheld: x.withheld }))))
+      .then((t) =>
+        seed(
+          (t.resume.turns ?? []).map((x) => ({ question: x.question, answer: (x.answer ?? null) as unknown as Answer | null, withheld: x.withheld })),
+          { conversationId: resumeId, activeRun: t.resume.active_run ?? null },
+        ),
+      )
       .catch((err) => {
         // say why (gone, not yours, the server failed), never only "couldn't be opened"
         if (!c.signal.aborted) setResumeFailed(plainError(err));
@@ -90,6 +103,32 @@ function Ask() {
       if (!settled && resumed.current === key) resumed.current = null;
     };
   }, [resumeId, resumeTry, q, seed]);
+
+  // After a full browser reload on /ask (no ?c= or ?q=), reattach to the last active
+  // conversation if the server still has it running or already saved its finished answer.
+  const reloadedRef = useRef(false);
+  useEffect(() => {
+    if (reloadedRef.current || resumeId || q || turns.length > 0) return;
+    reloadedRef.current = true;
+    const savedId = typeof lastActiveAskId === "function" ? lastActiveAskId() : null;
+    if (!savedId) return;
+    if (typeof selectRef.current === "function" && selectRef.current(savedId)) return;
+    const c = new AbortController();
+    getWorkThread(`ask:${savedId}`, c.signal)
+      .then((t) => {
+        if (c.signal.aborted) return;
+        const prior = (t.resume.turns ?? []).map((x) => ({
+          question: x.question,
+          answer: (x.answer ?? null) as unknown as Answer | null,
+          withheld: x.withheld,
+        }));
+        if (prior.length > 0 || t.resume.active_run) {
+          seed(prior, { conversationId: savedId, activeRun: t.resume.active_run ?? null });
+        }
+      })
+      .catch(() => undefined);
+    return () => c.abort();
+  }, [resumeId, q, turns.length, seed]);
 
   // A new question scrolls to its own top: the answer then grows below it, never under the reader's eyes.
   useEffect(() => {
@@ -103,32 +142,64 @@ function Ask() {
     setChatsOpen(false);
     router.replace("/ask");
   };
-  // the chat open now: the one reopened, else the one this page's answers belong to
-  const current = conversationOf(turns) ?? resumeId;
-  // the list is read again as each answer lands (a new chat appears, its time moves)
+  // the chat open now: the live store's conversation, else the answered one or ?c=
+  const current = conversationId ?? conversationOf(turns) ?? resumeId;
+  // the list is read again as each answer starts or lands (a new chat appears, its time moves)
   const answered = turns.filter((t) => t.phase === "done").length;
   const [chatsOpen, setChatsOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
+  const hasFullCard = turns.some((t) => !isSimple(t));
+  const streamFrame = hasFullCard ? FULL_FRAME : READING_FRAME;
+  const streamColumn = hasFullCard ? FULL_COLUMN : "";
+  // when the latest turn asks a clarifying question, render its quick-pick choices directly
+  // above the ONE unified composer so there are never two competing input boxes
+  const latestTurn = turns[turns.length - 1];
+  const activeClarify = !busy && latestTurn?.phase === "done" && latestTurn.answer?.clarify ? latestTurn.answer : null;
   const composer = (
     <AskBox
       size={empty ? "lg" : "md"}
       dropUp={!empty}
-      onSubmit={(question, pins, files, opts) => run(question, pins[0]?.object_id, pins.length ? undefined : source, files, { ...(pins.length ? {} : page), ...(opts?.deep ? { deep: true } : {}) })}
+      onSubmit={(question, pins, files, opts) => {
+        if (activeClarify && pins.length === 0 && files.length === 0 && !opts?.deep) {
+          void run(question, undefined, undefined, [], { clarified: { answer_id: activeClarify.answer_id, text: question } });
+          return;
+        }
+        void run(question, pins[0]?.object_id, pins.length ? undefined : source, files, { ...(pins.length ? {} : page), ...(opts?.deep ? { deep: true } : {}) });
+      }}
       attachable
       deepable
       draftKey="plx.ask.draft"
       busy={busy}
       onStop={stop}
       autoFocus={!q}
-      placeholder={turns.length ? "Ask a follow-up" : "Ask a question, or ask for a chart, document or quote"}
+      placeholder={
+        activeClarify
+          ? "Pick an option above, or type your answer"
+          : turns.length
+            ? "Ask a follow-up"
+            : "Ask a question, or ask for a chart, document or quote"
+      }
     />
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-own-scroll>
+    <div className="flex min-h-0 flex-1 flex-col bg-bg" data-own-scroll>
       <Toolbar
         title="Ask"
         actions={
           <>
+            {!railOpen && (
+              <ToolbarButton
+                onClick={() => setRailOpen(true)}
+                title="Show chats"
+                aria-label="Show chats"
+                data-testid="expand-ask-chats"
+                className="hidden md:inline-flex"
+              >
+                <PanelLeftOpen strokeWidth={2} aria-hidden />
+                <span className="text-[12.5px]">Chats</span>
+              </ToolbarButton>
+            )}
             <ToolbarButton onClick={() => setChatsOpen(true)} title="Chats" aria-label="Chats" className="md:hidden">
               <MessagesSquare strokeWidth={2} aria-hidden />
             </ToolbarButton>
@@ -141,34 +212,46 @@ function Ask() {
         }
       />
       <Sheet open={chatsOpen} onOpenChange={setChatsOpen} title="Chats" bodyClassName="p-0">
-        <AskChatList current={current} refreshKey={`${current}#${answered}`} onNew={newChat} className="h-full" />
+        <AskChatList current={current} refreshKey={`${current}#${answered}#${busy ? 1 : 0}`} onNew={newChat} className="h-full" />
       </Sheet>
       <div className="flex min-h-0 flex-1">
-        <aside className="hidden w-[248px] shrink-0 border-r border-border md:flex" data-testid="ask-chats-rail">
-          <AskChatList current={current} refreshKey={`${current}#${answered}`} onNew={newChat} className="w-full" />
-        </aside>
+        {railOpen && (
+          <aside className="hidden w-[240px] shrink-0 border-r border-border md:flex" data-testid="ask-chats-rail">
+            <AskChatList
+              current={current}
+              refreshKey={`${current}#${answered}#${busy ? 1 : 0}`}
+              onNew={newChat}
+              onCollapse={() => setRailOpen(false)}
+              className="w-full"
+            />
+          </aside>
+        )}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {/* relative: the thread's screen-reader lines (absolute) belong to this scroller, so they
               never stretch the page under it and make it scroll as a whole on a phone */}
           <div ref={scroller} className="relative min-h-0 flex-1 overflow-y-auto">
             {empty ? (
-              <div className={cn(FRAME, "flex min-h-full max-w-[768px] flex-col justify-center pt-6 pb-[max(48px,12vh)]")}>
+              <div className="mx-auto flex min-h-full w-full max-w-[680px] flex-col justify-center px-4 pt-6 pb-[max(48px,12vh)] sm:px-6">
                 {resumeFailed && resumeId && !q && (
                   <ErrorNotice className="mb-6" message={`This conversation couldn't be opened. ${resumeFailed}`} onRetry={FINAL_ERRORS.has(resumeFailed) ? undefined : () => setResumeTry((n) => n + 1)} />
                 )}
-                <AskStart onAsk={(question, objectId) => run(question, objectId)}>{composer}</AskStart>
-                <PageIntro path="/ask" className="mt-8 px-3 pt-0 text-center lg:px-3" />
+                <AskStart
+                  onAsk={(question, objectId) => run(question, objectId)}
+                  subtitle={<PageIntro path="/ask" className="mx-auto mt-1.5 max-w-[54ch] px-0 pt-0 text-center lg:px-0" />}
+                >
+                  {composer}
+                </AskStart>
               </div>
             ) : (
-              <div className={cn(FRAME, "pt-5 pb-24")} aria-live="off">
+              <div className={cn(streamFrame, "pt-6 pb-24")} aria-live="off">
                 <h1 className="sr-only">Ask</h1>
                 {turns.map((t, i) => (
                   <section
                     key={t.id}
                     ref={i === turns.length - 1 ? lastTurn : undefined}
-                    className={cn("scroll-mt-6", i > 0 && "mt-14", i === turns.length - 1 && turns.length > 1 && "min-h-[calc(100dvh-260px)]")}
+                    className={cn("scroll-mt-6", i > 0 && "mt-12 border-t border-border pt-8", i === turns.length - 1 && turns.length > 1 && "min-h-[calc(100dvh-260px)]")}
                   >
-                    <h2 className={cn("mb-4 text-[19px] leading-[26px] font-semibold tracking-[-0.02em] break-words", COLUMN)} data-testid="user-question">
+                    <h2 className={cn("mb-4 text-[19px] leading-[26px] font-semibold tracking-[-0.02em] break-words", streamColumn)} data-testid="user-question">
                       {t.question}
                     </h2>
                     <AnswerCard
@@ -181,6 +264,7 @@ function Ask() {
                       onDeeper={busy ? undefined : () => deeper(t)}
                       noteRecord={t.request?.objectId ?? scope ?? undefined}
                       showNote
+                      hideClarify={activeClarify?.answer_id === t.answer?.answer_id && i === turns.length - 1}
                     />
                     {t.phase === "done" && !isSimple(t) && <AskNote record={t.request?.objectId ?? scope ?? undefined} />}
                   </section>
@@ -195,8 +279,22 @@ function Ask() {
           </div>
           {!empty && (
             <div className="relative z-10 shrink-0 border-t border-border bg-bg pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:pb-3.5" data-testid="composer-dock">
-              <div className={FRAME}>
-                <div className={COLUMN}>{composer}</div>
+              <div className={streamFrame}>
+                <div className={cn("space-y-2.5", streamColumn)}>
+                  {activeClarify?.clarify && (
+                    <div className="rounded-md border border-border bg-surface/50 px-3.5 py-2.5" data-testid="composer-clarify">
+                      {activeClarify.clarify.question && (
+                        <p className="mb-2 text-[13.5px] font-medium text-fg">{activeClarify.clarify.question}</p>
+                      )}
+                      <ClarifyPart
+                        a={activeClarify}
+                        hideInput
+                        onReply={busy ? undefined : (words, reply) => run(words, undefined, undefined, [], { clarified: reply })}
+                      />
+                    </div>
+                  )}
+                  {composer}
+                </div>
               </div>
             </div>
           )}

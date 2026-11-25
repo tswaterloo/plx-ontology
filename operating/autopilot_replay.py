@@ -195,8 +195,10 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
         typed = autopilot_records._types(st, ids[start:start + CHUNK])
         mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
         rows = autopilot_records._read(st, mine, ("sender", "to_addresses", "cc_addresses", "subject",
-                                   "body_preview", "conversation_id", "sent_at",
+                                   "body_text", "body_preview", "conversation_id", "sent_at",
                                    "received_at", "mailbox"))
+        bodies = autopilot_records.body_texts(
+            st, [h for r in rows.values() for h in autopilot_events._handles_of(r)[:1]])
         links: dict[str, set[str]] = defaultdict(set)
         for row in (st.touching(mine, None) if mine else ()):
             if MENTIONS.match(row[2]) and row[3] in rows:
@@ -213,13 +215,13 @@ def mail_sent(st: Any, people: Any, who: set[str], since: str, until: str
                 side = next(iter(sides)) if len(sides) == 1 else "internal_out"
             else:
                 side = "internal"
-            subject, body = autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview")
+            subject, body = autopilot_records._v(r, "subject"), autopilot_records.message_body(r, bodies)
             out.append({"person": box, "at": autopilot_records._v(r, "sent_at") or autopilot_records._v(r, "received_at"),
                         "kind": "mail_sent", **sent_shape(sender, subject, body),
-                        **autopilot_events.routine_note(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"),
+                        **autopilot_events.routine_note(subject, body,
                                           sender, to, addresses_of.get(box, set()), domains,
                                           oid),
-                        "workflow": wf.classify(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"),
+                        "workflow": wf.classify(subject, body,
                                                 side),
                         "conversation": autopilot_records._v(r, "conversation_id") or None,
                         "to": sorted(set(to)), "records": sorted(links.get(oid, ())),
@@ -242,14 +244,16 @@ def mail_received(st: Any, people: Any, who: set[str], since: str, until: str
     for start in range(0, len(ids), CHUNK):
         typed = autopilot_records._types(st, ids[start:start + CHUNK])
         mine = sorted(o for o, (_t, aud) in typed.items() if aud in boxes)
-        rows = autopilot_records._read(st, mine, ("sender", "subject", "body_preview", "conversation_id",
+        rows = autopilot_records._read(st, mine, ("sender", "subject", "body_text", "body_preview", "conversation_id",
                                    "received_at", "sent_at", "mailbox", "internet_message_id"))
+        bodies = autopilot_records.body_texts(
+            st, [h for r in rows.values() for h in autopilot_events._handles_of(r)[:1]])
         for oid, r in rows.items():
             box = autopilot_records._v(r, "mailbox").lower()
             sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]
             if box not in who or not sender or sender in addresses_of.get(box, set()):
                 continue
-            subject, text = autopilot_records._v(r, "subject"), pt._own(autopilot_records._v(r, "body_preview"))
+            subject, text = autopilot_records._v(r, "subject"), pt._own(autopilot_records.message_body(r, bodies))
             if machine(sender, text, subject):
                 continue
             out.append({"event_type": "message.received", "mailbox": box, "sender": sender,

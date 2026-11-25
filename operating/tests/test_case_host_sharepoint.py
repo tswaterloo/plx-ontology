@@ -1788,7 +1788,13 @@ class OverBoundTests(SharePointHostCase):
         return drive
 
     def setUp(self):
-        bound = mock.patch.object(document_understanding, "MAX_BYTES", 20)
+        real_extract = document_understanding.extract_document
+
+        def bounded(*args, **kwargs):
+            kwargs.setdefault("max_text", 20)
+            return real_extract(*args, **kwargs)
+
+        bound = mock.patch.object(document_understanding, "extract_document", side_effect=bounded)
         bound.start()
         self.addCleanup(bound.stop)
         super().setUp()
@@ -2504,10 +2510,18 @@ class PageCapTests(SharePointHostCase):
         return drive
 
     def setUp(self):
+        real_extract = document_understanding.extract_document
+
+        def capped(*args, **kwargs):
+            kwargs.setdefault("max_pages", document_understanding.MAX_PAGES)
+            return real_extract(*args, **kwargs)
+
         for patch in (mock.patch("integrations.doc_convert.installed_backend",
                                  return_value=None),
                       mock.patch.object(document_understanding, "local_ocr_available",
-                                        return_value=False)):
+                                        return_value=False),
+                      mock.patch.object(document_understanding, "extract_document",
+                                        side_effect=capped)):
             patch.start()
             self.addCleanup(patch.stop)
         super().setUp()

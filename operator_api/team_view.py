@@ -48,6 +48,7 @@ from operating import briefs as br
 from . import models as m
 from .auth import Reader
 from .errors import UserFacing
+from .page_core import clean_person, clean_subject, clean_text
 
 READERS_ENV = "PLX_TEAM_VIEW_READERS"
 HIDDEN_ENV = "PLX_TEAM_HIDDEN_PEOPLE"
@@ -208,7 +209,14 @@ LIST_WEEKS = 2   # tracker weeks per person in the Team list (the drill-down has
 def _clean_csv(value: Optional[str]) -> Optional[str]:
     if not value:
         return value
-    parts = [p.strip() for p in str(value).split(",") if p.strip()]
+    parts: list[str] = []
+    seen: set[str] = set()
+    for raw in str(value).split(","):
+        cleaned = clean_text(raw)
+        if not cleaned or cleaned.lower() in seen:
+            continue
+        seen.add(cleaned.lower())
+        parts.append(cleaned)
     return ", ".join(parts) if parts else None
 
 
@@ -218,10 +226,13 @@ def person_row(oid: str, row: Mapping[str, Any], *, until: date, team: Optional[
     days = row.get("days") or {}
     trend = [sum(int(v) for v in (days.get((until - timedelta(days=i)).isoformat()) or {}
                                   ).values()) for i in range(27, -1, -1)]
-    roles = [_clean_csv(ta.ROLE_LABELS[r]) or ta.ROLE_LABELS[r]
-             for r in row.get("roles") or () if r in ta.ROLE_LABELS]
+    roles = list(dict.fromkeys(
+        _clean_csv(ta.ROLE_LABELS[r]) or ta.ROLE_LABELS[r]
+        for r in row.get("roles") or () if r in ta.ROLE_LABELS
+    ))
     reply, n = row.get("reply") or {}, row.get("reply_n") or {}
-    return {"key": key_of(oid), "name": str(row.get("name")), "self": is_self, "shared": shared,
+    name = clean_text(row.get("name")) or str(row.get("name") or "")
+    return {"key": key_of(oid), "name": name, "self": is_self, "shared": shared,
             "team": _clean_csv(team or row.get("department")),   # a derived role is a role, never a team
             "roles": roles,
             "d7": _sum(days, until - timedelta(days=6), until),
@@ -512,6 +523,14 @@ class TeamViewMixin:
                                         today=date.today()):
                     if x["waiting_on"] in mine:
                         x["waiting_on"] = person["name"]
+                    else:
+                        x["waiting_on"] = clean_person(x.get("waiting_on")) or person["name"]
+                    if x.get("summary"):
+                        x["summary"] = clean_text(x["summary"], strip_email_noise=True)
+                    if x.get("counterpart"):
+                        x["counterpart"] = clean_person(x["counterpart"])
+                    if x.get("subject"):
+                        x["subject"] = clean_subject(x["subject"], fallback="") or None
                     items.append({**x, "bucket": bucket})
         counted = sum(counts.get(oid, {}).get(b, 0) for b in it.BUCKETS)
         items.sort(key=lambda r: (-(r["age_days"] if r["age_days"] is not None else -1),

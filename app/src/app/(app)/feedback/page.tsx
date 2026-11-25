@@ -60,8 +60,8 @@ function Row({ e, on, onPick, admin, children }: { e: FeedbackEntry; on: boolean
         }}
         onFocus={onPick}
         className={cn(
-          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 rounded-[3px] px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-          on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)]" : "hover:bg-hover",
+          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 rounded-md px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          on ? "bg-row-on" : "hover:bg-hover",
         )}
         data-testid="feedback-row"
       >
@@ -183,7 +183,7 @@ function Detail({ e, admin, onStatus }: { e: FeedbackEntry; admin: boolean; onSt
   );
 }
 
-const SELECT = "h-7 rounded-md bg-surface-2 px-2 text-[12px] text-fg focus:outline-2 focus:outline-ring cursor-pointer";
+const SELECT = "h-7 rounded-md border border-border bg-bg px-2 text-[12px] text-fg focus:outline-2 focus:outline-ring dark:bg-surface cursor-pointer";
 
 /** Feedback: yours, or every reader's for the owner and the admins, to triage. */
 export default function FeedbackPage() {

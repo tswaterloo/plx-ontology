@@ -77,6 +77,11 @@ class PlainLanguageTests(unittest.TestCase):
         self.assertEqual(manual["trigger_kind"], "manual")
         self.assertEqual(manual["trigger"], {})
 
+        monthly = aw.parse_plain_language("monthly on the 15th at 9 AM send AR summary")
+        self.assertEqual(monthly["trigger_kind"], "schedule")
+        self.assertEqual(monthly["trigger"], {"cadence": "monthly", "day": 15, "hour": 9, "minute": 0})
+        self.assertEqual(monthly["instruction"], "Send AR summary")
+
     def test_mc_approval_trigger_and_template_are_absent(self):
         self.assertNotIn("approval_arrived", aw.EVENT_KINDS)
         for tpl in aw.TEMPLATES:
@@ -547,6 +552,122 @@ class WorkflowPgCase(unittest.TestCase):
         aw.stop_workflow(self.pg, wf_snapshot)
         self.assertIsNone(aw._fire_once(self.pg, wf_snapshot, "k:after-stop", "note", "do work"))
         self.assertEqual([r["what"] for r in aw.rows_of(self.pg, wid)], ["created", "stopped"])
+
+    def test_schedule_persistence_restart_survival_and_no_double_fire(self):
+        # Create daily, weekly, and monthly workflows and verify persistence across fresh connections
+        w_daily = aw.create(
+            self.pg, ANN, name="Daily brief", instruction="prepare daily brief",
+            trigger_kind="schedule", trigger={"cadence": "daily", "hour": 8, "minute": 0},
+        )
+        w_monthly = aw.create(
+            self.pg, ANN, name="Monthly close", instruction="prepare monthly summary",
+            trigger_kind="schedule", trigger={"cadence": "monthly", "day": 15, "hour": 9, "minute": 0},
+        )
+        # Simulate service restart: open a brand new Postgres connection and read state
+        with psycopg.connect(self.dsn, autocommit=True) as pg_restart1:
+            wf_daily = aw.fold(aw.rows_of(pg_restart1, w_daily))
+            wf_monthly = aw.fold(aw.rows_of(pg_restart1, w_monthly))
+            nxt_daily = aw.next_due("schedule", wf_daily["trigger"], wf_daily["created_at"])
+            nxt_monthly = aw.next_due("schedule", wf_monthly["trigger"], wf_monthly["created_at"])
+            assert nxt_daily is not None and nxt_monthly is not None
+            self.assertEqual(nxt_monthly.astimezone(aw.EASTERN).day, 15)
+            self.assertEqual(nxt_monthly.astimezone(aw.EASTERN).hour, 9)
+            # Fire daily workflow on its first due slot
+            c1 = aw.tick(pg_restart1, now=nxt_daily + dt.timedelta(seconds=20))
+            self.assertEqual(c1["fired"], 1)
+            wf_after = aw.fold(aw.rows_of(pg_restart1, w_daily))
+            self.assertEqual(len(wf_after["runs"]), 1)
+            jid1 = wf_after["runs"][0]["job_id"]
+            # Finish the job so it is no longer live
+            aj.append(pg_restart1, jid1, ANN, "started", {})
+            aj.append(pg_restart1, jid1, ANN, "finished", {"summary": "done"})
+
+        # Simulate a second service restart: must NOT double-fire on same slot, MUST fire on next day's slot
+        with psycopg.connect(self.dsn, autocommit=True) as pg_restart2:
+            c_same = aw.tick(pg_restart2, now=nxt_daily + dt.timedelta(minutes=10))
+            self.assertEqual(c_same["fired"], 0)
+            nxt_daily2 = aw.next_due("schedule", wf_daily["trigger"], nxt_daily)
+            assert nxt_daily2 is not None
+            c_next = aw.tick(pg_restart2, now=nxt_daily2 + dt.timedelta(seconds=20))
+            self.assertEqual(c_next["fired"], 1)
+            wf_final = aw.fold(aw.rows_of(pg_restart2, w_daily))
+            self.assertEqual(len(wf_final["runs"]), 2)
+
+    def test_edit_and_delete_workflow_lifecycle(self):
+        wid = aw.create(
+            self.pg, ANN, name="Old name", instruction="old instruction",
+            trigger_kind="schedule", trigger={"cadence": "weekly", "weekday": "monday", "hour": 8, "minute": 0},
+        )
+        wf0 = aw.fold(aw.rows_of(self.pg, wid))
+        # Edit name, instruction, and switch from schedule to event trigger
+        aw.update_workflow(
+            self.pg, wf0,
+            name="Late PO watch",
+            instruction="check late POs and draft supplier chase",
+            trigger_kind="event",
+            trigger={"event": "po_late", "supplier": "Croda"},
+        )
+        wf1 = aw.fold(aw.rows_of(self.pg, wid))
+        self.assertEqual(wf1["name"], "Late PO watch")
+        self.assertEqual(wf1["trigger_kind"], "event")
+        self.assertEqual(wf1["trigger"], {"event": "po_late", "supplier": "Croda"})
+
+        # Trigger an on-demand run so there is a live job, then delete the workflow
+        jid = aw.trigger_run_now(self.pg, wf1)
+        stopped_jobs = aw.delete_workflow(self.pg, wf1)
+        self.assertEqual(stopped_jobs, [jid])
+        self.assertEqual(aj.fold(aj.rows_of(self.pg, jid))["status"], "stopping")
+        # Deleted workflow is hidden from workflows_of by default and never fires on tick
+        self.assertEqual(aw.workflows_of(self.pg, [ANN]), [])
+        self.assertEqual(len(aw.workflows_of(self.pg, [ANN], include_deleted=True)), 1)
+        wf_del = aw.fold(aw.rows_of(self.pg, wid))
+        self.assertTrue(wf_del["deleted"])
+        self.assertEqual(wf_del["status"], "stopped")
+        with self.assertRaises(ValueError):
+            aw.update_workflow(self.pg, wf_del, name="nope")
+
+        # Deleting an already-stopped workflow also removes it from workflows_of
+        w2 = aw.create(self.pg, ANN, name="Stopped first", instruction="do x", trigger_kind="manual", trigger={})
+        aw.stop_workflow(self.pg, aw.fold(aw.rows_of(self.pg, w2)))
+        self.assertEqual(len(aw.workflows_of(self.pg, [ANN])), 1)
+        aw.delete_workflow(self.pg, aw.fold(aw.rows_of(self.pg, w2)))
+        self.assertEqual(aw.workflows_of(self.pg, [ANN]), [])
+
+    def test_mail_from_enforces_door_v2_columns_fail_closed(self):
+        self.pg.execute("INSERT INTO biz.mailbox_owners VALUES (%s, ARRAY['ann@co.example'])", (ANN,))
+        self.pg.execute("INSERT INTO ontology.people_excluded_objects VALUES ('obj-em-peo')")
+        self.pg.execute(
+            "ALTER TABLE biz.emails "
+            "ADD COLUMN ai_ok boolean DEFAULT true, "
+            "ADD COLUMN excluded boolean DEFAULT false, "
+            "ADD COLUMN rec_marks text[] DEFAULT ARRAY['[]']::text[], "
+            "ADD COLUMN object_ids text[] DEFAULT ARRAY['obj-ok']::text[]"
+        )
+        wid = aw.create(
+            self.pg, ANN, name="Croda mail", instruction="draft reply",
+            trigger_kind="event", trigger={"event": "mail_from", "sender": "croda.com"},
+        )
+        now = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=5)
+        self.pg.execute(
+            "INSERT INTO biz.emails "
+            "(handle, mailbox, sender, subject, received_at, is_bulk, ai_ok, excluded, rec_marks, object_ids) VALUES "
+            "('em://ok', 'ann@co.example', 'rep@croda.com', 'OK', %s, false, true, false, ARRAY['[]'], ARRAY['obj-em-ok']), "
+            "('em://no-ai', 'ann@co.example', 'rep@croda.com', 'No AI', %s, false, false, false, ARRAY['[]'], ARRAY['obj-em-noai']), "
+            "('em://excl', 'ann@co.example', 'rep@croda.com', 'Excluded', %s, false, true, true, ARRAY['[]'], ARRAY['obj-em-excl']), "
+            "('em://marked', 'ann@co.example', 'rep@croda.com', 'HR', %s, false, true, false, ARRAY['[\"hr\"]'], ARRAY['obj-em-mrk']), "
+            "('em://peo', 'ann@co.example', 'rep@croda.com', 'PEO', %s, false, true, false, ARRAY['[]'], ARRAY['obj-em-peo'])",
+            (now, now, now, now, now),
+        )
+        c1 = aw.tick(self.pg, now=now + dt.timedelta(seconds=5))
+        self.assertEqual(c1["fired"], 1)
+        wf = aw.fold(aw.rows_of(self.pg, wid))
+        j = aj.fold(aj.rows_of(self.pg, wf["runs"][0]["job_id"]))
+        self.assertIn("em://ok", j["text"])
+        # Finish job and tick again: none of the excluded/marked/ai_ok=false emails may ever fire
+        aj.append(self.pg, wf["runs"][0]["job_id"], ANN, "started", {})
+        aj.append(self.pg, wf["runs"][0]["job_id"], ANN, "finished", {"summary": "done"})
+        c2 = aw.tick(self.pg, now=now + dt.timedelta(seconds=10))
+        self.assertEqual(c2["fired"], 0)
 
 
 if __name__ == "__main__":

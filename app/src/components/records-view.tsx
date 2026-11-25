@@ -4,9 +4,10 @@
 // batches, every list). One component; each route passes its place (a place with no tab strip of
 // its own opens on its list), and with no place it keeps every kind as tabs.
 
+import { ArrowUpRight, ChevronDown, Loader2, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Toolbar } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { LoadProblem } from "@/components/ui/notice";
@@ -23,14 +24,14 @@ import type { RecordViews, SuggestResponse } from "@/lib/types";
 
 /** Every record ("All", the first tab), then the four kinds people look for and the record types each one holds. */
 const RECORD_KINDS = [
-  { key: "all", label: "All", types: [], hint: "a name or number" },
-  { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number", list: "customers" },
-  { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number", list: "purchase_orders", sort: { key: "days_late", direction: "desc" } },
-  { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number", list: "suppliers" },
-  { key: "documents", label: "Documents", types: ["SalesInvoice", "SupplierInvoice", "Shipment", "Receipt", "SalesCreditMemo", "PurchaseInvoice"], hint: "an invoice, shipment, receipt or credit note number", list: "sales_invoices" },
-  { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot", list: "products" },
-  { key: "production", label: "Production", types: ["Batch"], hint: "a batch code, lot or product", list: "batches" },
-  { key: "lists", label: "Lists", types: [], hint: "a name or any number" },
+  { key: "all", label: "All", types: [], hint: "a name or number", placeholder: "Search customers, POs, invoices, products, batches..." },
+  { key: "customers", label: "Customers", types: ["Customer", "customer", "Chain"], hint: "a customer's name or number", placeholder: "Search customers by name or number...", list: "customers" },
+  { key: "orders", label: "Orders", types: ["PurchaseOrder", "SalesOrder", "purchase_order", "sales_order", "po", "order"], hint: "a PO or customer order number", placeholder: "Search POs or sales orders by number, supplier, or customer...", list: "purchase_orders", sort: { key: "days_late", direction: "desc" } },
+  { key: "suppliers", label: "Suppliers", types: ["Supplier", "Vendor", "supplier"], hint: "a supplier's name or number", placeholder: "Search suppliers by name or code...", list: "suppliers" },
+  { key: "documents", label: "Documents", types: ["SalesInvoice", "SupplierInvoice", "Shipment", "Receipt", "SalesCreditMemo", "PurchaseInvoice"], hint: "an invoice, shipment, receipt or credit note number", placeholder: "Search invoices, shipments, receipts, or credit notes...", list: "sales_invoices" },
+  { key: "products", label: "Products", types: ["Item", "Lot", "item", "lot", "Product", "Batch"], hint: "an item number, name or lot", placeholder: "Search products by item code, name, or lot...", list: "products" },
+  { key: "production", label: "Production", types: ["Batch"], hint: "a batch code, lot or product", placeholder: "Search batches by code, lot, or product...", list: "batches" },
+  { key: "lists", label: "Lists", types: [], hint: "a name or any number", placeholder: "Search customers, POs, invoices, products, batches..." },
 ] as const;
 /** What a tab's saved records are called ("Your saved records", not "Your saved all"). */
 const SAVED_NOUN: Record<string, string> = { all: "records", production: "batches", lists: "records" };
@@ -61,13 +62,21 @@ function AllLists({ view, onView }: { view: string; onView: (v: string) => void 
       <StoredAge at={at} />
       <label className="flex flex-col gap-1 text-[12px] text-muted">
         List
-        <select aria-label="List" value={current.view} onChange={(e) => onView(e.target.value)} className="h-8 w-64 max-w-full cursor-pointer rounded-md border border-border bg-bg px-2 text-[13px] text-fg">
-          {views.map((v) => (
-            <option key={v.view} value={v.view}>
-              {v.title}
-            </option>
-          ))}
-        </select>
+        <span className="relative inline-block w-64 max-w-full">
+          <select
+            aria-label="List"
+            value={current.view}
+            onChange={(e) => onView(e.target.value)}
+            className="h-8 w-full appearance-none cursor-pointer rounded-md border border-border bg-bg pl-2.5 pr-8 text-[13px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-ring/60 dark:bg-surface"
+          >
+            {views.map((v) => (
+              <option key={v.view} value={v.view} className="bg-bg text-fg">
+                {v.title}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3.5 -translate-y-1/2 text-muted" aria-hidden />
+        </span>
       </label>
       <div className="mt-4">
         <RecordList key={current.view} view={current.view} />
@@ -94,6 +103,7 @@ function Records({ place }: { place?: Place }) {
   const salesOrders = place === "orders" && params.get("list") === "sales_orders";
   const listView = salesOrders ? "sales_orders" : "list" in kind ? kind.list : "";
   const [q, setQ] = useState(params.get("q") ?? "");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [found, setFound] = useState<SuggestResponse | null>(null);
   const [problem, setProblem] = useState<unknown>(null);
   const [round, setRound] = useState(0);
@@ -165,7 +175,7 @@ function Records({ place }: { place?: Place }) {
               role="tab"
               aria-selected={k.key === kind.key}
               onClick={() => go(k.key)}
-              className={cn("-mb-px shrink-0 border-b-2 text-[13px] cursor-pointer", k.key === kind.key ? "border-accent font-medium text-fg" : "border-transparent text-muted hover:text-fg")}
+              className={cn("-mb-px shrink-0 border-b-2 text-[13px] transition-colors cursor-pointer focus-visible:outline-none focus-visible:text-fg", k.key === kind.key ? "border-accent font-medium text-fg" : "border-transparent text-muted hover:text-fg")}
             >
               {k.label}
             </button>
@@ -174,24 +184,50 @@ function Records({ place }: { place?: Place }) {
         <label className="mt-4 block text-[12px] text-muted" htmlFor="records-q">
           Find {kind.hint}
         </label>
-        <input
-          id="records-q"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter opens the best match ("106093" opens that PO)
-            const top = !waiting && rows[0] && safeHref(rows[0].open_url);
-            if (e.key === "Enter" && top) {
-              e.preventDefault();
-              router.push(top);
-            }
-          }}
-          autoComplete="off"
-          spellCheck={false}
-          maxLength={100}
-          className="mt-1 h-9 w-full rounded-md border border-border bg-bg px-3 text-[14px] outline-none focus-visible:border-accent"
-          data-testid="records-search"
-        />
+        <div className="relative mt-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+          <input
+            ref={searchRef}
+            id="records-q"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter opens the best match ("106093" opens that PO)
+              const top = !waiting && rows[0] && safeHref(rows[0].open_url);
+              if (e.key === "Enter" && top) {
+                e.preventDefault();
+                router.push(top);
+              } else if (e.key === "Escape" && q) {
+                e.preventDefault();
+                setQ("");
+              }
+            }}
+            placeholder={kind.placeholder}
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={100}
+            className="h-9 w-full rounded-md border border-border bg-bg pl-8.5 pr-9 text-[13.5px] text-fg outline-none transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-ring/40 placeholder:text-faint dark:bg-surface"
+            data-testid="records-search"
+          />
+          {waiting && (
+            <Loader2 className={cn("pointer-events-none absolute top-1/2 size-3.5 -translate-y-1/2 animate-spin text-muted", q ? "right-8" : "right-2.5")} aria-hidden />
+          )}
+          {q && (
+            <button
+              type="button"
+              onClick={() => {
+                setQ("");
+                searchRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              title="Clear search"
+              data-testid="records-search-clear"
+              className="absolute right-1.5 top-1/2 inline-flex size-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
+          )}
+        </div>
         <div className="mt-4" role="tabpanel" aria-label={kind.label}>
           {problem ? (
             <LoadProblem message={plainError(problem)} onRetry={() => setRound((n) => n + 1)} />
@@ -202,20 +238,32 @@ function Records({ place }: { place?: Place }) {
               <ul className={cn("divide-y divide-border border-y border-border", waiting && "opacity-60")} aria-busy={waiting} data-testid="records-found">
                 {rows.map((r) => (
                   <li key={`${r.type}/${r.object_id}`}>
-                    <Link href={safeHref(r.open_url) ?? "/records"} className="flex items-baseline gap-3 py-2 text-[13px] hover:bg-hover">
+                    <Link href={safeHref(r.open_url) ?? "/records"} className="flex items-baseline gap-3 rounded px-1.5 py-2 text-[13px] transition-colors hover:bg-hover">
                       <span className="w-32 shrink-0 text-[12px] text-muted">{typeLabel(r.type)}</span>
-                      <span className="min-w-0 flex-1 truncate font-medium">{recordLabel(r.type, r.label)}</span>
-                      {r.sublabel && <span className="min-w-0 max-w-[40%] truncate text-[12px] text-muted">{r.sublabel}</span>}
+                      <span className="min-w-0 flex-1 truncate font-medium" title={recordLabel(r.type, r.label)}>{recordLabel(r.type, r.label)}</span>
+                      {r.sublabel && <span className="min-w-0 max-w-[40%] truncate text-[12px] text-muted" title={r.sublabel}>{r.sublabel}</span>}
                     </Link>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-[13px] text-muted" data-testid="records-none">
-                {kind.key === "all" ? <>No match for &ldquo;{query}&rdquo;.</> : <>No {kind.label.toLowerCase()} match &ldquo;{query}&rdquo;.</>}
-                {" "}Try a different spelling, or a number.
-                {elsewhere > 0 && ` ${elsewhere} other ${elsewhere === 1 ? "record matches" : "records match"} under another tab.`}
-              </p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <p className="text-[13px] text-muted" data-testid="records-none">
+                  {kind.key === "all" ? <>No match for &ldquo;{query}&rdquo;.</> : <>No {kind.label.toLowerCase()} match &ldquo;{query}&rdquo;.</>}
+                  {" "}Try a different spelling, or a number.
+                  {elsewhere > 0 && ` ${elsewhere} other ${elsewhere === 1 ? "record matches" : "records match"} under another tab.`}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQ("");
+                    searchRef.current?.focus();
+                  }}
+                  className="cursor-pointer rounded border border-border bg-bg px-2 py-0.5 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover"
+                >
+                  Clear search
+                </button>
+              </div>
             )
           ) : (
             <>
@@ -230,9 +278,12 @@ function Records({ place }: { place?: Place }) {
                       key={card.key}
                       type="button"
                       onClick={() => go(card.key)}
-                      className="flex flex-col items-start rounded-md border border-border bg-bg p-3 text-left transition-colors hover:border-border-strong hover:bg-hover cursor-pointer"
+                      className="group flex flex-col items-start rounded-md border border-border bg-bg p-3 text-left transition-[background-color,border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 cursor-pointer"
                     >
-                      <span className="text-[13.5px] font-medium text-fg">{card.label}</span>
+                      <span className="flex w-full items-center justify-between gap-2 text-[13.5px] font-medium text-fg">
+                        <span>{card.label}</span>
+                        <ArrowUpRight className="size-3.5 shrink-0 text-faint transition-colors group-hover:text-fg" aria-hidden />
+                      </span>
                       <span className="mt-0.5 text-[12px] leading-4 text-muted">{card.description}</span>
                     </button>
                   ))}
@@ -247,15 +298,15 @@ function Records({ place }: { place?: Place }) {
                 <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="records-recent-list">
                   {recentShown.map((r) => (
                     <li key={r.href}>
-                      <Link href={r.href} className="flex items-baseline justify-between gap-4 py-2 text-[13px] hover:bg-hover">
-                        <span className="truncate">{r.label}</span>
+                      <Link href={r.href} className="flex items-baseline justify-between gap-4 rounded px-1.5 py-2 text-[13px] transition-colors hover:bg-hover">
+                        <span className="truncate" title={r.label}>{r.label}</span>
                         <span className="shrink-0 text-[12px] text-muted">{formatDateTime(r.at)}</span>
                       </Link>
                     </li>
                   ))}
                 </ul>
                 {recent.length > recentShown.length && (
-                  <button type="button" className="mt-2 text-[12px] text-muted underline hover:text-fg" onClick={() => setAllRecent(true)}>
+                  <button type="button" className="mt-2 cursor-pointer text-[12px] text-muted underline hover:text-fg" onClick={() => setAllRecent(true)}>
                     Show all {recent.length}
                   </button>
                 )}
@@ -269,7 +320,7 @@ function Records({ place }: { place?: Place }) {
                 <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="records-saved-list">
                   {mine.map((s) => (
                     <li key={s.key}>
-                      <Link href={s.href} className="block truncate py-2 text-[13px] hover:bg-hover">
+                      <Link href={s.href} className="block truncate rounded px-1.5 py-2 text-[13px] transition-colors hover:bg-hover" title={s.label}>
                         {s.label}
                       </Link>
                     </li>

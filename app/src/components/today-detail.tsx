@@ -400,7 +400,7 @@ export function TodayDetail({
 
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col bg-bg", className)} data-testid="today-detail">
-      <div className="hidden h-[52px] shrink-0 items-center gap-1 border-b border-border px-5 lg:flex">
+      <div className="flex min-h-[48px] shrink-0 flex-wrap items-center gap-1 border-b border-border px-4 py-2 sm:px-5">
         <span className="min-w-0 truncate text-[13px] text-muted">
           {typeName} <span className="px-0.5 text-faint">›</span> <span className="font-medium text-fg">{row.title}</span>
         </span>
@@ -409,19 +409,19 @@ export function TodayDetail({
             type="button"
             aria-pressed={isSaved}
             onClick={() => toggleSaved({ key: saveKey, kind: "object", label: row.title, href: objectHref(row.type, row.objectId) })}
-            className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] hover:bg-hover cursor-pointer", isSaved ? "text-fg" : "text-muted hover:text-fg")}
+            className={cn("inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] cursor-pointer", isSaved ? "text-fg" : "text-muted hover:text-fg")}
             title={isSaved ? "Saved" : "Save"}
           >
             <Bookmark className={cn("size-[15px]", isSaved && "fill-current")} strokeWidth={2} aria-hidden />
             {isSaved ? "Saved" : "Save"}
           </button>
-          <Link href={ask} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted hover:bg-hover hover:text-fg">
+          <Link href={ask} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98]">
             <MessageCircle className="size-[15px]" strokeWidth={2} aria-hidden />
             Ask
           </Link>
           <Link
             href={row.href}
-            className="ml-1.5 inline-flex h-8 items-center gap-1 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]"
+            className="ml-1.5 inline-flex h-8 items-center gap-1 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg transition-colors hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98]"
             data-testid="open-record"
           >
             Open {isPo ? "PO" : typeName.toLowerCase()}

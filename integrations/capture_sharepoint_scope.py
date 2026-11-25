@@ -20,11 +20,11 @@ SCOPE_SCHEMA = "plx-sharepoint-capture-scope/v1"
 
 FULL_WALK_HOURS = 24
 PERMISSION_REREAD_HOURS = 24   # the default bound on a root's skipped permission re-reads
-MAX_CONTENT_BYTES = 20_000_000   # a scope's default content cap: the document extractor's bound
+MAX_CONTENT_BYTES: int | None = None   # no default size cap (bounded by operating.disk_guard)
 
 
-# The largest content cap a scope may declare: the guard's one-download bound.
-MAX_DECLARED_CONTENT_BYTES = MAX_DOWNLOAD_BYTES
+# Kept for callers referencing the symbol; scopes are no longer capped at 100 MB.
+MAX_DECLARED_CONTENT_BYTES: int | None = None
 
 
 _TARGET_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
@@ -183,8 +183,9 @@ class CaptureScope:
         self.targets = tuple(CaptureTarget(t) for t in targets)
         if len({t.id for t in self.targets}) != len(self.targets):
             raise CaptureError("scope_target_duplicate")
-        if isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int) \
-                or not 1 <= max_content_bytes <= MAX_DECLARED_CONTENT_BYTES:
+        if max_content_bytes is not None and (
+                isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int)
+                or max_content_bytes < 1):
             raise CaptureError("scope_max_content_bytes_invalid")
         self.max_content_bytes = max_content_bytes
         self.full_walk_hours = CaptureTarget._bound(full_walk_hours, 1, 720)

@@ -30,8 +30,9 @@ import os
 import threading
 from typing import Any, Iterable, Mapping
 
-MODULES = ("business_views", "business_views_supply", "business_views_ar", "business_views_access",
-           "business_comms", "business_staff")
+MODULES = ("business_views", "business_views_supply", "business_views_ar",
+           "business_views_shipments", "business_views_chain", "business_views_chain_extra",
+           "business_views_access", "business_comms", "business_staff")
 ENGINE_ROOTS = ("Reader", "Row", "Cell", "Col", "View", "columns", "build_view",
                 "_resolved_rows", "_ddl")
 
@@ -45,6 +46,7 @@ _ORDERS = ("operating.po_status", "operating.order_value", "operating.sales_orde
 EXTERNAL: dict[str, tuple[str, ...]] = {
     "sales_orders": _ORDERS,
     "sales_order_lines": _ORDERS,
+    "shipments": ("operating.sales_order_status",),
     "purchase_orders": ("operating.po_status",),
     "purchase_order_lines": ("operating.po_status",),
     "emails": _COMMS + ("operating.pg.mail_said", "operating.pg.mail_owners"),

@@ -209,6 +209,18 @@ Changed:
 - Fable Speed §10.9 desktop push route (/api/events SSE, doors.access_mark, view_as safe)
 - Ask cover-pass revision hygiene (meta_framing retry) + general data-gap/attachment/attribution rules
 
+## Update 2026-11-25
+Changed:
+- Widen biz.alerts access_class and needs to integer to fix smallint overflow
+- UI Overhaul Part 2: Ask, Insights, Meetings, PO, Team & Admin redesign
+- UI Overhaul Part 1: layered design system, clean shell, split-pane Home & full-width 2-pane Assist
+- Treat Revised POs as issued and enable fail-closed keep_policy on console host reads
+- Expand Ctrl-K search to invoices, shipments, receipts, credit notes, supplier invoices & lots with exact-match ranking
+- Make 0086_alerts_int_classes and alerts._ddl idempotent when biz_page.alerts exists
+- Serve Home needs read as first-class fast page on top of redesigned UI
+- Fast door-guarded meeting briefs from mail, Teams, and open records when no transcripts exist (P2-C2D)
+- Expose product category on sales invoice measures and classify payables via Sage AP distribution sets (P2-A4)
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

@@ -25,7 +25,7 @@ export function AutopilotView({ area: initial }: { area: Area; onReload?: () => 
   }, [params, router, linked]);
   const admin = area.owner || area.drafts_switched_on != null;
   return (
-    <div className="space-y-6" data-testid="autopilot">
+    <div className="max-w-4xl space-y-6" data-testid="autopilot">
       {area.switches.global_off && <ErrorNotice tone="notice" message="Every autopilot write is switched off. A confirm is recorded and nothing is sent." />}
       {area.switches.autopilot_off && <ErrorNotice tone="notice" message="The autopilot is switched off on this server: nothing new is prepared." />}
       <DraftsPanel area={area} onArea={setArea} />

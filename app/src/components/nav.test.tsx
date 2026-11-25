@@ -71,6 +71,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(to.get("/late")).toBe("/?show=late");
     expect(to.get("/my-work")).toBe("/");
     expect(to.get("/briefing")).toBe("/?show=alerts#alerts");
+    expect(to.get("/trust")).toBe("/data-health");
+    expect(to.get("/qc")).toBe("/records?kind=production");
+    expect(to.get("/rd-projects")).toBe("/records?kind=products");
     // every tab a redirect lands on is one Home draws
     const home = NAV_SECTIONS.find((s) => s.key === "home")!.children.map((c) => c.href);
     for (const d of to.values()) if (d.startsWith("/?show=")) expect(home).toContain(d.split("#")[0]);
@@ -99,8 +102,11 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     const home = NAV_SECTIONS.find((s) => s.key === "home")!.children;
     const admin = NAV_SECTIONS.find((s) => s.key === "admin")!.children;
     // Data health is Admin's own page: Admin stays marked and its tabs stay on screen
+    expect(sectionOf("/ops", NAV_SECTIONS)?.key).toBe("admin");
+    expect(currentChild(admin, "/ops", "", "")).toBe("/ops");
     expect(sectionOf("/data-health", NAV_SECTIONS)?.key).toBe("admin");
     expect(currentChild(admin, "/data-health", "", "")).toBe("/data-health");
+    expect(admin.find((c) => c.label === "Data health")?.href).toBe("/data-health");
     expect(currentChild(home, "/", "", "")).toBe("/");
     expect(currentChild(home, "/", "", "supplier=Acme")).toBe("/"); // Home's own supplier filter
     expect(currentChild(home, "/", "", "show=alerts&for=purchasing")).toBe("/?show=alerts");
@@ -142,7 +148,7 @@ describe("the sidebar drawn on every page is identical", () => {
     ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
     ["/assist", "", "/assist"], ["/assist?show=switches", "", "/assist"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
     ["/records", "", "/records"], ["/orders", "", "/records"], ["/customers", "", "/records"], ["/products", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],
-    ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"],
+    ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"], ["/data-health", "", "/ops"],
     ["/feedback", "", "/ops"], ["/help", "", ""],
   ];
 

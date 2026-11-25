@@ -200,14 +200,22 @@ class Kept:
         return got
 
     def last_good(self, key: tuple, most: float = LAST_GOOD_SECONDS) -> Any:
-        """``key``'s last answer read for this reader in this process, of ``most`` seconds
-        or younger, whatever door stamp it was read under (None: none). Served only for a
-        read that could not finish (``UNFINISHED``), never as a kept answer."""
+        """``key``'s last answer read for this reader (in memory, else on disk), of ``most``
+        seconds or younger, whatever door stamp it was read under (None: none). Served only
+        for a read that could not finish (``UNFINISHED``), never as a kept answer."""
         with self._lock:
             hit = self._kept.get(key)
-        if hit is None or self.clock() - hit[2] > most:
+        if hit is not None:
+            return hit[0] if self.clock() - hit[2] <= most else None
+        if self.disk is None or self._disk_key(key, 0) is None:
             return None
-        return hit[0]
+        try:
+            got = self.disk.get(("insight_last", key[0], key[1]), **self._disk_kw)
+        except Exception:  # noqa: BLE001 - a miss
+            return None
+        if not got or self.wall() - float(got[2]) > most:
+            return None
+        return got[1]
 
     def servable(self, key: tuple, prior: Optional[Callable[[Any], bool]] = None,
                  stamp: Optional[Callable[[], Optional[int]]] = None) -> bool:

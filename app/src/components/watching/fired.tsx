@@ -52,16 +52,23 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
 }
 
 function ItemRow({ it }: { it: BriefingItem }) {
-  const href = safeHref(it.open_url) ?? objectHref(it.object_type, it.object_id);
+  const href = safeHref(it.open_url) ?? (it.object_type && it.object_id ? objectHref(it.object_type, it.object_id) : null);
   const line = shortSummary(it.summary);
   // nothing to say beside the title (a reply waiting says its subject and days): the title takes the line
   const bare = !line && !it.counterpart;
+  const label = recordLabel(it.object_type, it.subject_label);
   return (
     <li className="grid grid-cols-[10px_minmax(0,11rem)_minmax(0,1fr)_auto] items-baseline gap-x-3 py-1.5 text-[13px] max-sm:grid-cols-[10px_minmax(0,1fr)_auto]">
       <span aria-hidden className={cn("size-1.5 translate-y-[-1px] rounded-full", it.new_since_visit ? "bg-accent" : "")} />
-      <Link href={href} className={cn("truncate font-medium hover:underline max-sm:col-start-2", bare && "col-span-2 max-sm:col-span-1")}>
-        {recordLabel(it.object_type, it.subject_label)}
-      </Link>
+      {href ? (
+        <Link href={href} className={cn("truncate font-medium text-accent underline-offset-2 hover:underline max-sm:col-start-2", bare && "col-span-2 max-sm:col-span-1")}>
+          {label}
+        </Link>
+      ) : (
+        <span className={cn("truncate font-medium max-sm:col-start-2", bare && "col-span-2 max-sm:col-span-1")}>
+          {label}
+        </span>
+      )}
       {!bare && <span className="line-clamp-2 text-muted max-sm:col-span-2 max-sm:col-start-2 max-sm:row-start-2" title={readable(it.summary)}>
         {it.counterpart ? <span className="text-fg">{it.counterpart} · </span> : null}
         {line}

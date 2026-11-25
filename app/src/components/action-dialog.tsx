@@ -340,10 +340,10 @@ export default function ActionDialog({
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
           <span className="mr-auto min-w-0 text-[12px] leading-4 text-muted">{blocked && preview ? blocked : preview?.outbound ? "Sent as you, from your mailbox." : ""}</span>
           <div className="flex gap-1.5">
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
               Cancel
             </Button>
-            <Button size="sm" className="min-w-20" onClick={go} disabled={!!blocked} data-testid="action-confirm">
+            <Button size="sm" className="min-w-20" onClick={go} disabled={!!blocked} loading={busy} data-testid="action-confirm">
               {preview ? confirmLabel(preview) : "Confirm"}
             </Button>
           </div>

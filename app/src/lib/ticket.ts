@@ -8,7 +8,7 @@
 let captured: string | null = null;
 
 
-/** Strip any #ticket= from the current URL; remember its value for sign-in. */
+/** Strip any #ticket= or ?ticket= from the current URL; remember its value for sign-in. */
 export function captureTicket(): void {
   if (typeof window === "undefined") return;
   const w = window as unknown as { __plxTicket?: string };
@@ -17,14 +17,29 @@ export function captureTicket(): void {
     delete w.__plxTicket;
   }
   const hash = window.location.hash;
-  if (!/(?:^#|&)ticket=/.test(hash)) return;
-  const m = hash.match(/(?:^#|&)ticket=([^&]*)/);
-  try {
-    captured = m && m[1] ? decodeURIComponent(m[1]) : null;
-  } catch {
-    captured = null;
+  if (/(?:^#|&)ticket=/.test(hash)) {
+    const m = hash.match(/(?:^#|&)ticket=([^&]*)/);
+    try {
+      captured = m && m[1] ? decodeURIComponent(m[1]) : null;
+    } catch {
+      captured = null;
+    }
+    window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    return;
   }
-  window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+  const search = window.location.search;
+  if (/(?:^\?|&)ticket=/.test(search)) {
+    const params = new URLSearchParams(search);
+    const val = params.get("ticket");
+    captured = val || null;
+    params.delete("ticket");
+    const nextSearch = params.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      window.location.pathname + (nextSearch ? `?${nextSearch}` : "") + window.location.hash,
+    );
+  }
 }
 
 /** The captured ticket, once; later calls return null. */
@@ -39,5 +54,9 @@ export function takeTicket(): string | null {
 export function ticketComing(): boolean {
   if (captured) return true;
   if (typeof window === "undefined") return false;
-  return typeof (window as unknown as { __plxTicket?: string }).__plxTicket === "string" || /(?:^#|&)ticket=/.test(window.location.hash);
+  return (
+    typeof (window as unknown as { __plxTicket?: string }).__plxTicket === "string" ||
+    /(?:^#|&)ticket=/.test(window.location.hash) ||
+    /(?:^\?|&)ticket=/.test(window.location.search)
+  );
 }

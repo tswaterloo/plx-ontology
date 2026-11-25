@@ -616,7 +616,7 @@ class ToolContractsReject(unittest.TestCase):
         workbench_authored = {
             "value",
             "subject", "detail", "note", "message", "hint", "normalized", "link_id", "event_id",
-            "unit", "next_cursor", "sources", "scopes", "queries", "description", "events",
+            "unit", "next_cursor", "cursor", "sources", "scopes", "queries", "description", "events",
             "steps",  # plx.investigate computed entries: the engine's arithmetic, no source text
             "expression",  # plx.investigate plan calculations: the engine's arithmetic over input handles
             "who_can_answer",  # plx.investigate gaps: engine answerers, schema binding owners
@@ -627,6 +627,8 @@ class ToolContractsReject(unittest.TestCase):
             # 60 characters) handed back unmatched or ambiguous, never text read from a source
             "codes_not_found", "codes_ambiguous",
             "says",  # plx.sql measure excluded: the registry's own phrase for a parameter (S2)
+            # plx.sql column meanings (view docs) and scope line (from the caller's own SQL)
+            "meanings", "scope",
             # plx.search widened hits: the Workbench's own words for how a hit matched
             # ('1 of 2 words', 'close in meaning') and why the list was widened
             "match", "widened",

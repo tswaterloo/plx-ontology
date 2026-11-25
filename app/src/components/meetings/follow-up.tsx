@@ -254,10 +254,13 @@ function ActionRow({ a, today }: { a: Action; today: Date }) {
 }
 
 export function MyActionItemsView({ items, person, today = new Date() }: { items: Action[]; person?: string | null; today?: Date }) {
+  const [pickedPerson, setPickedPerson] = useState<string | null>(null);
   const day = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-  const groups = groupActions(items, day);
+  const visibleItems = pickedPerson ? items.filter((a) => (a.owner?.name ?? "No owner") === pickedPerson) : items;
+  const groups = groupActions(visibleItems, day);
   const count = (k: string) => groups.find((g) => g.key === k)?.items.length ?? 0;
   const open = items.filter((a) => a.status !== "done");
+  const openShown = visibleItems.filter((a) => a.status !== "done");
   const byMeeting = new Map<string, { id?: string; n: number }>();
   const byPerson = new Map<string, number>();
   for (const a of open) {
@@ -269,10 +272,22 @@ export function MyActionItemsView({ items, person, today = new Date() }: { items
   return (
     <div className="space-y-4" data-testid="my-action-items">
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-border pb-3">
-        <h2 className="text-[15px] font-semibold">{person ? `Action items for ${person}` : "Action items from your meetings"}</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-[15px] font-semibold">{person ? `Action items for ${person}` : "Action items from your meetings"}</h2>
+          {pickedPerson && (
+            <button
+              type="button"
+              onClick={() => setPickedPerson(null)}
+              className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[12px] text-fg hover:bg-hover cursor-pointer"
+            >
+              <span>{pickedPerson}</span>
+              <span className="text-muted" aria-hidden>×</span>
+            </button>
+          )}
+        </div>
         <dl className="flex gap-7 text-[12px]">
           {[
-            ["Open", open.length, ""],
+            ["Open", openShown.length, ""],
             ["Overdue", count("overdue"), count("overdue") ? "text-late" : ""],
             ["Due this week", count("week"), ""],
             ["Done", count("done"), "text-ok"],
@@ -331,12 +346,25 @@ export function MyActionItemsView({ items, person, today = new Date() }: { items
             <div>
               <h3 className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-muted uppercase">Open by person</h3>
               <ul className="divide-y divide-border">
-                {[...byPerson.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => (
-                  <li key={p} className="flex justify-between gap-3 py-1.5">
-                    <span className="truncate">{p}</span>
-                    <span className="num text-muted">{n}</span>
-                  </li>
-                ))}
+                {[...byPerson.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => {
+                  const active = pickedPerson === p;
+                  return (
+                    <li key={p} className="py-1">
+                      <button
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setPickedPerson((cur) => (cur === p ? null : p))}
+                        className={cn(
+                          "flex w-full justify-between gap-3 rounded-md px-1.5 py-0.5 text-left transition-colors hover:bg-hover cursor-pointer",
+                          active && "bg-surface-2 font-medium text-fg",
+                        )}
+                      >
+                        <span className="truncate">{p}</span>
+                        <span className="num text-muted">{n}</span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           </aside>

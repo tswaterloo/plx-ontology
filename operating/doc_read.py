@@ -134,12 +134,19 @@ def _joined(base: str, target: str) -> str:
 
 # ------------------------------------------------------------------ workbook
 
-def _date_format(code: str) -> bool:
-    """Whether a custom number format code shows a date or time: a d, m, y, h or s part
-    outside quoted text, escapes and [colour/locale] brackets (General and pure numbers
-    never)."""
+def _date_format_kind(code: str) -> Optional[str]:
+    """Whether a custom number format code shows a date ("date"), a time ("time") or
+    neither (None): a d, m, y, h or s part outside quoted text, escapes, [colour/locale]
+    brackets and alignment padding (General and pure numbers never)."""
     plain = re.sub(r'"[^"]*"|\\.|\[[^\]]*\]|_.|\*.', "", code or "")
-    return bool(re.search(r"[dmyhs]", plain, re.I)) and "general" not in plain.lower()
+    if "general" in plain.lower() or not re.search(r"[dmyhs]", plain, re.I):
+        return None
+    return "time" if not re.search(r"[dy]", plain, re.I) else "date"
+
+
+def _date_format(code: str) -> bool:
+    """Whether a custom number format code shows a date or time."""
+    return _date_format_kind(code) is not None
 
 
 def _styles(pkg: _Package) -> list[Optional[str]]:
@@ -161,10 +168,7 @@ def _styles(pkg: _Package) -> list[Optional[str]]:
         except ValueError:
             fid = 0
         if fid in custom:
-            code = custom[fid]
-            out.append(("time" if not re.search(r"[dy]", re.sub(r'"[^"]*"|\[[^\]]*\]', "",
-                                                                   code), re.I)
-                        else "date") if _date_format(code) else None)
+            out.append(_date_format_kind(custom[fid]))
         elif fid in DATE_FORMAT_IDS:
             out.append("time" if fid in TIME_ONLY_IDS else "date")
         else:

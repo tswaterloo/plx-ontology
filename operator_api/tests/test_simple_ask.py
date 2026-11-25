@@ -281,7 +281,9 @@ class SessionTest(unittest.TestCase):
             system = sa.system_prompt()
         for view, entry in sql._dictionary().items():
             line = next(x for x in system.splitlines() if x.startswith(f"- {view}: "))
-            self.assertIn(entry["about"], line)
+            summary = sa._view_summary(entry["about"])
+            self.assertTrue(summary)
+            self.assertIn(summary, line)
             for column in entry["columns"]:
                 if column.endswith("_currency") and column[:-9] in entry["columns"]:
                     continue   # beside its amount, by the rules' one line
@@ -1768,6 +1770,98 @@ class HistoryBudgetTest(unittest.TestCase):
             self.assertEqual(unhandled, [])
         finally:
             threading.excepthook = orig_hook
+
+    def test_follow_ups_for_measures_charts_and_tables_are_contextual_unique_and_clean(self):
+        from operating import measures
+        rev = measures.measures()["revenue"]
+        entry = {"id": "revenue", "name": rev["name"], "kind": "measure",
+                 "definition": rev["definition"], "owner": rev["owner"],
+                 "version": measures.version(rev), "sql": "SELECT month, revenue FROM sales_invoices"}
+        ev = {**sql([["2026-10", "50000"], ["2026-11", "65000"]]),
+              "arguments": {"measure": "revenue", "by": "month"}}
+        ev["result"] = {**ev["result"], "measure": entry, "columns": ["month", "revenue"]}
+        ran = sa.SimpleRun(text="Revenue rose to 65,000 CAD.", agent_text="Revenue rose.",
+                           unverified=[], events=[ev], seconds=1.0, stopped=False, failure=None)
+        payload = sa.answer_payload(ran, "What is revenue by month?", "c1", 500, "a" * 24)
+        self.assertGreaterEqual(len(payload.follow_ups), 2)
+        self.assertLessEqual(len(payload.follow_ups), 3)
+        self.assertEqual(len(payload.follow_ups), len({f.lower() for f in payload.follow_ups}))
+        for f in payload.follow_ups:
+            self.assertNotIn("\u2014", f)
+            self.assertNotEqual(f.lower(), "what is revenue by month?")
+        # No follow-ups when clarifying or unavailable
+        clarify_ran = sa.SimpleRun(text="Which account?", agent_text="Which account?",
+                                   unverified=[], events=[], seconds=0.5, stopped=False,
+                                   failure=None, clarify={"question": "Which?", "options": ["A", "B"]})
+        clarify_payload = sa.answer_payload(clarify_ran, "Show Croda", "c2", 100, "b" * 24)
+        self.assertEqual(clarify_payload.follow_ups, [])
+
+    def test_missing_plot_redo_prompts_for_chart_when_user_asked_to_plot_chartable_rows(self):
+        ev = {**sql([["CAD", "100", "2"], ["USD", "200", "3"]]),
+              "arguments": {"sql": "SELECT currency, total, count FROM sales_invoices"}}
+        ran = AgentRun(events=[ev], final_text="CAD is 100 and USD is 200.", usage={"subtype": "success"})
+        msg = sa.missing_plot_redo("Plot invoiced revenue by currency", ran)
+        self.assertIsNotNone(msg)
+        self.assertIn("```chart", msg)
+        # Non-plot question or already has a chart block -> None
+        self.assertIsNone(sa.missing_plot_redo("What is invoiced revenue by currency?", ran))
+        with_chart = AgentRun(events=[ev], final_text="Here:\n```chart\n{}\n```", usage={"subtype": "success"})
+        self.assertIsNone(sa.missing_plot_redo("Plot invoiced revenue", with_chart))
+        cannot = AgentRun(events=[ev], final_text="Nothing to plot because there is only one point.", usage={"subtype": "success"})
+        self.assertIsNone(sa.missing_plot_redo("Plot invoiced revenue", cannot))
+
+    def test_attached_marks_already_cut_files_so_truncation_is_never_silent(self):
+        from operating.ask_attachments import Attached
+        cut_file = Attached(name="large.csv", kind="spreadsheet", size=500000, digest="d9",
+                            text="a,b\n1,2", cut=True)
+        lines, _ = sa.attached([cut_file])
+        self.assertEqual(len(lines), 1)
+        self.assertIn("(cut here: the file goes on)", lines[0])
+
+    def test_warm_sessions_note_memory_changed_refreshes_memory_on_next_turn(self):
+        class FakeSession:
+            def __init__(self):
+                self.alive = True
+                self.prompts = []
+                self.closed = False
+
+            def turn(self, prompt, on_line, cancel=None, **kw):
+                self.prompts.append(prompt)
+                return AgentRun(events=[], final_text="ok", usage={"subtype": "success"})
+
+            def close(self):
+                self.closed = True
+
+        sessions = []
+
+        class FakeAgent:
+            def open_session(self, host, prestart=False):
+                s = FakeSession()
+                sessions.append(s)
+                return s
+
+        asker = SimpleNamespace(
+            _reader_key=lambda s: s.who,
+            _scope_digest=lambda s: "scope-1",
+            _start_digest=lambda s: "start-1",
+            _host_for=lambda s: SimpleNamespace(close=lambda: None),
+            _agent_for=lambda on: FakeAgent(),
+        )
+        warm = sa.WarmSessions()
+        mem = {"text": "Prefer CAD first."}
+        who = SimpleNamespace(who="ann")
+        with mock.patch.object(sa, "WARM", warm), mock.patch.dict("os.environ", {sa.SPARES_ENV: "0"}):
+            sa.run(asker, who, "Show revenue", [], conversation="c-mem", memory=lambda: mem["text"])
+            mem["text"] = "Always show USD first."
+            marked = warm.note_memory_changed()
+            self.assertEqual(marked, 1)
+            sa.run(asker, who, "Now break down by month",
+                   [SimpleNamespace(role="user", text="Show revenue"),
+                    SimpleNamespace(role="assistant", text="ok")],
+                   conversation="c-mem", memory=lambda: mem["text"])
+        self.assertEqual(len(sessions), 1)
+        self.assertIn("Always show USD first.", sessions[0].prompts[1])
+        self.assertIn("remember about this person now", sessions[0].prompts[1])
 
 
 if __name__ == "__main__":

@@ -46,8 +46,8 @@ describe("the queue on Home and its Switches tab", () => {
     nav.params = "item=ap_2";
     render(<AssistQueue />);
     await screen.findByText("Lee Supplier");
-    expect(document.getElementById("prepared-ap_2")?.className).toContain("border-accent");
-    expect(document.getElementById("prepared-ap_1")?.className).not.toContain("border-accent");
+    expect(document.getElementById("prepared-ap_2")?.className).toContain("border-l-accent");
+    expect(document.getElementById("prepared-ap_1")?.className).not.toContain("border-l-accent");
     expect(screen.queryByText(/no longer waiting/)).toBeNull();
     cleanup();
     nav.params = "item=ap_gone";
@@ -269,7 +269,7 @@ describe("the queue on Home and its Switches tab", () => {
     expect(await screen.findByText("Lot L-1 is on-hold; it holds up 1 open order.")).toBeTruthy();
     expect(screen.getByText("OR-9, Three Ships")).toBeTruthy();
     expect(screen.getByText("Release it in the Portal.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open the order" }).getAttribute("href")).toBe("/object/SalesOrder:s1");
+    expect(screen.getByRole("link", { name: "Open the order" }).getAttribute("href")).toBe("/object/SalesOrder/SalesOrder%3As1");
     expect(screen.queryByRole("button", { name: /Confirm|Send|Done/ })).toBeNull();
     await more(0);
     expect(screen.getAllByRole("menuitem").map((e) => e.textContent)).toEqual(["Pass to a colleague", "Make it a task", "Not needed"]);
@@ -287,17 +287,41 @@ describe("the queue on Home and its Switches tab", () => {
   });
 
   it("a record an alert is about can be followed from the card; nothing is decided", async () => {
-    const alert: PreparedItem = { ...reply, item_id: "ap_9", sender: "", channel: "system", kind: "alert", subject: "QC hold: Lot L-1", message: "", body: "", to: [], summary: "Lot L-1 is on-hold.", facts: [], links: [{ label: "Open the order", href: "/object/SalesOrder:s%201" }, { label: "Open the task", href: "/tasks/t1" }] };
+    const alert: PreparedItem = {
+      ...reply,
+      item_id: "ap_9",
+      sender: "",
+      channel: "system",
+      kind: "alert",
+      subject: "QC hold: Lot L-1",
+      message: "",
+      body: "",
+      to: [],
+      summary: "Lot L-1 is on-hold.",
+      facts: [],
+      links: [
+        { label: "Open the order", href: "/object/SalesOrder/SalesOrder%3As%201" },
+        { label: "Open the lot", href: "/object/Batch:b%202" },
+        { label: "Open the task", href: "/tasks/t1" },
+      ],
+    };
     const calls = fetchMock({
       "/api/autopilot/drafts": () => ({ items: [alert] }),
       "/api/watch/follow": (b) => ({ object_id: (b as { object_id: string }).object_id }),
     });
     render(<AssistQueue />);
     await screen.findByText("Lot L-1 is on-hold.");
+    expect(screen.getByRole("link", { name: "Open the order" }).getAttribute("href")).toBe("/object/SalesOrder/SalesOrder%3As%201");
+    expect(screen.getByRole("link", { name: "Open the lot" }).getAttribute("href")).toBe("/object/Batch/Batch%3Ab%202");
     expect(screen.queryByRole("button", { name: "Follow Open the task" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Follow Open the order" }));
     expect(await screen.findByText("Following")).toBeTruthy();
     expect(calls.find(([p]) => p === "/api/watch/follow")?.[1]).toEqual({ object_id: "SalesOrder:s 1" });
+    await userEvent.click(screen.getByRole("button", { name: "Follow Open the lot" }));
+    await waitFor(() => expect(calls.filter(([p]) => p === "/api/watch/follow").map(([, b]) => b)).toEqual([
+      { object_id: "SalesOrder:s 1" },
+      { object_id: "Batch:b 2" },
+    ]));
     expect(calls.some(([p]) => p.endsWith("/decision"))).toBe(false);
   });
 

@@ -29,7 +29,10 @@ export function PinButton({ label }: { label: string }) {
       aria-pressed={pinned}
       title={pinned ? "Unpin from Home" : "Pin to Home"}
       aria-label={pinned ? `Unpin ${label} from Home` : `Pin ${label} to Home`}
-      className="inline-flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer max-lg:hidden"
+      className={cn(
+        "inline-flex size-7 items-center justify-center rounded-md transition-[background-color,color,transform] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] cursor-pointer max-lg:hidden",
+        pinned ? "text-accent hover:bg-hover" : "text-muted hover:bg-hover hover:text-fg",
+      )}
       data-testid="pin-page"
     >
       {pinned ? <PinOff className="size-[15px]" aria-hidden /> : <Pin className="size-[15px]" aria-hidden />}
@@ -63,7 +66,7 @@ export function Toolbar({
 }) {
   return (
     <header
-      className={cn("sticky top-0 z-20 flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-bg px-4 lg:px-5", className)}
+      className={cn("sticky top-0 z-20 flex h-12 shrink-0 items-center gap-3 border-b border-border bg-bg px-4 lg:px-5", className)}
       data-testid={testId}
     >
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]">
@@ -79,7 +82,7 @@ export function Toolbar({
         )}
         {React.createElement(
           heading ? "h1" : "span",
-          { className: cn("min-w-0 truncate", parent ? "font-medium" : "text-[15px] font-semibold tracking-[-0.015em]") },
+          { className: cn("min-w-0 truncate", parent ? "font-medium" : "text-[15px] font-semibold tracking-[-0.02em]") },
           title,
         )}
       </div>
@@ -99,7 +102,7 @@ export function ToolbarButton({ primary, className, ...props }: React.ButtonHTML
     <button
       type="button"
       className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] cursor-pointer [&_svg]:size-[15px]",
+        "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-[background-color,color,transform,opacity] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] cursor-pointer [&_svg]:size-[14px]",
         primary ? "ml-1 bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]" : "text-muted hover:bg-hover hover:text-fg",
         className,
       )}

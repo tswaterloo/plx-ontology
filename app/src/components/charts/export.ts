@@ -2,7 +2,10 @@
 // and the Office/PDF files the server makes from the chart (lib/api chartFile).
 
 import { chartFile, exportXlsx } from "@/lib/api";
-import type { ExportXlsxRequest } from "@/lib/types";
+import type { Answer, ExportXlsxRequest } from "@/lib/types";
+import { human } from "./scale";
+
+type ExportChart = NonNullable<Answer["charts"]>[number];
 
 export const FILES = [
   { format: "xlsx", label: "Excel" },
@@ -160,4 +163,68 @@ export async function saveFile(chart: { title: string }, format: (typeof FILES)[
 export async function saveExcel(req: ExportXlsxRequest, title?: string): Promise<void> {
   const name = title || req.title || "Export";
   save(await exportXlsx({ ...req, title: name }), fileName(name, "xlsx"));
+}
+
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+
+/** Pure: one RFC-4180 CSV cell, safe against spreadsheet formula injection on text values. */
+export function csvCell(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  const raw = String(value);
+  const safe = FORMULA_LEAD.test(raw) && !/^-?\d+(?:\.\d+)?$/.test(raw.trim()) ? `'${raw}` : raw;
+  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+}
+
+/** Pure: columns and rows formatted as RFC-4180 CSV text. */
+export function toCsv(columns: readonly string[], rows: readonly (readonly (string | number | null | undefined)[])[]): string {
+  const lines = [columns.map(csvCell).join(",")];
+  for (const row of rows) {
+    lines.push(columns.map((_, i) => csvCell(row[i])).join(","));
+  }
+  return `${lines.join("\r\n")}\r\n`;
+}
+
+/** Pure: a chart's plotted data (single-panel, scatter, or faceted small multiples) as columns and rows. */
+export function chartToTable(chart: ExportChart): { columns: string[]; rows: (string | number | null)[][] } {
+  const xLabel = human(chart.x || "category");
+  if (chart.panels && chart.panels.length > 0) {
+    const facetLabel = human(chart.spec?.facet || "group");
+    const seriesNames: string[] = [];
+    for (const p of chart.panels) {
+      for (const s of p.series) {
+        if (!seriesNames.includes(s.name)) seriesNames.push(s.name);
+      }
+    }
+    const columns = [facetLabel, xLabel, ...seriesNames.map((n) => human(n))];
+    const rows: (string | number | null)[][] = [];
+    for (const p of chart.panels) {
+      const byName = new Map(p.series.map((s) => [s.name, s.values]));
+      p.labels.forEach((lbl, i) => {
+        rows.push([p.title, lbl, ...seriesNames.map((n) => byName.get(n)?.[i] ?? null)]);
+      });
+    }
+    return { columns, rows };
+  }
+  if (chart.kind === "scatter" && chart.xs && chart.xs.length === chart.labels.length) {
+    const labelCol = human(chart.spec?.label || "item");
+    const columns = [labelCol, xLabel, ...chart.series.map((s) => human(s.name))];
+    const rows = chart.labels.map((lbl, i) => [lbl, chart.xs?.[i] ?? null, ...chart.series.map((s) => s.values[i] ?? null)]);
+    return { columns, rows };
+  }
+  const columns = [xLabel, ...chart.series.map((s) => human(s.name))];
+  const rows = chart.labels.map((lbl, i) => [lbl, ...chart.series.map((s) => s.values[i] ?? null)]);
+  return { columns, rows };
+}
+
+/** Instant client-side CSV download for any table. */
+export function saveCsv(columns: readonly string[], rows: readonly (readonly (string | number | null | undefined)[])[], title: string): void {
+  const blob = new Blob([toCsv(columns, rows)], { type: "text/csv;charset=utf-8" });
+  save(blob, fileName(title || "Export", "csv"));
+}
+
+/** Instant client-side CSV download for a drawn chart. */
+export function saveChartCsv(chart: ExportChart): void {
+  const { columns, rows } = chartToTable(chart);
+  saveCsv(columns, rows, chart.title || "Chart");
 }

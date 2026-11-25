@@ -127,6 +127,23 @@ class CeoSignals(Engine):
         # each order's value and date, and the customer's name
         self.assertEqual(len(gap["citations"]), 5 + 1)
 
+    def test_demand_drop_with_zero_recent_orders_uses_plain_no_orders_phrasing(self):
+        w = World()
+        quiet = customer(w, "SYNTH Quiet")
+        for i in range(4):
+            order(w, quiet, placed=day(120 + 50 * i), total="1000")
+        # another customer with a recent order keeps the source current
+        steady = customer(w, "SYNTH Steady")
+        for i in range(4):
+            order(w, steady, placed=day(120 + 50 * i), total="1000")
+        order(w, steady, placed=day(10), total="1000")
+        summary = self.run_rules(w, rules=[ceo.DEMAND])
+        self.assertEqual(summary["detectors"][ceo.DEMAND], "complete")
+        (gap,) = self.kinds(ceo.DEMAND)
+        self.assertEqual(gap["object_id"], quiet)
+        self.assertIn("No orders in the last 90 days (down from a run-rate of", gap["summary"])
+        self.assertNotIn("0 CAD on 0 orders", gap["summary"])
+
     def test_a_drop_another_currency_or_a_same_named_customer_may_explain_is_not_said(self):
         # 11-13 judging: a USD "drop" of a customer whose recent orders were all CAD, and
         # drops of a Portal customer whose same-named Sage customer ordered that month

@@ -23,6 +23,8 @@ Evidence: isolated-fixture (``operating/tests/test_assist_worker.py``); live-unv
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import inspect
 import json
 import logging
 import os
@@ -43,10 +45,14 @@ FEATURE = "assist_worker"
 
 _REQUESTED = f"""
 SELECT m.matter_id, m.owner_person, m.kind, m.sources->'readings'->-1->>0 AS source,
-       r.handles, rq.at
+       r.handles, rq.at, m.title, m.detail, m.counterpart, m.basis_at, pl.line AS person_line
 FROM {SCHEMA}.matters m
 JOIN LATERAL (SELECT max(l.at) AS at FROM {SCHEMA}.matter_log l
               WHERE l.matter_id = m.matter_id AND l.what = 'requested') rq ON rq.at IS NOT NULL
+LEFT JOIN LATERAL (SELECT l.detail->>'line' AS line FROM {SCHEMA}.matter_log l
+                   WHERE l.matter_id = m.matter_id AND l.what = 'person_line'
+                     AND l.at > coalesce(m.plan_at, '-infinity'::timestamptz)
+                   ORDER BY l.seq DESC LIMIT 1) pl ON true
 LEFT JOIN {SCHEMA}.readings r ON jsonb_typeof(m.sources->'readings') = 'array'
      AND r.source = m.sources->'readings'->-1->>0 AND r.message_key = m.sources->'readings'->-1->>1
 WHERE m.state = 'open' AND rq.at > coalesce(m.plan_at, '-infinity'::timestamptz)
@@ -105,40 +111,99 @@ def outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, An
         # plan tier keeps "nothing" (an act of that kind and its why), never a bare failure
         none = {"act": "nothing", "to": [], "about": "", "attach": "",
                 "system": {"system": "", "operation": "", "record": ""}, "question": "", "choices": []}
+        prepared_meta = {k: v for k, v in meta.items() if k != "usd"}
+        prepared_meta.setdefault("unread_sources", [])
         res = {"status": "planned", "reason": "", "plan": {
             "ver": 1, "acts": [none], "why": str(meta["nothing"]),
-            "prepared": {k: v for k, v in meta.items() if k != "usd"}}, }
+            "prepared": prepared_meta}}
         return res
     if res["status"] == "failed" and res["reason"] == "changes_prepared" and (meta or {}).get("write_intents"):
         # a prepared session produced validated dry-run system write intents with no reply needed
+        prepared_meta = {k: v for k, v in (meta or {}).items() if k != "usd"}
+        prepared_meta.setdefault("unread_sources", [])
         res = {"status": "drafted", "reason": "", "plan": {
-            "prepared": {k: v for k, v in (meta or {}).items() if k != "usd"},
+            "prepared": prepared_meta,
             "drafted_by": "model"}}
         return res
-    if meta and isinstance(res.get("plan"), dict) and isinstance(res["plan"].get("prepared"), dict):
-        res["plan"]["prepared"].update(meta)
+    if isinstance(res.get("plan"), dict) and isinstance(res["plan"].get("prepared"), dict):
+        if meta:
+            res["plan"]["prepared"].update(meta)
+        res["plan"]["prepared"].setdefault("unread_sources", [])
     return res
+
+
+def _request_extra(matter: Mapping[str, Any]) -> str:
+    """Build concrete drafting instructions when the person supplied a one-line direction
+    (``person_line``) or clicked 'Draft a follow-up' on a waiting matter (``kind == 'wait'``)."""
+    from operating.assist_matters import clean_user_text
+    parts: list[str] = []
+    if matter.get("kind") == "wait":
+        who = clean_user_text(matter.get("counterpart") or "")
+        detail = clean_user_text(matter.get("detail") or "")
+        title = clean_user_text(matter.get("title") or "")
+        basis = matter.get("basis_at")
+        sent_on = ""
+        if isinstance(basis, dt.datetime):
+            sent_on = basis.strftime("%Y-%m-%d")
+        elif isinstance(basis, str) and basis.strip():
+            sent_on = basis.strip()[:10]
+        context_bits = []
+        if who:
+            context_bits.append(f"Counterpart: {who}")
+        if detail:
+            context_bits.append(f"Waiting on: {detail}")
+        elif title:
+            context_bits.append(f"Context: {title}")
+        if sent_on:
+            context_bits.append(f"Last message date: {sent_on}")
+        parts.append(
+            "FOLLOW-UP DRAFT REQUEST: The person asked you to draft a concise, polite follow-up "
+            "message because they have not received an answer yet. Reference the exact order, PO, "
+            "person, item, and last message date from the thread and records. Write directly in "
+            "their voice with no robotic filler openers and no em dashes."
+            + (f" ({'; '.join(context_bits)})" if context_bits else "")
+        )
+    line = str(matter.get("person_line") or "").strip()
+    if line:
+        parts.append(
+            f"THE PERSON'S DIRECTION (write the reply from this line, keeping all facts grounded "
+            f"in the thread and records, with no robotic openers and no em dashes): {line}"
+        )
+    return "\n".join(parts)
+
+
+def _accepts_extra(fn: Callable[..., Any]) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    if "extra" in sig.parameters:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def _outcome(rows: Optional[Sequence[Mapping[str, Any]]], matter: Mapping[str, Any]
              ) -> dict[str, Any]:
     from operating import reply_drafts as rd
+    from operating.assist_matters import clean_user_text
     if not matter.get("oid"):
         return {"status": "failed", "reason": f"no_basis:{matter.get('kind')}", "plan": None}
     got = rd.result_of(rows or [])
     if got["state"] == "ready" and got["kind"] == "reply":
+        body = clean_user_text(got["body"], strip_opener=True)
         prepared: dict[str, Any] = {"draft": {"channel": _CHANNELS.get(str(matter.get("source") or ""), ""),
-                                              "to": [], "body": got["body"]},
-                                    "note": got.get("ask") or "", "warning": got.get("why") or ""}
+                                              "to": [], "body": body},
+                                    "note": clean_user_text(got.get("ask") or ""),
+                                    "warning": clean_user_text(got.get("why") or "")}
         return {"status": "drafted", "reason": "", "plan": {"prepared": prepared,
                                                             "drafted_by": "model"}}
     if got["state"] == "ready":
         return {"status": "needs_you", "reason": "", "plan": {"prepared": {"your_call": {
-            "ask": got["ask"], "options": got.get("options") or []}}, "drafted_by": "model"}}
+            "ask": clean_user_text(got["ask"]), "options": got.get("options") or []}}, "drafted_by": "model"}}
     return {"status": "failed", "reason": str(got.get("why") or "no_draft"), "plan": None}
 
 
-def run_queue(pg: Any, draft: Callable[[str, str], Sequence[Mapping[str, Any]]], *,
+def run_queue(pg: Any, draft: Callable[..., Sequence[Mapping[str, Any]]], *,
               parallel: int = PARALLEL, model: Any = "", host: str = "",
               select: Optional[Callable[[Any], list[dict[str, Any]]]] = None,
               prepare: Optional[Callable[[Mapping[str, Any]], tuple[Sequence[Mapping[str, Any]],
@@ -157,6 +222,7 @@ def run_queue(pg: Any, draft: Callable[[str, str], Sequence[Mapping[str, Any]]],
         todo = (select or requested)(pg)
         write = threading.Lock()        # one connection: results go in one at a time
         count: dict[str, int] = {}
+        pass_extra = _accepts_extra(draft)
 
         def one(matter: dict[str, Any]) -> None:
             t0 = time.monotonic()
@@ -168,7 +234,11 @@ def run_queue(pg: Any, draft: Callable[[str, str], Sequence[Mapping[str, Any]]],
                         usd = meta.get("usd")      # the model's reported cost: the run row's, not the plan's
                         meta = {k: v for k, v in meta.items() if k != "usd"}
                     else:
-                        rows = draft(matter["owner_person"], matter["oid"])
+                        extra = _request_extra(matter) if pass_extra else ""
+                        if extra:
+                            rows = draft(matter["owner_person"], matter["oid"], extra=extra)
+                        else:
+                            rows = draft(matter["owner_person"], matter["oid"])
                 except Exception as exc:  # noqa: BLE001 - typed on the matter, logged
                     LOG.warning("draft failed for %s", matter["matter_id"], exc_info=True)
                     rows = [{"why": f"draft_failed:{type(exc).__name__}"}]

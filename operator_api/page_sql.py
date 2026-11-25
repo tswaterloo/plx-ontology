@@ -23,6 +23,15 @@ from decimal import Decimal
 from typing import Any, Collection, Mapping, Optional, Sequence
 
 from . import models as m
+from .page_core import (
+    clean_alert_label,
+    clean_enum,
+    clean_money_amount,
+    clean_number_text,
+    clean_subject,
+    clean_text,
+    join_clean,
+)
 from .serving import object_url, open_url, record_words, system_of
 
 SWITCH = "PLX_PAGES_DOOR"
@@ -70,7 +79,8 @@ def read(backend: Any, reader: Any, reads: Sequence[Mapping[str, Any]], *, ids: 
 # the record page each kind of record opens through the door (``record_url``, ``resolve``)
 DOOR_KINDS = {"PurchaseOrder": "purchase_order", "SalesOrder": "sales_order",
               "Customer": "customer", "Supplier": "supplier", "Product": "product",
-              "Batch": "batch"}
+              "Batch": "batch", "SupplierInvoice": "supplier_invoice",
+              "PurchaseInvoice": "supplier_invoice", "RelSageApOpenDocument": "supplier_invoice"}
 _VIEW_OF = {"purchase_order": "purchase_orders", "sales_order": "sales_orders",
             "customer": "customers", "supplier": "suppliers", "product": "products",
             "batch": "batches", "supplier_invoice": "supplier_invoices"}
@@ -161,12 +171,11 @@ def _iso(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value else None
 
 
-def _money(amount: Any, currency: Any) -> Optional[m.Money]:
+def _money(amount: Any, currency: Any, *, max_decimals: int = 2) -> Optional[m.Money]:
     if amount is None or not isinstance(currency, str) or not currency:
         return None
-    try:
-        text = format(Decimal(str(amount)), "f")
-    except ArithmeticError:
+    text = clean_money_amount(amount, max_decimals=max_decimals)
+    if text is None:
         return None
     return m.Money(amount=text, currency=currency)
 
@@ -185,11 +194,12 @@ def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], *, sta
     reason = (f"Needed by {due}, still open" if due else "Past its needed-by date")
     if promised and promised != due:
         reason += f"; supplier promised {promised}"
+    supplier = clean_text(row.get("supplier")) if isinstance(row.get("supplier"), str) else None
     return m.LatePo(
-        object_id=oid, label=f"PO {row.get('po_number') or '?'}",
-        supplier=row.get("supplier") if isinstance(row.get("supplier"), str) else None,
+        object_id=oid, label=_numbered("PO", row.get("po_number")) or "PO ?",
+        supplier=supplier or None,
         due_date=due, days_late=int(days) if isinstance(days, int) else None, stale=stale,
-        amount=_money(row.get("total"), row.get("total_currency")), reason=reason,
+        amount=_money(row.get("total"), row.get("total_currency")), reason=clean_text(reason),
         open_url=url, sources=[m.Source(system=system_of(handle), handle=handle,
                                         label=record_words(handle), open_url=open_url(handle))]
         if isinstance(handle, str) else [])
@@ -564,7 +574,8 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
     for row in rows.get("alerts_open", []):
         oid, _otype, url, sources = _alert_ref(row, ids)
         risk.append(m.AtRisk(object_id=oid, label=alert_label(row), kind=str(row.get("kind")),
-                             reason=str(row.get("why") or ""), open_url=url, sources=sources))
+                             reason=clean_text(row.get("why") or "", strip_email_noise=True),
+                             open_url=url, sources=sources))
     # as the briefing's: a mail type is never paged here (its group says unavailable), so
     # it never holds Home in "refreshing" (live 11-21: needs_my_reply kept Home's
     # "Refreshing" on for good and the app polled /api/home every few seconds)
@@ -617,20 +628,25 @@ def _subject(row: Mapping[str, Any], otype: str) -> str:
     """The alerted record's own name ("BE FIT NOW", "106001"); without one (a record this
     reader may not see in ``records``) its kind in words ("Purchase order"), never the
     source system's table words ("BC production", "Portal customer")."""
-    name = str(row.get("subject") or "").strip()
+    name = clean_subject(row.get("subject") or "", max_len=200)
     if name:
-        return name[:200]
+        return name
     if otype:
-        words = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", otype).lower()
-        return words[:1].upper() + words[1:]
+        return clean_enum(otype, "object_type") or (
+            re.sub(r"(?<=[a-z])(?=[A-Z])", " ", otype).lower().capitalize()
+        )
     return record_words(str(row.get("handle") or ""))
 
 
 def alert_label(row: Mapping[str, Any]) -> str:
     from operating import alert_kinds
-    entry = alert_kinds.entry(str(row.get("rule"))) or {}
-    return str(entry.get("label") or alert_kinds.kind_label(str(row.get("kind")))
-               or row.get("rule"))
+    rule = str(row.get("rule") or "")
+    entry = alert_kinds.entry(rule) or {}
+    return clean_alert_label(
+        rule,
+        entry.get("label") or alert_kinds.kind_label(str(row.get("kind") or "")),
+        row.get("kind"),
+    )
 
 
 def alerts_read(backend: Any, reader: Any, types: Sequence[str], *, limit: int = 25,
@@ -694,8 +710,8 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
         rank=rank, id=f"alert:{rule}:{row.get('handle')}:{row.get('topic') or ''}",
         event_type=rule, label=alert_label(row), evidence="live", object_id=oid,
         object_type=otype, subject_label=_subject(row, otype),
-        summary=str(row.get("why") or ""),
-        next_action=m.NextAction(text=step[0], rule=step[1]),
+        summary=clean_text(row.get("why") or "", strip_email_noise=True),
+        next_action=m.NextAction(text=clean_text(step[0]), rule=step[1]),
         new_since_visit=new, new_this_generation=new, alert_kind=alert_kinds.kind_of(rule),
         default_on=alert_kinds.default_on(rule), home=alert_kinds.home(rule),
         section=alert_kinds.section(rule), first_seen=seen, open_url=url, sources=sources)
@@ -825,7 +841,8 @@ def alert_briefing(backend: Any, reader: Any, *, since_visit: bool = False,
         watching_count=sum(n for t, n in mine_counts.items() if not alert_kinds.home(t)),
         rank_basis="oldest first", routing_basis="every alert type on for you, routed to "
         "your departments, that you may read (routing: "
-        f"{getattr(scope.routing, 'basis', '') or 'unknown'})", last_visit=scope.visit,
+        f"{clean_enum(getattr(scope.routing, 'basis', '') or 'unknown', 'routing_basis')})",
+        last_visit=scope.visit,
         as_of=_iso(min(as_of)) if as_of else None,
         complete=not stale, refreshing=bool(stale), checked_on=_oldest(stale),
         more=total > len(items), items=items, groups=groups, digest_preview="")
@@ -862,13 +879,55 @@ def alert_briefing_items(backend: Any, reader: Any, event_type: str, *, offset: 
 # ---- the one search box ---------------------------------------------------------------
 
 SEARCH_TYPES = {"customer": "Customer", "chain": "Chain", "supplier": "Supplier",
+                "staff": "Person",
                 "sales_order": "SalesOrder", "purchase_order": "PurchaseOrder",
                 "product": "Product", "batch": "Batch", "sales_invoice": "SalesInvoice",
                 "supplier_invoice": "SupplierInvoice", "shipment": "Shipment",
                 "receipt": "Receipt", "lot": "Lot", "credit_note": "SalesCreditMemo",
+                "purchase_credit_note": "PurchaseCreditMemo",
                 "purchase_invoice": "PurchaseInvoice"}
 _SYSTEMS = {"bc": "BC", "fm": "FileMaker", "filemaker": "FileMaker", "mc": "MC",
             "api": "Portal", "portal": "Portal", "sage": "Sage", "vmc": "VMC"}
+_EFT_NAME_RE = re.compile(r"(?:\(\s*EFT\s*\)|-\s*EFT)\s*$", re.IGNORECASE)
+
+
+def is_eft_payment_vendor(name: Any) -> bool:
+    """Whether a supplier name carries the EFT payment-vendor suffix (``(EFT)`` or ``- EFT``)."""
+    return isinstance(name, str) and bool(_EFT_NAME_RE.search(name))
+
+
+def _systems_label(source_systems: Any) -> Optional[str]:
+    """Comma-separated source systems as a concise slash-joined label (e.g. ``BC/Portal``)."""
+    if not isinstance(source_systems, str) or not source_systems.strip():
+        return None
+    parts: list[str] = []
+    for raw in source_systems.split(","):
+        key = raw.strip().lower()
+        if not key:
+            continue
+        label = _SYSTEMS.get(key, raw.strip().title())
+        if label not in parts:
+            parts.append(label)
+    return "/".join(parts) or None
+
+
+def supplier_role_label(name: Any, *, blocked: Any = None, source_systems: Any = None,
+                        currency: Any = None, include_currency: bool = False) -> str:
+    """Clear supplier role derived strictly from record fields: EFT payment vendor vs
+    purchasing vendor (or blocked supplier), with source systems and optional currency."""
+    if is_eft_payment_vendor(name):
+        role = "Payment vendor (EFT)"
+    elif isinstance(blocked, str) and blocked.strip():
+        role = "Supplier (blocked)"
+    else:
+        role = "Purchasing vendor"
+    parts = [role]
+    systems = _systems_label(source_systems)
+    if systems:
+        parts.append(systems)
+    if include_currency and isinstance(currency, str) and currency.strip():
+        parts.append(currency.strip())
+    return " · ".join(parts)
 
 
 def account_url(kind: str, handle: Optional[str] = None, chain: Optional[str] = None) -> str:
@@ -955,6 +1014,8 @@ def search(backend: Any, reader: Any, q: str, limit: int) -> list[m.Suggestion]:
                 open_url(handle) if isinstance(handle, str) else "")
         elif kind == "chain":
             url = account_url("chain", chain=title)
+        elif kind == "staff":
+            url = f"/team?person={quote(title, safe='')}"
         elif isinstance(handle, str):
             url = account_url(kind, handle)
         else:
@@ -963,16 +1024,43 @@ def search(backend: Any, reader: Any, q: str, limit: int) -> list[m.Suggestion]:
         sub = []
         if kind == "chain":
             sub.append(f"Chain of {r.get('members')} accounts")
-        for key in ("context", "code"):
-            v = r.get(key)
-            if isinstance(v, str) and v and v != title:
-                sub.append(f"PO {v}" if kind in ("sales_order", "sales_invoice") and key == "code" else v)
+        if kind == "supplier":
+            ctx = r.get("context")
+            parts = ctx.split("|") if isinstance(ctx, str) else []
+            src_sys = parts[0] if len(parts) > 0 else None
+            currency = parts[1] if len(parts) > 1 else None
+            blocked = parts[2] if len(parts) > 2 else None
+            sub.append(supplier_role_label(title, blocked=blocked, source_systems=src_sys,
+                                           currency=currency, include_currency=True))
+            code = r.get("code")
+            if isinstance(code, str) and code and code.strip().lower() != title.strip().lower():
+                sub.append(code)
+        elif kind == "staff":
+            for key in ("context", "code"):
+                v = r.get(key)
+                if isinstance(v, str) and v.strip() and v.strip().lower() != title.strip().lower():
+                    sub.append(v.strip())
+            if not sub:
+                sub.append("Team")
+        else:
+            for key in ("context", "code"):
+                v = r.get(key)
+                if isinstance(v, str) and v.strip() and v.strip().lower() != title.strip().lower():
+                    sub.append(
+                        _numbered("PO", v)
+                        if kind in ("sales_order", "sales_invoice") and key == "code"
+                        else v
+                    )
         if isinstance(r.get("status"), str) and kind in ("sales_order", "purchase_order"):
-            sub.append(r["status"])
+            st = clean_enum(r["status"], "status")
+            if st:
+                sub.append(st)
+        clean_title = clean_text(title) or title
+        sub_filtered = [s for s in sub if clean_text(s).lower() != clean_title.lower()]
         out.append(m.Suggestion(
             object_id=str(handle or f"chain:{title}"), type=SEARCH_TYPES[kind],
-            label=title,
-            sublabel=" · ".join(sub) or None,
+            label=clean_title,
+            sublabel=join_clean(sub_filtered) or None,
             match="exact" if rank <= 1 else "prefix" if rank <= 4 else "fuzzy",
             score=round(1 - rank / 10, 2), open_url=url))
         if len(out) >= limit:
@@ -995,11 +1083,13 @@ def _hidden(row: Mapping[str, Any], col: str) -> bool:
     return col in (row.get("withheld") or ())
 
 
-def _t(row: Mapping[str, Any], col: str, href: Optional[str] = None) -> m.BizCell:
+def _t(row: Mapping[str, Any], col: str, href: Optional[str] = None, *,
+       enum_kind: str = "") -> m.BizCell:
     v = row.get(col)
     if v is None:
         return m.BizCell(hidden=_hidden(row, col))
-    return m.BizCell(text=str(v), href=href)
+    text = clean_enum(v, enum_kind) if enum_kind else clean_text(v)
+    return m.BizCell(text=text or None, href=href)
 
 
 def _d(row: Mapping[str, Any], col: str) -> m.BizCell:
@@ -1010,16 +1100,19 @@ def _n(row: Mapping[str, Any], col: str) -> m.BizCell:
     v = row.get(col)
     if v is None:
         return m.BizCell(hidden=_hidden(row, col))
-    return m.BizCell(number=format(Decimal(str(v)).normalize(), "f")
-                     if isinstance(v, Decimal) else str(v))
+    return m.BizCell(number=clean_number_text(v))
 
 
-def _m(row: Mapping[str, Any], amount: str, currency: Optional[str] = None) -> m.BizCell:
-    money = _money(row.get(amount), row.get(currency or f"{amount}_currency"))
+def _m(row: Mapping[str, Any], amount: str, currency: Optional[str] = None, *,
+       max_decimals: int = 2) -> m.BizCell:
+    money = _money(row.get(amount), row.get(currency or f"{amount}_currency"),
+                   max_decimals=max_decimals)
     return m.BizCell(money=money, hidden=money is None and _hidden(row, amount))
 
 
-def _sum(amount: Any, currency: Any, hidden: Any = 0) -> m.BizCell:
+def _sum(amount: Any, currency: Any, hidden: Any = 0, *, zero_if_none: bool = True) -> m.BizCell:
+    if amount is None and not hidden and not zero_if_none:
+        return m.BizCell(text="–")
     money = _money(amount if amount is not None else (0 if not hidden else None), currency)
     return m.BizCell(money=money, hidden=bool(hidden) and money is None)
 
@@ -1072,8 +1165,10 @@ def _years(rows: list[Mapping[str, Any]], title: str, as_of: str) -> m.BizTable:
                       for k in ("this_year", "last_year_to_date", "last_year"))
         if cur is None:
             continue
-        out.append([m.BizCell(text=cur), _sum(r.get("this_year"), cur),
-                    _sum(r.get("last_year_to_date"), cur), _sum(r.get("last_year"), cur)])
+        out.append([m.BizCell(text=cur),
+                    _sum(r.get("this_year"), cur, r.get("this_year_hidden"), zero_if_none=False),
+                    _sum(r.get("last_year_to_date"), cur, r.get("last_year_to_date_hidden"), zero_if_none=False),
+                    _sum(r.get("last_year"), cur, r.get("last_year_hidden"), zero_if_none=False)])
     year = int(as_of[:4])
     return m.BizTable(key="years", title=title, columns=[
         "Currency", f"{year} to {as_of[5:]}", f"{year - 1} to {as_of[5:]}", f"All of {year - 1}"],
@@ -1251,7 +1346,10 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
                        ("Incoterms", "incoterms"), ("Lead time (days)", "lead_time_days"),
                        ("Email", "email"), ("Phone", "phone"), ("Blocked", "blocked")):
         if head.get(col) is not None or _hidden(head, col):
-            facts.append(m.BizFact(label=label, value=_t(head, col)))
+            facts.append(m.BizFact(
+                label=label,
+                value=_t(head, col, enum_kind="status" if col == "status" else ""),
+            ))
     n, late, totals, unvalued = _open_totals(rows["supplier_open_totals"])
     listed = rows["supplier_open_pos"]
     sections = [m.BizTable(key="open_orders", title="Open purchase orders", columns=[
@@ -1265,7 +1363,8 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
     inv = rows["supplier_invoices"]
     sections.append(m.BizTable(key="invoices", title="Last invoices", columns=[
         "Document", "Type", "Date", "Due", "PO", "Amount", "Still owed"], rows=[[
-            _t(i, "document_number", _row_url(i, ids)), _t(i, "document_type"),
+            _t(i, "document_number", _row_url(i, ids)),
+            _t(i, "document_type", enum_kind="document_type"),
             _d(i, "document_date"), _d(i, "due_date"),
             _t(i, "po_number", find_url(i.get("po_number"))), _m(i, "original_amount"),
             _m(i, "amount_due")] for i in inv], note=None if inv else "No invoices."))
@@ -1275,15 +1374,20 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
         # BC keeps a payment vendor ("X (EFT)") beside the purchasing vendor the POs name:
         # each its own account, listed here, never added into this one
         sections.append(m.BizTable(key="same_name", title="Other accounts by this name",
-                                   columns=["Account", "Code", "Open POs"], rows=[[
+                                   columns=["Account", "Code", "Open POs", "Role"], rows=[[
                                        _t(r, "name", account_url("supplier", r.get("handle"))),
-                                       _t(r, "supplier_code"), _n(r, "open_pos")]
+                                       _t(r, "supplier_code"), _n(r, "open_pos"),
+                                       m.BizCell(text=supplier_role_label(
+                                           r.get("name"), blocked=r.get("blocked"),
+                                           source_systems=r.get("source_systems")))]
                                        for r in same], total=len(same),
                                    note="Separate accounts in the source systems; their "
                                    "orders and balances are on their own pages."))
     built = _built(rows["views_as_of"])
+    subtitle = supplier_role_label(head.get("name"), blocked=head.get("blocked"),
+                                   source_systems=head.get("source_systems"))
     return m.BizPage(kind="supplier", title=str(head.get("name") or head.get("supplier_code")
-                                                or "Supplier"), subtitle="Supplier",
+                                                or "Supplier"), subtitle=subtitle,
                      facts=facts, sections=sections, as_of=day,
                      sources=_sources([head], built, ("suppliers", "purchase_orders",
                                                       "supplier_balances", "supplier_invoices")),
@@ -1494,7 +1598,8 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
         party = _t(h, "supplier", account_url("supplier", h["supplier_handle"])
                    if h.get("supplier_handle") else None)
         facts.append(m.BizFact(label="Supplier", value=party))
-        spec = (("Status", "status", _t), ("Ordered", "order_date", _d),
+        spec = (("Status", "status", lambda r, c: _t(r, c, enum_kind="status")),
+                ("Ordered", "order_date", _d),
                 ("Needed by", "requested_date", _d), ("Promised", "promised_date", _d),
                 ("Purchaser", "purchaser", _t))
         money = "total"
@@ -1503,7 +1608,7 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
         body = [[_t(r, "item_code", find_url(r.get("item_code"))), _t(r, "description"),
                  _n(r, "ordered_quantity"),
                  _n(r, "received_quantity"), _n(r, "invoiced_quantity"), _t(r, "uom"),
-                 _m(r, "unit_price"), _m(r, "line_total"), _d(r, "expected_date")]
+                 _m(r, "unit_price", max_decimals=4), _m(r, "line_total"), _d(r, "expected_date")]
                 for r in lines]
         if h.get("verdict") == "late":
             facts.append(m.BizFact(label="Days late", value=_n(h, "days_late")))
@@ -1512,7 +1617,8 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
         party = _t(h, "customer", account_url("customer", h["customer_handle"])
                    if h.get("customer_handle") else None)
         facts.append(m.BizFact(label="Customer", value=party))
-        spec = (("Status", "status", _t), ("Customer PO", "customer_po", _t),
+        spec = (("Status", "status", lambda r, c: _t(r, c, enum_kind="status")),
+                ("Customer PO", "customer_po", _t),
                 ("Ordered", "order_date", _d), ("Required by", "required_date", _d),
                 ("Rep", "salesperson", _t))
         money = "value"
@@ -1521,7 +1627,7 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
         body = [[_t(r, "item_code", find_url(r.get("item_code"))),
                  _t(r, "item_name") if r.get("item_name") is not None
                  else _t(r, "description"), _n(r, "ordered_quantity"), _n(r, "shipped_quantity"),
-                 _n(r, "outstanding_quantity"), _t(r, "uom"), _m(r, "unit_price"),
+                 _n(r, "outstanding_quantity"), _t(r, "uom"), _m(r, "unit_price", max_decimals=4),
                  _m(r, "line_amount")] for r in lines]
         if h.get("status") == "open" and (h.get("days_late") or 0) > 0:
             # only a live order is late: one with nothing left to ship, or that nobody has
@@ -1558,11 +1664,21 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
     elif money == "total" and h.get("total_basis") == "lines":
         # no copy states a total above 0: the order is worth its priced lines, said so
         facts.append(m.BizFact(label="Total (sum of lines)", value=_m(h, "total")))
+    elif money == "value":
+        val = h.get("value")
+        any_priced = any(r.get("line_amount") is not None and Decimal(str(r["line_amount"])) != 0
+                         for r in lines if not _hidden(r, "line_amount"))
+        if val is None and not _hidden(h, "value"):
+            facts.append(m.BizFact(label="Value", value=m.BizCell(text="Not recorded")))
+        elif val is not None and Decimal(str(val)) == 0 and not any_priced:
+            facts.append(m.BizFact(label="Value", value=m.BizCell(
+                text="Not on record (the source states 0.00 and no line is priced)")))
+        else:
+            facts.append(m.BizFact(label="Value", value=_m(h, money)))
     else:
-        facts.append(m.BizFact(label="Total" if money == "total" else "Value",
-                               value=_m(h, money)))
+        facts.append(m.BizFact(label="Total", value=_m(h, money)))
         lt, total = h.get("lines_total"), h.get("total")
-        if money == "total" and lt is not None and (
+        if lt is not None and (
                 total is None or Decimal(str(lt)) != Decimal(str(total))
                 or h.get("lines_total_currency") != h.get("total_currency")):
             # the header and its lines disagree (tax, freight, a header not updated): both
@@ -1593,12 +1709,22 @@ def record_views() -> list[m.RecordView]:
     return [m.RecordView(view=s.view, title=s.title) for s in record_lists.specs().values()]
 
 
+_LIST_ENUM_COLS = {
+    "status": "status",
+    "item_type": "item_type",
+    "document_type": "document_type",
+    "payee_class": "payee_class",
+    "active": "boolean",
+}
+
+
 def _cell(spec_col: Any, row: Mapping[str, Any], href: Optional[str]) -> m.BizCell:
     """One list cell, as its column's kind reads it (money with its currency, a day, a
     number, yes/no, text); the row's link goes on the column named for it."""
     name = spec_col.name
     if spec_col.kind == "money":
-        return _m(row, name, spec_col.currency)
+        decimals = 4 if name in ("unit_price", "unit_cost") else 2
+        return _m(row, name, spec_col.currency, max_decimals=decimals)
     if spec_col.kind == "date":
         return _d(row, name)
     if spec_col.kind == "number":
@@ -1607,7 +1733,7 @@ def _cell(spec_col: Any, row: Mapping[str, Any], href: Optional[str]) -> m.BizCe
         v = row.get(name)
         return m.BizCell(text=None if v is None else ("Yes" if v else "No"),
                          hidden=v is None and _hidden(row, name))
-    return _t(row, name, href)
+    return _t(row, name, href, enum_kind=_LIST_ENUM_COLS.get(name, ""))
 
 
 def record_list(backend: Any, reader: Any, view: str, *, filters: Optional[Mapping[str, str]] = None,
@@ -1654,8 +1780,12 @@ def record_list(backend: Any, reader: Any, view: str, *, filters: Optional[Mappi
     if with_filters:
         by_col: dict[str, list[m.RecordFilterOption]] = {}
         for r in rows.get(f"list__{view}__choices", []):
-            by_col.setdefault(str(r["col"]), []).append(m.RecordFilterOption(
-                value=str(r["value"]), label=str(r["value"]), count=int(r["n"])))
+            col_name = str(r["col"])
+            raw_val = str(r["value"])
+            ek = _LIST_ENUM_COLS.get(col_name, "")
+            opt_label = (clean_enum(raw_val, ek) if ek else clean_text(raw_val)) or raw_val
+            by_col.setdefault(col_name, []).append(m.RecordFilterOption(
+                value=raw_val, label=opt_label, count=int(r["n"])))
         for f in spec.filters:
             options = ([m.RecordFilterOption(value="", label="All")] + by_col.get(f.name, [])
                        if f.kind == "choice" else [
@@ -1699,14 +1829,17 @@ def item(backend: Any, reader: Any, handle: str) -> m.BizPage:
         raise NotFound("product")
     h = rows["product"][0]
     facts: list[m.BizFact] = []
-    for label, col, cell in (("Item code", "item_code", _t), ("Type", "item_type", _t),
-                             ("Category", "category", _t), ("Unit", "uom", _t),
-                             ("Active", "active", _t), ("Blocked", "blocked", _t)):
+    for label, col, cell in (
+            ("Item code", "item_code", _t),
+            ("Type", "item_type", lambda r, c: _t(r, c, enum_kind="item_type")),
+            ("Category", "category", _t), ("Unit", "uom", _t),
+            ("Active", "active", lambda r, c: _t(r, c, enum_kind="boolean")),
+            ("Blocked", "blocked", lambda r, c: _t(r, c, enum_kind="boolean"))):
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     for label, col in (("Unit cost", "unit_cost"), ("Unit price", "unit_price")):
         if h.get(col) is not None or _hidden(h, col):
-            facts.append(m.BizFact(label=label, value=_m(h, col)))
+            facts.append(m.BizFact(label=label, value=_m(h, col, max_decimals=4)))
     stock = rows["product_stock"]
     if stock:
         st = stock[0]
@@ -1715,16 +1848,17 @@ def item(backend: Any, reader: Any, handle: str) -> m.BizPage:
     built = _built(rows["views_as_of"])
     sections = [m.BizTable(key="batches", title="Recent batches", columns=[
         "Batch", "Lot", "Status", "QC", "Scheduled", "Planned", "Produced"], rows=[[
-            _t(b, "batch_code", _row_url(b, ids)), _t(b, "lot_number"), _t(b, "status"),
+            _t(b, "batch_code", _row_url(b, ids)),
+            _t(b, "lot_number", find_url(b.get("lot_number"))), _t(b, "status"),
             _t(b, "quality_status"), _d(b, "scheduled_date"), _n(b, "planned_quantity"),
             _n(b, "produced_quantity")] for b in batches], total=len(batches),
         note=None if batches else "No batch on record makes this item.")]
     note = None if stock else "No source states a quantity on hand for this item."
     return m.BizPage(
-        kind="product", title=str(h.get("name") or h.get("item_code") or "Item"),
+        kind="product", title=clean_text(h.get("name") or h.get("item_code")) or "Item",
         subtitle="Item", facts=facts, sections=sections,
         sources=_sources([], built, ("products", "stock", "batches")) +
-        (f" {note}" if note else ""), as_of=_iso(stock[0].get("as_of")) if stock else None,
+        (f". {note}" if note else ""), as_of=_iso(stock[0].get("as_of")) if stock else None,
         took_ms=int((time.perf_counter() - started) * 1000))
 
 
@@ -1740,22 +1874,36 @@ def batch(backend: Any, reader: Any, handle: str) -> m.BizPage:
     h = rows["batch"][0]
     facts: list[m.BizFact] = []
     for label, col, cell in (
-            ("Product", "product", _t), ("Item code", "item_code", _t), ("Lot", "lot_number", _t),
+            ("Product", "product", lambda r, c: _t(r, c, find_url(r.get("item_code") or r.get(c)))),
+            ("Item code", "item_code", lambda r, c: _t(r, c, find_url(r.get(c)))),
+            ("Lot", "lot_number", lambda r, c: _t(r, c, find_url(r.get(c)))),
             ("Status", "status", _t), ("QC status", "quality_status", _t),
             ("Scheduled", "scheduled_date", _d), ("Made", "realized_date", _d),
             ("Released", "released_date", _d), ("Planned", "planned_quantity", _n),
             ("Produced", "produced_quantity", _n), ("Line", "production_line", _t),
-            ("Customer PO", "po_number", _t), ("Tested by", "tested_by", _t),
-            ("Checked by", "checked_by", _t)):
+            ("Customer PO", "po_number", lambda r, c: _t(r, c, find_url(r.get(c)))),
+            ("Tested by", "tested_by", _t), ("Checked by", "checked_by", _t)):
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     if h.get("on_hold") is True:
-        # a cancelled batch is on no hold (the lists and the measures leave it out); its QC
-        # status line still says what was recorded
-        cancelled = str(h.get("status") or "").lower() == "cancelled"
-        facts.insert(0, m.BizFact(label="Hold", value=m.BizCell(
-            text="Cancelled; QC status still reads on hold" if cancelled
-            else "QC holds this batch")))
+        # a cancelled or unmade batch is on no QC hold (the lists and measures leave it out);
+        # its QC status line still says what was recorded
+        status_low = str(h.get("status") or "").strip().lower()
+        cancelled = status_low == "cancelled"
+        produced = h.get("produced_quantity")
+        no_output = produced is None or Decimal(str(produced)) == 0
+        made_status = status_low in ("realized", "completed", "manufactured", "filled",
+                                     "shipped", "released", "closed", "done")
+        unmade = not cancelled and not h.get("realized_date") and no_output and not made_status
+        if cancelled:
+            facts.insert(0, m.BizFact(label="Hold", value=m.BizCell(
+                text="Cancelled; QC status still reads on hold")))
+        elif unmade:
+            facts.insert(0, m.BizFact(label="Production", value=m.BizCell(
+                text="Not made yet; QC status reads on hold")))
+        else:
+            facts.insert(0, m.BizFact(label="Hold", value=m.BizCell(
+                text="QC holds this batch")))
     qc = [(label, col) for label, col in (
         ("pH after 24 h", "qc_ph_24h"), ("Viscosity after 24 h", "qc_viscosity_24h"),
         ("Plate count / yeast and mould", "qc_tpc_yeast")) if h.get(col) is not None
@@ -1786,12 +1934,13 @@ def supplier_invoice(backend: Any, reader: Any, handle: str) -> m.BizPage:
     facts: list[m.BizFact] = [m.BizFact(label="Supplier", value=party)]
     for label, col, cell in (
             ("Supplier code", "supplier_code", _t), ("Document", "document_number", _t),
-            ("Type", "document_type", _t), ("Dated", "document_date", _d),
+            ("Type", "document_type", lambda r, c: _t(r, c, enum_kind="document_type")),
+            ("Dated", "document_date", _d),
             ("Due", "due_date", _d), ("Amount", "original_amount", _m),
             ("Still owed", "amount_due", _m),
             ("Purchase order", "po_number", lambda r, c: _t(r, c, find_url(r.get(c)))),
             ("For", "description", _t), ("Supplier group", "vendor_group", _t),
-            ("Kind of payee", "payee_class", _t)):
+            ("Kind of payee", "payee_class", lambda r, c: _t(r, c, enum_kind="payee_class"))):
         if h.get(col) is not None or _hidden(h, col):
             facts.append(m.BizFact(label=label, value=cell(h, col)))
     if h.get("paid") is not None:
@@ -1808,9 +1957,11 @@ def supplier_invoice(backend: Any, reader: Any, handle: str) -> m.BizPage:
 
 
 def _numbered(word: str, number: Any) -> str:
-    """'PO 106093'; a number that already says it ('PO-1') is said once."""
-    text = str(number or "").strip()
-    return text if text.upper().startswith(word) else f"{word} {text}".strip()
+    """'PO 106093'; a number that already says it ('PO-1', 'PO100587') is said once."""
+    text = clean_text(number)
+    if not text:
+        return word
+    return text if text.upper().startswith(word.upper()) else f"{word} {text}".strip()
 
 __all__ = ["SWITCH", "NotFound", "PageDoorUnavailable", "account", "account_url", "batch",
            "codes_text", "item", "late_po", "late_pos", "record_list", "record_views", "on", "order", "read", "search",
@@ -1831,11 +1982,12 @@ _CHOICE_COLS = {"purchase_order": ("po_number", "supplier"),
 
 
 def _choice_label(row: Mapping[str, Any], number: str, party: str) -> str:
-    bits = [str(row[c]) for c in (number, party) if row.get(c) is not None]
-    systems = ", ".join(_SYSTEM_WORDS.get(s, s) for s in
-                        str(row.get("source_systems") or "").split(",") if s)
-    tail = ", ".join(x for x in (systems, str(row.get("status") or "")) if x)
-    return " · ".join(bits) + (f" ({tail})" if tail else "")
+    bits = [row[c] for c in (number, party) if row.get(c) is not None]
+    systems = ", ".join(_SYSTEM_WORDS.get(s.strip(), s.strip()) for s in
+                        str(row.get("source_systems") or "").split(",") if s.strip())
+    status = clean_enum(row.get("status"), "status") or ""
+    tail = ", ".join(x for x in (systems, status) if x)
+    return join_clean(bits) + (f" ({tail})" if tail else "")
 
 
 def choices(backend: Any, reader: Any, object_ids: Sequence[str]) -> list[m.ObjectRef]:

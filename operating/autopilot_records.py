@@ -62,6 +62,62 @@ def _v(row: Mapping[str, Any] | None, prop: str) -> str:
     return "" if value is None else str(value)
 
 
+def body_texts(st: Any, handles: Sequence[str], *, field_path: str = "row.body_text") -> dict[str, str]:
+    """handle -> full message body text held by the store's text index (one read per 500
+    handles); a handle without one, or an unreadable index, is left out."""
+    import sqlite3
+    from .mail_text import joined_chunks
+    rows: dict[str, list[tuple[int, bytes]]] = {}
+    unique = sorted({h for h in handles if h})
+    if not unique:
+        return {}
+    try:
+        for start in range(0, len(unique), 500):
+            for handle, at, body in st.conn.execute(
+                    "SELECT f.citation, k.start, k.body FROM text_fields f JOIN text_chunks k "
+                    "ON k.field_id = f.field_id WHERE f.citation IN (SELECT value FROM "
+                    "json_each(?)) AND f.field_path = ? ORDER BY f.citation, k.start",
+                    (json.dumps(unique[start:start + 500]), field_path)):
+                rows.setdefault(handle, []).append((at, body))
+        return {handle: joined_chunks(parts) for handle, parts in rows.items() if parts}
+    except (sqlite3.Error, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def body_texts_by_oid(st: Any, oids: Sequence[str], *, field_path: str = "row.body_text") -> dict[str, str]:
+    """object_id -> full message body text from ``object_versions`` + ``text_fields``/``text_chunks``
+    (one batched lookup per 500 object ids)."""
+    import sqlite3
+    unique = sorted({o for o in oids if o})
+    if not unique:
+        return {}
+    oid_to_handle: dict[str, str] = {}
+    try:
+        for start in range(0, len(unique), 500):
+            for oid, handle in st.conn.execute(
+                    "SELECT object_id, l1_handle FROM object_versions WHERE object_id IN "
+                    "(SELECT value FROM json_each(?)) AND superseded_at IS NULL",
+                    (json.dumps(unique[start:start + 500]),)):
+                if handle:
+                    oid_to_handle[oid] = handle
+    except (sqlite3.Error, ValueError, TypeError, AttributeError):
+        return {}
+    by_handle = body_texts(st, list(oid_to_handle.values()), field_path=field_path)
+    return {oid: by_handle[h] for oid, h in oid_to_handle.items() if h in by_handle and by_handle[h]}
+
+
+def message_body(row: Mapping[str, Any] | None, bodies: Mapping[str, str] | None = None) -> str:
+    """Full message text from the store's text index (``bodies``) or ``body_text`` property,
+    falling back to ``body_preview`` only when full text is genuinely absent."""
+    if bodies and row:
+        for cell in row.values():
+            if isinstance(cell, Mapping) and cell.get("l1_handle"):
+                full = bodies.get(str(cell["l1_handle"]))
+                if full:
+                    return full
+    return _v(row, "body_text") or _v(row, "body_preview")
+
+
 def _types(st: Any, ids: Iterable[str]) -> dict[str, tuple[str, str]]:
     """object -> (type, audience) of current, not removed records."""
     from ontology import store as ostore

@@ -1,11 +1,9 @@
 "use client";
 
-import { ArrowUpRight } from "lucide-react";
-import Link from "next/link";
+import { ArrowRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { loadHome } from "@/components/shell";
-import { ago, formatDateTime } from "@/lib/format";
-import type { HomeResponse, RecentQuestion } from "@/lib/types";
+import type { HomeResponse } from "@/lib/types";
 
 type Starter = { text: string; objectId?: string };
 
@@ -49,23 +47,32 @@ export function riskStarter(risk: { label: string; kind?: string | null }): stri
   return `What needs attention for ${lower}?`;
 }
 
+export const DEFAULT_ASK_PROMPTS: readonly string[] = [
+  "What do I need to do today?",
+  "Which purchase orders are late?",
+  "Show monthly revenue this year",
+  "Which customers have overdue invoices?",
+];
+
 export function startersFrom(home: HomeResponse | null): Starter[] {
   const na = home?.needs_attention;
-  const out: Starter[] = [{ text: "What do I need to do today?" }];
+  const out: Starter[] = [{ text: DEFAULT_ASK_PROMPTS[0] }];
   const po = na?.late_pos?.[0];
   if (po) out.push({ text: `Why is ${po.label} late?`, objectId: po.object_id });
   const risk = na?.at_risk?.[0];
   if (risk) out.push({ text: riskStarter(risk), objectId: risk.object_id });
-  const asked = once(
-    [...(home?.recent_questions ?? [])].sort((a, b) => b.asked_at.localeCompare(a.asked_at)),
-    (r) => r.question.trim().toLowerCase(),
-  );
-  for (const r of asked.slice(0, 2)) out.push({ text: r.question });
-  return once(out, (s) => s.text.trim().toLowerCase());
+  const deduped = once(out, (s) => s.text.trim().toLowerCase());
+  for (const text of DEFAULT_ASK_PROMPTS) {
+    if (deduped.length >= 4) break;
+    if (!deduped.some((s) => s.text.trim().toLowerCase() === text.toLowerCase())) {
+      deduped.push({ text });
+    }
+  }
+  return deduped;
 }
 
-/** The empty chat's greeting, starters and last chats. Nothing here is needed to ask: if Home can't be read only the greeting's plain form and the day's first starter remain. */
-export function AskStart({ onAsk, children }: { onAsk: (q: string, objectId?: string) => void; children: React.ReactNode }) {
+/** The empty chat's quiet header, composer, and live operational starters. */
+export function AskStart({ onAsk, subtitle, children }: { onAsk: (q: string, objectId?: string) => void; subtitle?: React.ReactNode; children: React.ReactNode }) {
   const [home, setHome] = useState<HomeResponse | null>(null);
   useEffect(() => {
     let live = true;
@@ -77,51 +84,31 @@ export function AskStart({ onAsk, children }: { onAsk: (q: string, objectId?: st
     };
   }, []);
   const starters = startersFrom(home);
-  const chats: RecentQuestion[] = once(
-    [...(home?.recent_questions ?? [])].filter((r) => r.conversation_id).sort((a, b) => b.asked_at.localeCompare(a.asked_at)),
-    (r) => r.conversation_id ?? "",
-  ).slice(0, 3); // guard-ok: a preview of the 3 newest; every chat is in the Chats column beside it
   return (
-    <>
-      <h1 className="mb-5 text-center text-[28px] leading-9 font-semibold tracking-[-0.02em] max-sm:text-[24px]" data-testid="ask-greeting">
-        {greetingFor(home?.greeting_name)}
-      </h1>
+    <div className="w-full">
+      <div className="mb-5 flex flex-col items-center text-center">
+        <h1 className="text-[22px] leading-7 font-semibold tracking-[-0.02em] text-fg" data-testid="ask-greeting">
+          Ask Workbench
+        </h1>
+        {subtitle}
+      </div>
       {children}
-      <section aria-label="Ways to start" data-testid="ask-starters" className="mt-4">
-        <ul>
+      <section aria-label="Ways to start" data-testid="ask-starters" className="mt-5">
+        <ul className="divide-y divide-border border-y border-border">
           {starters.map((s) => (
             <li key={s.text}>
               <button
                 type="button"
                 onClick={() => onAsk(s.text, s.objectId)}
-                className="group flex min-h-9 w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-[14px] leading-5 text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                className="group flex min-h-9 w-full items-center gap-3 px-1.5 py-2 text-left text-[13.5px] leading-5 text-muted transition-colors hover:bg-hover/60 hover:text-fg cursor-pointer"
               >
                 <span className="min-w-0 flex-1 truncate">{s.text}</span>
-                <ArrowUpRight className="size-3.5 shrink-0 opacity-0 group-hover:opacity-100 max-sm:opacity-60" strokeWidth={2} aria-hidden />
+                <ArrowRight className="size-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" strokeWidth={2} aria-hidden />
               </button>
             </li>
           ))}
         </ul>
       </section>
-      {chats.length > 0 && (
-        <section data-testid="ask-recent" aria-label="Recent chats" className="mt-6">
-          <h2 className="mb-1 px-3 text-[12px] leading-4 font-medium text-muted">Recent</h2>
-          <ul>
-            {chats.map((r) => (
-              <li key={r.conversation_id}>
-                <Link
-                  href={`/ask?c=${encodeURIComponent(r.conversation_id ?? "")}`}
-                  title={`Asked ${formatDateTime(r.asked_at)}: open the answer`}
-                  className="flex min-h-9 items-center gap-3 rounded-lg px-3 py-1.5 text-[14px] leading-5 hover:bg-hover"
-                >
-                  <span className="min-w-0 flex-1 truncate">{r.question}</span>
-                  <span className="shrink-0 text-[12px] text-muted tabular-nums">{ago(r.asked_at)}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </>
+    </div>
   );
 }

@@ -67,13 +67,12 @@ from decimal import Decimal
 import json
 from typing import Any, Callable, Container, Iterable, Mapping, Sequence
 
-from operating.impact_chain import (FIRM_TIERS, LEAD_TIERS, MAX_GAP_SUBJECTS, MAX_STEP_CHARS,
+from operating.impact_chain import (FIRM_TIERS, LEAD_TIERS, MAX_GAP_SUBJECTS,
                                     Edge, Graph, _dec_str, _digest, _number, _type_of)
 from operating.prose_style import some_of
 
 ENGINE = "lot_impact"
 MAX_ORDERS = 100        # order entries one answer carries (the answer holds 200 entries)
-MAX_CANDIDATES = 20
 MAX_TWINS_WALKED = 32
 ARG_KEYS = {"lot", "ordered"}
 
@@ -136,17 +135,16 @@ BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
         (), "a firm record of the consumption (only lot-number matches were found: "
         "candidates, see the candidate entries)"),
     "batch_not_linked_to_order": (
-        (FILLS_FROM, BATCH_ALLOCATES, BATCH_ORDER), "the assembly orders filled from the "
-        "batch (the batch named on a FileMaker assembly order), its FileMaker order-entry "
-        "batch allocations, or the one order its order-entry list names"),
+        (FILLS_FROM, BATCH_ALLOCATES, BATCH_ORDER),
+        "a linked assembly order or customer order for this batch"),
     "component_without_assembly_order": (
-        (COMPONENT_OF,), "the assembly order named on the FileMaker component"),
+        (COMPONENT_OF,), "the assembly order named on the component"),
     "assembly_order_not_linked_to_order_line": (
-        (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN), "the Portal manufacturing order's "
-        "customer order line or the FileMaker order-entry assembly allocation"),
+        (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN),
+        "a linked customer order line or assembly allocation"),
     "allocation_without_order_line": (
-        (ALLOCATION_LINE, BATCH_ALLOCATION_LINE), "the order-entry line named on the "
-        "FileMaker assembly or batch allocation"),
+        (ALLOCATION_LINE, BATCH_ALLOCATION_LINE),
+        "the customer order line on the assembly or batch allocation"),
     "order_line_not_linked_to_order": (
         (ORDER_LINE,), "the order named on the customer order line"),
     "customer_not_linked": (
@@ -387,8 +385,8 @@ def break_gap(found: Sequence[Break], reason: str, *, complete: bool,
                  "proof that none is recorded")
               + "; no link is inferred from a shared code, name or date")
     return {"state": "absent_in_source" if known else "unknown", "reason": reason,
-            "subject": some_of(subjects, MAX_GAP_SUBJECTS)[:700],
-            "detail": detail[:600]}
+            "subject": some_of(subjects, MAX_GAP_SUBJECTS),
+            "detail": detail}
 
 
 def _quantity(hit: Hit, ordered: Mapping[str, Sequence[Mapping[str, Any]]]
@@ -494,9 +492,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         basis = list(dict.fromkeys([w.lot, *(r for _po, _p, recs in w.supply for r in recs),
                                     *(po for po, _p, _r in w.supply), *sorted(w.suppliers)]))
         entries.append(_digest({
-            "name": f"{name}_supply_{n}"[:64], "kind": "computed", "value": len(w.supply),
-            "inputs": [], "steps": [s[:MAX_STEP_CHARS] for s in steps][:40],
-            "basis": basis[:100], "check": "not_applicable"}))
+            "name": f"{name}_supply_{n}"[:64], "kind": "computed", "value": len(w.supply),  # guard-ok: derived entry identifier, fixed shape, not content
+            "inputs": [], "steps": steps,
+            "basis": basis, "check": "not_applicable"}))
     for n, w in enumerate(walks, start=1):
         if not w.batches:
             continue
@@ -508,9 +506,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         steps += [f"its QC calibration schedule names bulk product {p}: crossed "
                   + "; ".join(e.cited() for e in path) for p, path in sorted(w.products.items())]
         entries.append(_digest({
-            "name": f"{name}_batch_{n}"[:64], "kind": "computed", "value": len(keys),
-            "inputs": [], "steps": [s[:MAX_STEP_CHARS] for s in steps][:40],
-            "basis": list(dict.fromkeys([*w.batches, *sorted(w.products), *keys]))[:100],
+            "name": f"{name}_batch_{n}"[:64], "kind": "computed", "value": len(keys),  # guard-ok: derived entry identifier, fixed shape, not content
+            "inputs": [], "steps": steps,
+            "basis": list(dict.fromkeys([*w.batches, *sorted(w.products), *keys])),
             "check": "not_applicable"}))
     hits: dict[str, tuple[Hit, list[str]]] = {}
     for w in walks:
@@ -543,8 +541,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             steps.append("no shipment found on the records read")
         steps += [f"customer {c} ({'shipped to' if role == 'shipped' else 'ordered by'}): "
                   f"crossed {e.cited()}" for c, (role, e) in sorted(hit.customers.items())]
-        entry: dict[str, Any] = {"name": f"{name}_{n}"[:64], "kind": "computed",
-                                 "value": None, "inputs": used[:50]}
+        entry: dict[str, Any] = {"name": f"{name}_{n}"[:64], "kind": "computed",  # guard-ok: derived entry identifier, fixed shape, not content
+                                 "value": None, "inputs": used}
         if qty is None:
             unstated += 1
             steps.append(f"quantity touched not stated: {why}")
@@ -564,7 +562,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                             "not counted" if hit.direct else ""))
         basis = list(dict.fromkeys([*hit.records, *hit.members, *sorted(hit.shipments),
                                     *sorted(hit.customers)]))
-        entry.update(steps=[s[:MAX_STEP_CHARS] for s in steps][:40], basis=basis[:100],
+        entry.update(steps=steps, basis=basis,
                      check="not_applicable")
         entries.append(_digest(entry))
         order_names.append(entry["name"])
@@ -574,19 +572,12 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     for w in walks:
         for comp, e in w.candidates:
             k += 1
-            if k > MAX_CANDIDATES:
-                break
             entries.append(_digest({
-                "name": f"{name}_candidate_{k}"[:64], "kind": "computed", "value": comp,
+                "name": f"{name}_candidate_{k}"[:64], "kind": "computed", "value": comp,  # guard-ok: derived entry identifier, fixed shape, not content
                 "inputs": [], "lead_basis": True,
                 "steps": [f"candidate only: {e.cited()} is a lead-tier match by lot number, "
-                          "not a recorded consumption; it is not walked to any order"[
-                              :MAX_STEP_CHARS]],
+                          "not a recorded consumption; it is not walked to any order"],
                 "basis": [w.lot, comp], "check": "not_applicable"}))
-    if k > MAX_CANDIDATES:
-        gaps.append({"state": "unknown", "reason": "candidates_capped", "subject": name,
-                     "detail": f"candidates_capped: {k - MAX_CANDIDATES} more lot-number "
-                               "candidates were not listed"})
     reached = sum(1 for w in walks if w.orders)
     # Lot records sharing a lot number may be different suppliers' lots: their orders are
     # counted per supplier, never added together. A record whose supplier is not linked
@@ -611,9 +602,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             keys = sorted({key for w in ws for key in w.orders})
             linked = [] if sups[0].startswith(("unlinked:", "batch:")) else list(sups)
             entries.append(_digest({
-                "name": f"{name}_by_supplier_{g}"[:64], "kind": "computed",
+                "name": f"{name}_by_supplier_{g}"[:64], "kind": "computed",  # guard-ok: derived entry identifier, fixed shape, not content
                 "value": len(keys), "inputs": [],
-                "steps": [s[:MAX_STEP_CHARS] for s in (
+                "steps": [s for s in (
                     f"{len(keys)} customer order(s) touched by the lot record(s) "
                     f"{', '.join(w.lot for w in ws)} "
                     + (f"of supplier(s) {', '.join(linked)}" if linked
@@ -623,7 +614,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 "basis": list(dict.fromkeys([
                     *(w.lot for w in ws), *linked, *keys,
                     *(m for w in ws for _k, hit in sorted(w.orders.items())
-                      for m in hit.members)]))[:100],
+                      for m in hit.members)])),
                 "check": "not_applicable"}))
     # One customer is one cluster of its recorded same-customer records across systems.
     clusters: dict[str, dict[str, Any]] = {}
@@ -648,24 +639,24 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             + (f"{';' if shipped else ':'} ordered order(s) {', '.join(only)} with no shipment "
                "to it found" if only else ""))
     entries.append(_digest({
-        "name": f"{name}_customers"[:64], "kind": "computed",
+        "name": f"{name}_customers"[:64], "kind": "computed",  # guard-ok: derived entry identifier, fixed shape, not content
         "value": None if split else len(clusters), "inputs": [],
-        "steps": [s[:MAX_STEP_CHARS] for s in (
+        "steps": [s for s in (
             [f"{len(clusters)} customer(s) on the touched orders, one per customer across "
              "systems (recorded same-customer links); shipped to = a recorded shipment of "
-             "the order names them"] + customer_steps)][:40],
-        "basis": sorted({m for c in clusters.values() for m in c["members"]})[:100],
+             "the order names them"] + customer_steps)],
+        "basis": sorted({m for c in clusters.values() for m in c["members"]}),
         "check": "not_applicable"}))
     entries.append(_digest({
         "name": name, "kind": "computed", "value": None if split else len(hits),
-        "inputs": order_names[:50],
+        "inputs": order_names,
         "steps": head_steps
-        + [f"{min(k, MAX_CANDIDATES)} candidate consumption(s) by lot number only, "
+        + [f"{k} candidate consumption(s) by lot number only, "
            "not walked"]
         + ([] if complete and not cut else
            ["the run was cut, so other orders may be touched"]),
-        "basis": sorted(hits)[:100], "check": "not_applicable"}))
-    return {"entries": entries, "gaps": gaps[:50], "reasons": reasons}
+        "basis": sorted(hits), "check": "not_applicable"}))
+    return {"entries": entries, "gaps": gaps, "reasons": reasons}
 
 
 def _leads(edges: Iterable[Edge]) -> dict[str, list[Edge]]:

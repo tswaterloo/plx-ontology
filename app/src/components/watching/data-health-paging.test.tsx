@@ -3,14 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 const asked = vi.hoisted(() => ({ pages: [] as Array<[string, number]>, fail: false, first: 0 }));
-const item = (n: number) => ({ id: `g${n}`, object_id: `Customer:x:${n}`, object_type: "Customer", summary: `finding ${n}`, open_url: `/object/Customer/Customer%3Ax%3A${n}` });
+const item = (n: number, type = "Customer") => ({ id: `g${n}`, object_id: `${type}:x:${n}`, object_type: type, summary: `finding ${n}`, open_url: `/object/${type}/${encodeURIComponent(`${type}:x:${n}`)}` });
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getDataHealth: () => { asked.first += 1; return Promise.resolve({ status: "read", partial: false, checks: [{ type: "dup", label: "Customers entered twice", on: true, read: false, open: 1411, count: 0, hidden: 0, more: 0, items: [] }] }); },
   getDataHealthPage: (check: string, offset: number) => {
     asked.pages.push([check, offset]);
     if (asked.fail) return Promise.reject(new Error("down"));
-    return Promise.resolve({ status: "read", partial: false, checks: [{ type: "dup", label: "x", on: true, read: true, open: 5, count: 5, hidden: 0, more: offset === 0 ? 2 : 0, items: offset === 0 ? [item(0), item(1), item(2)] : [item(2), item(3), item(4)] }] });
+    return Promise.resolve({ status: "read", partial: false, checks: [{ type: "dup", label: "x", on: true, read: true, open: 5, count: 5, hidden: 0, more: offset === 0 ? 2 : 0, items: offset === 0 ? [item(0, "SalesOrder"), item(1, "PurchaseOrder"), item(2, "Customer")] : [item(2, "Customer"), item(3, "Customer"), item(4, "Customer")] }] });
   },
 }));
 
@@ -53,5 +53,9 @@ describe("Data health assign", () => {
     await userEvent.click(check.querySelector("summary") as HTMLElement);
     await waitFor(() => expect(check.querySelectorAll("li").length).toBe(3));
     expect(check.querySelectorAll('[data-testid="action-assign"]').length).toBe(3);
+    // Record-type filter shows plain-English labels rather than raw internal type IDs
+    const typeSelect = screen.getByTestId("data-health-type-dup");
+    const optionTexts = Array.from(typeSelect.querySelectorAll("option")).map((o) => o.textContent);
+    expect(optionTexts).toEqual(["All record types", "Customer", "Purchase order", "Customer order"]);
   });
 });

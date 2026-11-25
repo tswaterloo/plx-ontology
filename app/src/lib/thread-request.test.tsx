@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const sent: Record<string, unknown>[] = [];
 let fail = true;
@@ -13,11 +13,14 @@ vi.mock("./api", () => ({
   },
 }));
 
-import { askUrlKey, useThread } from "./thread";
+import { askUrlKey, resetThreadStoreForTests, useThread } from "./thread";
 
 const file = { id: "f1", name: "po.pdf", size: 10, image: false, upload: "b".repeat(32) };
 
 describe("Ask requests (WEB-021, WEB-022, WEB-024)", () => {
+  beforeEach(() => {
+    resetThreadStoreForTests();
+  });
   it("Retry resends the whole request: object, source, page context and the attachment bytes", async () => {
     sent.length = 0;
     fail = true;

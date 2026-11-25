@@ -95,14 +95,17 @@ class MeasureTiles(unittest.TestCase):
         self.assertFalse([s for s in ins.builtin() if s.id.startswith(ins.MEASURE_TILE)])
         specs = list(ins.declared())
         measures = [ins.ref(s) for s in specs if s.id.startswith(ins.MEASURE_TILE)]
-        first = [ins.ref(s) for s in specs if not s.id.startswith(ins.MEASURE_TILE)]
-        self.assertTrue(measures and first)
+        priority = [ins.ref(s) for s in specs if s.id in ins.PRIORITY_TILES]
+        first = [ins.ref(s) for s in specs
+                 if s.id not in ins.PRIORITY_TILES and not s.id.startswith(ins.MEASURE_TILE)]
+        self.assertTrue(measures and priority and first)
         # a saved tile listed last is still read before any measure
         saved = ins.Spec(id="s1", title="Mine", about="", sql="SELECT 1", chart={}, group="",
                          person="", scope="everyone", saved=True)
         got = ins.ahead_refs(specs + [saved])
-        self.assertEqual(got, first + ["SELECT 1"] + measures)
-        self.assertEqual(ins.ahead_refs(specs + [saved], measures=False), first + ["SELECT 1"])
+        self.assertEqual(got, priority + first + ["SELECT 1"] + measures)
+        self.assertEqual(ins.ahead_refs(specs + [saved], measures=False),
+                         priority + first + ["SELECT 1"])
 
     def test_the_warm_up_reads_measure_tiles_only_for_a_signed_in_reader(self):
         from unittest import mock

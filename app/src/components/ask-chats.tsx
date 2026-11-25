@@ -1,13 +1,14 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Ellipsis, Pin, Search, SquarePen } from "lucide-react";
+import { Ellipsis, PanelLeftClose, Pin, Search, SquarePen } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAskChats, updateAskChat } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { ago, formatDateTime } from "@/lib/format";
+import { useAskRunning } from "@/lib/thread";
 import type { AskChat, AskChats } from "@/lib/types";
 
 /** Rows drawn at first; more are drawn as the list is scrolled, so every chat is reachable and none is cut. */
@@ -49,7 +50,19 @@ function groupOf(last: string, now: Date): (typeof GROUPS)[number] {
  * it and go on asking in it; rename, pin or delete it from its menu; search names and questions.
  * Deleting takes it off this list only: your work log keeps the record of what was asked.
  */
-export function AskChatList({ current, refreshKey, onNew, className }: { current?: string | null; refreshKey?: unknown; onNew: () => void; className?: string }) {
+export function AskChatList({
+  current,
+  refreshKey,
+  onNew,
+  onCollapse,
+  className,
+}: {
+  current?: string | null;
+  refreshKey?: unknown;
+  onNew: () => void;
+  onCollapse?: () => void;
+  className?: string;
+}) {
   const [q, setQ] = useState("");
   const [list, setList] = useState<AskChats | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -97,7 +110,28 @@ export function AskChatList({ current, refreshKey, onNew, className }: { current
     [q, current, onNew],
   );
 
-  const chats = list?.chats ?? [];
+  const { runningIds, runningChats } = useAskRunning();
+  const baseChats = list?.chats ?? [];
+  const mergedChats: AskChat[] = (() => {
+    const out = baseChats.map((c) => (runningIds.has(c.conversation_id) ? { ...c, running: true } : c));
+    if (q.trim()) return out;
+    const seenIds = new Set(out.map((c) => c.conversation_id));
+    const extras: AskChat[] = [];
+    for (const rc of runningChats) {
+      if (seenIds.has(rc.conversation_id)) continue;
+      extras.push({
+        conversation_id: rc.conversation_id,
+        title: rc.title,
+        named: false,
+        pinned: false,
+        questions: 1,
+        last_at: rc.started_at,
+        running: true,
+      });
+    }
+    return extras.length ? [...extras, ...out] : out;
+  })();
+  const chats = mergedChats;
   const pinned = chats.filter((c) => c.pinned);
   const entries = collapse(chats.filter((c) => !c.pinned));
   // the rows still to draw: as the foot of the list scrolls into view, the next batch is drawn
@@ -160,28 +194,56 @@ export function AskChatList({ current, refreshKey, onNew, className }: { current
   };
 
   const shown = entries.slice(0, drawn);
-  const heading = "px-2 pt-3 pb-1 text-[11px] font-medium text-faint";
+  const heading = "px-2 pt-3.5 pb-1 text-[10.5px] font-medium uppercase tracking-[0.05em] text-faint";
   return (
-    <nav className={cn("flex min-h-0 flex-col", className)} aria-label="Chats" data-testid="ask-chats">
-      <div className="px-2 pt-2 pb-1">
-        <button type="button" onClick={onNew} className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] font-medium hover:bg-hover cursor-pointer" data-testid="new-chat">
-          <SquarePen className="size-4 shrink-0" strokeWidth={2} aria-hidden />
-          New chat
-        </button>
-        <label className="mt-1 flex h-8 items-center gap-2 rounded-md px-2 text-[13px] hover:bg-hover focus-within:bg-hover">
-          <Search className="size-4 shrink-0 text-muted" strokeWidth={2} aria-hidden />
-          <input value={q} onChange={(e) => setQ(e.target.value.slice(0, 200))} placeholder="Search chats" aria-label="Search chats" className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted" />
-        </label>
+    <nav className={cn("flex min-h-0 flex-col bg-bg-subtle", className)} aria-label="Chats" data-testid="ask-chats">
+      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+        <span className="text-[12px] font-medium text-muted">Chats</span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onNew}
+            aria-label="New chat"
+            title="New chat"
+            className="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+            data-testid="new-chat"
+          >
+            <SquarePen className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+            <span>New</span>
+          </button>
+          {onCollapse && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              aria-label="Hide chats"
+              title="Hide chats"
+              data-testid="collapse-ask-chats"
+              className="inline-flex size-7 items-center justify-center rounded-sm text-faint hover:bg-hover hover:text-fg cursor-pointer"
+            >
+              <PanelLeftClose className="size-3.5" strokeWidth={2} aria-hidden />
+            </button>
+          )}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {problem && <p className="px-2 py-1 text-[12px] text-late" role="alert">{problem}</p>}
-        {list && !list.available && <p className="px-2 py-1 text-[12px] text-muted">Your chats can't be listed just now.</p>}
-        {list && list.available && chats.length === 0 && <p className="px-2 py-1 text-[12px] text-muted">{q ? "No chat matches that." : "Your questions will be listed here."}</p>}
+      <label className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3 text-[12.5px] text-fg">
+        <Search className="size-3.5 shrink-0 text-faint" strokeWidth={2} aria-hidden />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value.slice(0, 200))}
+          placeholder="Search chats"
+          aria-label="Search chats"
+          className="min-w-0 flex-1 bg-transparent text-[12.5px] outline-none focus-visible:outline-none placeholder:text-faint"
+        />
+      </label>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+        {problem && <p className="px-2.5 py-2 text-[12px] text-late" role="alert">{problem}</p>}
+        {list && !list.available && <p className="px-2.5 py-2 text-[12px] text-muted">Your chats can't be listed just now.</p>}
+        {list && list.available && chats.length === 0 && <p className="px-2.5 py-2 text-[12px] text-muted">{q ? "No chat matches that." : "Your questions will be listed here."}</p>}
         {pinned.length > 0 && (
-          <>
+          <section aria-label="Pinned">
             <h3 className={heading}>Pinned</h3>
-            <ul>{pinned.map((c) => row(c))}</ul>
-          </>
+            <ul className="space-y-0.5">{pinned.map((c) => row(c))}</ul>
+          </section>
         )}
         {GROUPS.map((g) => {
           const mine = shown.filter((e) => groupOf(e.head.last_at, now) === g);
@@ -189,7 +251,7 @@ export function AskChatList({ current, refreshKey, onNew, className }: { current
           return (
             <section key={g} aria-label={g}>
               <h3 className={heading}>{g}</h3>
-              <ul>{mine.flatMap(entry)}</ul>
+              <ul className="space-y-0.5">{mine.flatMap(entry)}</ul>
             </section>
           );
         })}
@@ -264,15 +326,30 @@ function ChatRow({
     );
   }
   return (
-    <li className={cn("group flex items-center rounded-md", nested && "ml-4", active ? "bg-hover" : "hover:bg-hover")}>
+    <li
+      className={cn(
+        "group flex items-center rounded-[5px] transition-colors",
+        nested && "ml-3 border-l border-border pl-1",
+        active ? "bg-nav-on font-medium text-fg" : "text-fg/80 hover:bg-hover hover:text-fg",
+      )}
+    >
       <Link
         href={`/ask?c=${encodeURIComponent(chat.conversation_id)}`}
-        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1 text-[13px] leading-5"
+        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-[13px] leading-5"
         aria-current={active ? "page" : undefined}
         title={`${chat.title}\n${chat.questions === 1 ? "1 question" : `${chat.questions} questions`}, last ${formatDateTime(chat.last_at)}`}
       >
-        {chat.pinned && <Pin className="size-3 shrink-0 text-faint" strokeWidth={2} aria-label="Pinned" />}
+        {chat.pinned && <Pin className="size-3 shrink-0 text-accent" strokeWidth={2} aria-label="Pinned" />}
         <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+        {chat.running && (
+          <span
+            className="size-2 shrink-0 rounded-full bg-accent skeleton-shimmer"
+            role="status"
+            aria-label="Working on an answer"
+            title="Working on an answer"
+            data-testid="chat-running-dot"
+          />
+        )}
         {nested && <span className="shrink-0 text-[11px] text-faint tabular-nums">{ago(chat.last_at)}</span>}
       </Link>
       {count ? (
@@ -281,17 +358,17 @@ function ChatRow({
           onClick={onToggle}
           aria-expanded={expanded}
           aria-label={expanded ? `Hide the ${count - 1} earlier times this was asked` : `Asked ${count} times: show the earlier ones`}
-          className="mr-1 h-5 shrink-0 rounded px-1.5 text-[11px] text-muted tabular-nums hover:bg-surface-2 hover:text-fg cursor-pointer"
+          className="mr-1 h-5 shrink-0 rounded-sm px-1.5 text-[11px] text-faint tabular-nums hover:bg-hover hover:text-fg cursor-pointer"
         >
           {count}
         </button>
       ) : null}
       <Menu.Root>
-        <Menu.Trigger className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded text-muted hover:text-fg group-hover:flex group-focus-within:flex focus-visible:flex data-[state=open]:flex cursor-pointer" aria-label={`More for ${chat.title}`}>
-          <Ellipsis className="size-4" strokeWidth={2} aria-hidden />
+        <Menu.Trigger className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg group-hover:flex group-focus-within:flex focus-visible:flex data-[state=open]:flex cursor-pointer" aria-label={`More for ${chat.title}`}>
+          <Ellipsis className="size-3.5" strokeWidth={2} aria-hidden />
         </Menu.Trigger>
         <Menu.Portal>
-          <Menu.Content align="end" sideOffset={4} className="z-50 min-w-32 rounded-xl bg-raised p-1.5 shadow-pop">
+          <Menu.Content align="end" sideOffset={4} className="z-50 min-w-32 rounded-lg border border-border-strong bg-raised p-1.5 shadow-pop">
             <Menu.Item onSelect={() => onMenu("rename")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
               Rename
             </Menu.Item>

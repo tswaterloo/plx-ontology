@@ -26,6 +26,14 @@ def withheld(reads: Sequence[Mapping[str, Any]]) -> None:
         trace["withheld"].extend(dict(r) for r in reads)
 
 
+def unread(source: str, reason: str) -> None:
+    """Note a source that could not be read during this session (permission denied, unavailable,
+    timed out, or uncaptured): only the source name and concise reason are kept, never record data."""
+    trace = getattr(_LOCAL, "trace", None)
+    if trace is not None:
+        trace["unread"].append({"source": str(source or ""), "reason": str(reason or "")})
+
+
 def said_nothing(text: str) -> None:
     """Note why the session found nothing to prepare (a prepared session names the record that
     shows the matter done): kept on the trace so the matter says it, never a bare 'nothing'."""
@@ -36,7 +44,8 @@ def said_nothing(text: str) -> None:
 
 def begin() -> None:
     """Start a trace on this thread (an earlier one not collected is dropped)."""
-    _LOCAL.trace = {"usd": None, "calls": [], "sessions": 0, "withheld": [], "tokens": {}, "turns": 0, "nothing": ""}
+    _LOCAL.trace = {"usd": None, "calls": [], "sessions": 0, "withheld": [], "unread": [],
+                    "tokens": {}, "turns": 0, "nothing": ""}
 
 
 def note(usd: Any, calls: Sequence[Mapping[str, Any]], usage: Optional[Mapping[str, Any]] = None) -> None:
@@ -61,4 +70,5 @@ def end() -> dict[str, Any]:
     """The trace since ``begin`` ({"usd": Decimal or None, "calls": [...], "sessions": n}); ends it."""
     trace: Optional[dict[str, Any]] = getattr(_LOCAL, "trace", None)
     _LOCAL.trace = None
-    return trace or {"usd": None, "calls": [], "sessions": 0, "withheld": [], "tokens": {}, "turns": 0, "nothing": ""}
+    return trace or {"usd": None, "calls": [], "sessions": 0, "withheld": [], "unread": [],
+                     "tokens": {}, "turns": 0, "nothing": ""}

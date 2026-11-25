@@ -3,28 +3,28 @@
 
 export type Theme = "light" | "dark";
 
-// One categorical palette, colour-blind safe in order (blue, orange, teal, crimson, violet,
-// ochre, sky, grey); the dark theme's are lighter so they read on a dark ground.
+// One categorical palette: refined executive BI tones (enterprise blue, emerald-sage, cool slate,
+// warm amber, muted violet, coral-rose, crisp sky, soft silver), legible on both light and dark grounds.
 export const PALETTE: Record<Theme, string[]> = {
-  light: ["#2E6FB7", "#E3832F", "#2A9D74", "#C9455B", "#7C5CBF", "#9C7A2E", "#3FA7C9", "#7F7F7F"],
-  dark: ["#5B9BE6", "#F2A05A", "#4CC29A", "#E4707F", "#A58BE0", "#C9A456", "#6CC5E0", "#A6A6A6"],
+  light: ["#2563EB", "#2F855A", "#64748B", "#C27803", "#5B6AD0", "#C53030", "#0284C7", "#475569"],
+  dark: ["#60A5FA", "#34D399", "#94A3B8", "#F0B45C", "#A78BFA", "#F87171", "#38BDF8", "#CBD5E1"],
 };
 
 export const INK: Record<Theme, { text: string; muted: string; grid: string; axis: string; ground: string }> = {
-  light: { text: "#1F2937", muted: "#5B6170", grid: "#E5E7EB", axis: "#9CA3AF", ground: "#FFFFFF" },
-  dark: { text: "#E5E7EB", muted: "#A3A9B6", grid: "#2A2F3A", axis: "#4B5563", ground: "#111418" },
+  light: { text: "#0F172A", muted: "#526071", grid: "#E5E8EE", axis: "#CBD2DC", ground: "#FFFFFF" },
+  dark: { text: "#ECEEF2", muted: "#969CA8", grid: "#23262F", axis: "#363B47", ground: "#101114" },
 };
 
 // waterfall: rise, fall, total
 export const MOVE: Record<Theme, { up: string; down: string; total: string }> = {
-  light: { up: "#2E6FB7", down: "#E3832F", total: "#4B5563" },
-  dark: { up: "#5B9BE6", down: "#F2A05A", total: "#9CA3AF" },
+  light: { up: "#2F855A", down: "#C53030", total: "#475569" },
+  dark: { up: "#34D399", down: "#F87171", total: "#94A3B8" },
 };
 
 // the sequential ramp of heatmaps and coloured tables (low -> high)
 const RAMP: Record<Theme, [number[], number[]]> = {
   light: [[0xee, 0xf4, 0xfb], [0x1f, 0x5a, 0x99]],
-  dark: [[0x1b, 0x24, 0x33], [0x6f, 0xa8, 0xee]],
+  dark: [[0x16, 0x1a, 0x22], [0x25, 0x63, 0xeb]],
 };
 
 export function colour(i: number, theme: Theme): string {
@@ -42,8 +42,8 @@ export function ramp(v: number, lo: number, hi: number, theme: Theme): string {
 /** Text that reads on a ramp colour of position ``t`` (0..1). */
 export function inkOn(v: number, lo: number, hi: number, theme: Theme): string {
   const t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
-  if (theme === "dark") return t > 0.6 ? "#0B1220" : "#E5E7EB";
-  return t > 0.55 ? "#FFFFFF" : "#1F2937";
+  if (theme === "dark") return t > 0.65 ? "#FFFFFF" : "#ECEEF2";
+  return t > 0.55 ? "#FFFFFF" : "#0F172A";
 }
 
 /** Round ticks covering lo..hi, 1, 2 or 5 times a power of ten apart (the last >= hi). */

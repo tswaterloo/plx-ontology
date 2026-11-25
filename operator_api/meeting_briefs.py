@@ -93,9 +93,10 @@ def age_seconds(stored_at: Optional[str]) -> float:
 
 def note_rows(items: list[Mapping[str, Any]], ids: set[str]) -> list[dict[str, Any]]:
     """Brief rows of the person's own notes naming one of ``ids``."""
-    return [{"label": str(i["text"]), "who": "Your note", "date": str(i.get("at") or "")[:10] or None,
+    from .page_core import clean_text
+    return [{"label": clean_text(i["text"]), "who": "Your note", "date": str(i.get("at") or "")[:10] or None,
              "detail": None, "sources": []}
-            for i in items if ids & set(i.get("records") or ())]
+            for i in items if ids & set(i.get("records") or ()) and clean_text(i.get("text"))]
 
 
 def notes_section(items: list[Mapping[str, Any]], ids: set[str]) -> dict[str, Any]:

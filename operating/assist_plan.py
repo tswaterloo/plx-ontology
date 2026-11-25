@@ -169,15 +169,34 @@ def tool_prompt(person: str, when: str, matter: str, block: Sequence[Mapping[str
             + TAIL.format(when=when, matter=matter, near_shown=len(near), others=others, near=nearest))
 
 
+def _extract_plan_json(text: str) -> Optional[Mapping[str, Any]]:
+    """Find the JSON plan object inside model output even when surrounded by prose, code fences,
+    or earlier braces (avoids greedy ``{...}`` failing on stray braces in explanation text)."""
+    dec = json.JSONDecoder()
+    candidate: Optional[Mapping[str, Any]] = None
+    pos = 0
+    while True:
+        idx = text.find("{", pos)
+        if idx < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(text, idx)
+        except ValueError:
+            pos = idx + 1
+            continue
+        if isinstance(obj, Mapping):
+            if "acts" in obj:
+                return obj
+            candidate = obj
+        pos = max(end, idx + 1)
+    return candidate
+
+
 def parse(text: Optional[str]) -> dict[str, Any]:
     """``{"status": "planned", "plan": {...}}`` or ``{"status": "failed", "reason": ...}``."""
     if not text:
         return {"status": "failed", "reason": "no_answer"}
-    found = re.search(r"\{.*\}", text, re.S)
-    try:
-        raw = json.loads(found.group(0)) if found else None
-    except ValueError:
-        raw = None
+    raw = _extract_plan_json(text)
     if not isinstance(raw, Mapping) or not isinstance(raw.get("acts"), list) \
             or not isinstance(raw.get("why"), str) or not raw["why"].strip():
         return {"status": "failed", "reason": "unparsable"}
@@ -412,6 +431,8 @@ def run_plans(pg: Any, call: Callable[[str], Optional[str]],
                 answer = call(prompt)
             prompt_chars.append(len(prompt))
             got = parse(answer)
+            if isinstance(got.get("plan"), dict):
+                got["plan"].setdefault("unread_sources", [])
             acts = (got.get("plan") or {}).get("acts") or [{}]
             seen = m.get("touched_at") or m["basis_at"]
             one = {"matter": m["matter_id"], "status": got["status"],
@@ -458,20 +479,26 @@ def later_of(m: Mapping[str, Any], rows: Sequence[tuple],
     return list(reversed(out)), left
 
 
-def _earlier_block(pg: Any, rows: Sequence[Mapping[str, Any]], own: Mapping[str, str]
-                   ) -> dict[str, str]:
-    """Per matter id: the messages of the basis message's thread, the earlier ones and the ones
-    after it (a plan made from the thread as it is now), oldest first, each whole and through the
-    same door as the reading (``assist_readings.thread_rows``: people exclusion, ``ai_ok``), the
-    senders as our staff's names or 'someone outside' (never an address); only the model's window
-    bounds it (half of it: the precedents need the rest; the later messages are placed first) and
-    the count left out is said. A database whose exclusion is undecided says so instead of showing
-    any. Statements: one per view for the threads, one for the texts."""
+def _earlier_block_with_meta(
+    pg: Any, rows: Sequence[Mapping[str, Any]], own: Mapping[str, str]
+) -> tuple[dict[str, str], dict[str, list[str]], dict[str, list[dict[str, str]]]]:
+    """Per matter id: (earlier/later thread text block, every handle opened, unread source notes).
+
+    Records every handle opened from the thread (not only those included/cited in the text window)
+    and notes unread sources when exclusions are undecided or a message text could not be read."""
+    from operating import assist_prepared as prep
     from operating import assist_readings as ar
+    from operating.ontology_tools_policy import note_opened
     covered = ar._covered(pg, None)
     if covered is None:
-        return {r["matter_id"]: "earlier messages: not shown (the people exclusion is not decided here)"
-                for r in rows}
+        return (
+            {r["matter_id"]: "earlier messages: not shown (the people exclusion is not decided here)"
+             for r in rows},
+            {r["matter_id"]: [] for r in rows},
+            {r["matter_id"]: [{"source": "Earlier thread messages",
+                               "reason": "withheld because privacy exclusions are not decided"}]
+             for r in rows},
+        )
     page = [{"id": r["matter_id"], "view": r["source"], "thread": r["thread_key"], "key": r["message_key"],
              "said": r["said_at"], "text": own.get(r["matter_id"], "")}
             for r in rows if r["source"] and r["thread_key"]]
@@ -490,9 +517,27 @@ def _earlier_block(pg: Any, rows: Sequence[Mapping[str, Any]], own: Mapping[str,
             tid, shown, _k = ar.teams_sender(who)
             who = (staff.by_id[tid][0] if tid in staff.by_id else shown) or "someone"
         return f"[{x['sent']}] {who}: {x['text']}"
+
     out: dict[str, str] = {}
+    opened_by_matter: dict[str, list[str]] = {}
+    unread_by_matter: dict[str, list[dict[str, str]]] = {}
     for m in page:
         rows_of = threads.get((m["view"], m["thread"]), ())
+        opened = list(dict.fromkeys(str(r[3]) for r in rows_of if r[3]))
+        opened_by_matter[m["id"]] = opened
+        if opened:
+            note_opened(opened)
+        unreadable: list[dict[str, str]] = []
+        for _k, _said, _sender, handle, oid in rows_of:
+            if _k == m["key"]:
+                continue
+            text_val, why = texts.get((handle, oid), (None, ""))
+            if text_val is None and why:
+                unreadable.append({
+                    "source": prep.plain_source_name(m["view"]),
+                    "reason": prep.plain_unread_reason(why),
+                })
+        unread_by_matter[m["id"]] = unreadable
         later, later_left = later_of(m, rows_of, texts, WINDOW_CHARS // 2)
         used = sum(len(x["text"]) for x in later)
         got, left = ar.earlier_of(m, rows_of, texts, window=max(WINDOW_CHARS // 2 - used, 0))
@@ -505,16 +550,32 @@ def _earlier_block(pg: Any, rows: Sequence[Mapping[str, Any]], own: Mapping[str,
         out[m["id"]] = (("earlier in the thread, oldest first:\n" + "\n".join(lines)) if lines else "") + \
             (("\nafter the asking message, oldest first:\n" + "\n".join(after)) if after else "")
         out[m["id"]] = out[m["id"]].lstrip("\n")
-    return out
+    return out, opened_by_matter, unread_by_matter
+
+
+def _earlier_block(pg: Any, rows: Sequence[Mapping[str, Any]], own: Mapping[str, str]
+                   ) -> dict[str, str]:
+    """Per matter id: the messages of the basis message's thread, the earlier ones and the ones
+    after it (a plan made from the thread as it is now), oldest first, each whole and through the
+    same door as the reading (``assist_readings.thread_rows``: people exclusion, ``ai_ok``), the
+    senders as our staff's names or 'someone outside' (never an address); only the model's window
+    bounds it (half of it: the precedents need the rest; the later messages are placed first) and
+    the count left out is said. A database whose exclusion is undecided says so instead of showing
+    any. Statements: one per view for the threads, one for the texts."""
+    blocks, _opened, _unread = _earlier_block_with_meta(pg, rows, own)
+    return blocks
 
 
 def matter_inputs(pg: Any, matters: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
     """Per matter: the words the model reads (title, what is asked, the other side, when, the
     basis message's whole own text, the earlier messages of its thread) and the situation that is
-    searched for precedents (the same form the precedents are embedded in). One statement for the
+    searched for precedents (the same form the precedents are embedded in), plus ``opened_handles``
+    (every handle opened, cited or not) and ``unread_sources``. One statement for the
     matters, one for their texts, then the earlier block's (``_earlier_block``)."""
     from operating import assist_precedents as ap
+    from operating import assist_prepared as prep
     from operating import assist_readings as ar
+    from operating.ontology_tools_policy import note_opened
     cur = pg.execute(_BASIS, ([m["matter_id"] for m in matters],))
     cols = [d.name for d in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -524,20 +585,38 @@ def matter_inputs(pg: Any, matters: Sequence[Mapping[str, Any]]) -> dict[str, di
                            "WHERE handle = ANY(%s)", (handles, handles)).fetchall()) if handles else {}
     texts = ar.message_texts(pg, [(h, oids[h]) for h in handles if oids.get(h)])
     own: dict[str, str] = {}
+    basis_unread: dict[str, list[dict[str, str]]] = {}
     for r in rows:
+        mid = r["matter_id"]
+        basis_handles = [str(x) for x in (r["handles"] or ()) if x]
+        if basis_handles:
+            note_opened(basis_handles)
         h = next((x for x in (r["handles"] or ()) if oids.get(x)), None)
-        raw = texts.get((h, oids.get(h)), (None, ""))[0] if h else None
-        own[r["matter_id"]] = ar.own_text(raw, mail=r["source"] == "emails")[0] if raw else ""
-    earlier = _earlier_block(pg, rows, own)
+        raw, why = texts.get((h, oids.get(h)), (None, "")) if h else (None, "")
+        if raw is None and why:
+            basis_unread[mid] = [{
+                "source": prep.plain_source_name(r["source"] or "Email"),
+                "reason": prep.plain_unread_reason(why),
+            }]
+        own[mid] = ar.own_text(raw, mail=r["source"] == "emails")[0] if raw else ""
+    earlier, opened_by_matter, unread_by_matter = _earlier_block_with_meta(pg, rows, own)
     out = {}
     for r in rows:
         mid, text = r["matter_id"], own[r["matter_id"]]
+        opened = list(dict.fromkeys([
+            *(str(x) for x in (r["handles"] or ()) if x),
+            *(opened_by_matter.get(mid) or ()),
+        ]))
+        unread = prep.collect_unread_sources(
+            input_unread=[*(basis_unread.get(mid) or ()), *(unread_by_matter.get(mid) or ())],
+        )
         out[mid] = {
             "text": (f"{r['title']}\nasks: {r['detail']}\nother side: {r['counterpart'] or 'unknown'}"
                      f"\nsince: {r['basis_at']:%Y-%m-%d %H:%M}\nmessage:\n{text}"
                      + (f"\n{earlier[mid]}" if earlier.get(mid) else "")),
             "situation": ap.situation_of("", text, r["title"], r["detail"], r["counterpart"] or ""),
-            "party": r["counterpart_party"], "counterpart": r["counterpart"] or ""}
+            "party": r["counterpart_party"], "counterpart": r["counterpart"] or "",
+            "opened_handles": opened, "unread_sources": unread}
     return out
 
 

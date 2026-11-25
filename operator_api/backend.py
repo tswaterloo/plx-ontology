@@ -184,7 +184,7 @@ from .cli import (  # noqa: F401 - re-exported
 from .backend_common import (
     _clean_text, _iso, GRANT_SCREENS, REWARM_FLOOR_SECONDS, SCREENS_AGAIN_MOST,
     AHEAD_LATER, SCREENS_AGAIN_SECONDS, SCREENS_AHEAD, SHAPE_SECONDS, SHAPE_WAIT_FACTOR, STOP_JOIN_SECONDS,
-    FRESHNESS_SECONDS)
+    FRESHNESS_SECONDS, UNSERVABLE_STATUSES)
 from .recurring_api import RecurringMixin
 from .backend_warm import DIRECTORY_ROUND, WarmMixin  # noqa: F401 - re-export
 from .backend_ask import AskMixin  # noqa: F401 - re-export
@@ -1206,6 +1206,13 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 return self._refused(reader, key, held, before, read, error, refresh=started)
         except (TimeoutError, errors.UserFacing) as error:
             return self._refused(reader, key, held, before, read, error, refresh=started)
+        if held is not None and isinstance(getattr(value, "status", None), str) \
+                and getattr(value, "status") in UNSERVABLE_STATUSES:
+            stale = self._stale_copy(key, held, before)
+            if stale is not None:
+                if started:
+                    self._refresh_later(reader, key, read)
+                return stale
         if not started:
             # another request's read of this same screen and reader: that request keeps
             # it; this one gets its own copy of the answer

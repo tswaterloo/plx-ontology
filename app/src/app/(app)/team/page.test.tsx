@@ -6,7 +6,11 @@ const who = vi.hoisted(() => ({ me: { access_label: null, feedback_admin: false 
 vi.mock("@/components/auth", () => ({
   useAuth: () => ({ state: { status: "signed-in", me: who.me } }),
 }));
-vi.mock("next/navigation", () => ({ usePathname: () => "/team", useRouter: () => ({ replace: nav.replace, push: () => undefined }) }));
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/team",
+  useRouter: () => ({ replace: nav.replace, push: () => undefined }),
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getLabour: () => Promise.resolve({ state: "not_granted" }),

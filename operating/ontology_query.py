@@ -309,9 +309,9 @@ def _hop(hop: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _error(code: str, message: str, hint: str | None = None) -> dict[str, Any]:
-    out = {"error": {"code": code, "message": message[:600]}}
+    out = {"error": {"code": code, "message": message}}
     if hint:
-        out["error"]["hint"] = hint[:600]
+        out["error"]["hint"] = hint
     return out
 
 
@@ -412,15 +412,15 @@ class QueryTool:
                         raise
                     unroutable.append(refused)
                     gaps.append({"state": "unknown", "reason": "no_route",
-                                 "subject": record[:700],
-                                 "detail": str(refused.result["error"].get("message"))[:600]})
+                                 "subject": record,
+                                 "detail": str(refused.result["error"].get("message"))})
                     continue
                 meta = run.pop("meta", None) or meta
                 if run.get("set") and all(h.get("count") for h in run["hops"]):
                     by_record.append({"record": record, **run})
                 else:
                     gaps.append({"state": "unknown", "reason": "nothing_reached",
-                                 "subject": record[:700],
+                                 "subject": record,
                                  "detail": "this record of the thing reaches nothing on the "
                                            "path"})
                     # what its identifiers were searched for stays said
@@ -724,10 +724,10 @@ class QueryTool:
                        "match, not a confirmed one: say what it reached as a likely match "
                        "(claims with lead true)")
         said = [{"state": "unknown", "reason": "via_twin",
-                 "subject": str(twin["hop"]["link_type"])[:700], "detail": detail[:600]}]
+                 "subject": str(twin["hop"]["link_type"]), "detail": detail}]
         if twin.get("lead"):
             said.append({"state": "unknown", "reason": LEAD_BASIS,
-                         "subject": str(twin["hop"]["link_type"])[:700],
+                         "subject": str(twin["hop"]["link_type"]),
                          "detail": "every twin walked is joined only by a lead link: what "
                                    "this walk counted, totalled or listed is a likely "
                                    "match, never a confirmed one (claims with lead true)"})
@@ -787,7 +787,7 @@ class QueryTool:
             raise _Refused(_error(
                 "without_unsettled",
                 f"hop {index + 1}: which records have a {directed['link_type']} link could "
-                f"not all be read ({lossy[0].get('reason')}: {lossy[0].get('detail')})"[:600],
+                f"not all be read ({lossy[0].get('reason')}: {lossy[0].get('detail')})",
                 "start from fewer records (a narrower where or one record) so every link of "
                 "the hop is read"))
         kept = [oid for oid in start if oid not in linked]
@@ -893,7 +893,7 @@ class QueryTool:
             ids = list(got.get("ids") or ())
             if not ids:
                 kept_gaps.append({"state": "unknown", "reason": "nothing_selected",
-                                  "subject": json.dumps(filters, default=str)[:700],
+                                  "subject": json.dumps(filters, default=str),
                                   "detail": "no record this reader may read holds these "
                                             "values"})
             return {"routes": [], "hops": [], "gaps": kept_gaps, "meta": None,
@@ -980,7 +980,7 @@ class QueryTool:
                                            common, actor)
             if named["set"]:
                 gaps += [dict(g, detail=(g["detail"] + f"; their set: {named['set']} (the "
-                                         "route taken passes through other records)")[:600])
+                                         "route taken passes through other records)"))
                          if g.get("reason") == "matched_by_identifier" else g
                          for g in named["gaps"]]
         if found:
@@ -997,14 +997,14 @@ class QueryTool:
                     + f" ({route['entry']['count']} records, {route['set']})"
                     for route in others[:MAX_ROUTES])
                 gaps.append({"state": "unknown", "reason": "routes_not_taken",
-                             "subject": f"{here} to {goal}"[:700],
+                             "subject": f"{here} to {goal}",
                              "detail": (f"{len(others)} other route(s) also reached {goal} "
                                         "records, which this answer leaves out unless the "
                                         f"taken route reached them too: {said}. Start from a "
-                                        "route's set to read its records")[:600]})
+                                        "route's set to read its records")})
         if cut:
             gaps.append({"state": "unknown", "reason": "routes_not_walked",
-                         "subject": f"{here} to {goal}"[:700],
+                         "subject": f"{here} to {goal}",
                          "detail": f"the search stopped after {calls} links walked (its "
                                    "call or time budget); name the links of a longer route "
                                    "to walk it"})
@@ -1019,7 +1019,7 @@ class QueryTool:
                             "gaps": gaps, "meta": matched["meta"] or meta,
                             "set": matched["set"]}
             gaps.append({"state": "unknown", "reason": "nothing_reached",
-                         "subject": f"{here} to {goal}"[:700],
+                         "subject": f"{here} to {goal}",
                          "detail": f"no route of up to {reach} declared links from these "
                                    f"records reaches a {goal} ({calls} links walked)"})
         return {"routes": listed[:MAX_ROUTES_SHOWN],
@@ -1123,7 +1123,7 @@ class QueryTool:
                 firm.setdefault(kind, []).extend(i for i in ids if i not in firm.get(kind, ()))
                 if kind in near:
                     said.append(f"{query} ({', '.join(sorted(held))}) is one {kind}: "
-                                + ", ".join(ids[:3]))
+                                + ", ".join(ids))
             else:
                 # a number several things share, or a match by name or reference, of the
                 # goal or a record one link from it: a lead, named, never walked
@@ -1132,10 +1132,9 @@ class QueryTool:
         if len(resolved) < len(ordered):
             unsearched = [q for q, _held in ordered if q not in set(resolved)]
             cuts.append(f"{len(unsearched)} of {len(ordered)} identifiers (not resolved: "
-                        + ", ".join(unsearched[:5]) + (", ..." if len(unsearched) > 5
-                                                         else "") + ")")
-        searched = {"sources": ["projection"], "queries": resolved[:16],
-                    "scopes": sorted({p for q in resolved for p in queries[q]})[:16]}
+                        + ", ".join(unsearched) + ")")
+        searched = {"sources": ["projection"], "queries": resolved,
+                    "scopes": sorted({p for q in resolved for p in queries[q]})}
         reached: list[str] = list(firm.pop(goal, ()))
         if reached and filters and self.backend.select is not None:
             # the hop's where selects among the goal records an identifier names
@@ -1169,11 +1168,11 @@ class QueryTool:
             out["set"], out["hops"], out["meta"] = self._set_of(reached, actor), hops, meta
             out["gaps"].append({
                 "state": "unknown", "reason": "matched_by_identifier",
-                "subject": f"{here} to {goal}"[:700],
+                "subject": f"{here} to {goal}",
                 "detail": (f"no stored link joins them: {len(reached)} {goal} record(s) "
                            "reached through identifiers these records' own values hold, "
                            "each an exact identifier of one thing (firm, read under your "
-                           "rights): " + "; ".join(said))[:600], "searched": searched})
+                           "rights): " + "; ".join(said)), "searched": searched})
         elif queries and not cuts:
             out["gaps"].append({
                 "state": "unknown", "reason": "no_identifier_match",
@@ -1339,7 +1338,7 @@ class QueryTool:
         ids = list(got.get("ids") or ())
         if not ids:
             gaps.append({"state": "unknown", "reason": "nothing_selected",
-                         "subject": json.dumps(filters, default=str)[:700],
+                         "subject": json.dumps(filters, default=str),
                          "detail": "no start record this reader may read holds these "
                                    "values"})
             return None, None

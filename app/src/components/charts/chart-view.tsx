@@ -17,10 +17,10 @@ export type AskChart = NonNullable<Answer["charts"]>[number];
 type Series = AskChart["series"][number];
 type Tip = { x: number; y: number; title: string; rows: { colour?: string; name: string; value: string }[] } | null;
 
-const FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif";
+const FONT = "var(--font-sans), Inter, 'Segoe UI', Helvetica, Arial, sans-serif";
 const W = 640;
-const H = 300;
-// the longest slanted x label shown whole (a person's full name)
+const H = 290;
+// the longest slanted x label shown whole (a person's name without colliding)
 const TILT_CHARS = 22;
 
 export function useChartTheme(): Theme {
@@ -34,7 +34,7 @@ function Tooltip({ tip }: { tip: Tip; theme: Theme }) {
   return (
     <div
       role="tooltip"
-      className="pointer-events-none absolute z-10 min-w-[140px] max-w-[280px] border border-border bg-bg px-2 py-1.5 text-[12px] text-fg shadow-sm"
+      className="pointer-events-none absolute z-10 min-w-[148px] max-w-[280px] rounded-md border border-border-strong bg-raised px-2.5 py-2 text-[12px] text-fg shadow-pop"
       style={{ left: tip.x, top: tip.y }}
     >
       <div className="mb-0.5 font-medium">{tip.title}</div>
@@ -42,7 +42,7 @@ function Tooltip({ tip }: { tip: Tip; theme: Theme }) {
         <div key={i} className="flex items-center gap-2 tabular-nums">
           {r.colour && (
             <svg width={8} height={8} className="shrink-0" aria-hidden>
-              <rect width={8} height={8} fill={r.colour} />
+              <rect width={8} height={8} rx={2} fill={r.colour} />
             </svg>
           )}
           <span className="flex-1 truncate text-muted">{r.name}</span>
@@ -109,7 +109,9 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const charPx = compact ? 6.6 : 7.4;
   const slant = Math.min(longest, tilt) * charPx * Math.SQRT1_2;
   const padR = right.length ? 46 : 12;
-  let padL = horizontal ? Math.min(150, 12 + Math.min(longest, 24) * 6.5) : compact ? 34 : 52;
+  const hMaxChars = compact ? 18 : 26;
+  let padL = horizontal ? Math.min(Math.floor(width * 0.4), 18 + Math.min(longest, hMaxChars) * 7.6) : compact ? 34 : 52;
+  const hLabelChars = horizontal ? Math.max(10, Math.floor((padL - 14) / 7.6)) : 24;
   if (rotate && !horizontal) {
     for (let i = 0; i < n; i++) {
       const reach = Math.min((names[i] ?? "").length, tilt) * charPx * Math.SQRT1_2;
@@ -143,8 +145,8 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
     const t = inner / slots;
     const start = band * i + (band - inner) / 2 + t * slot;
     const [p, q] = [pos(Math.min(a, b)), pos(Math.max(a, b))];
-    // a subtle 2 px end on plain bars (stacked and histogram bars stay square); each grows from its baseline on first draw
-    const rx = stacked || kind === "histogram" ? undefined : 2;
+    // a subtle 3 px end on plain bars (stacked and histogram bars stay square); each grows from its baseline on first draw
+    const rx = stacked || kind === "histogram" ? undefined : 3;
     return horizontal ? (
       <rect key={key} className="chart-bar-h" rx={rx} x={padL + p} y={8 + start} width={Math.max(q - p, 0.5)} height={Math.max(t - (slots > 1 ? 1 : 0), 1)} fill={fill} />
     ) : (
@@ -230,12 +232,12 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
     <Svg chart={chart} width={width} height={height}>
       {axis.map((t) => (horizontal ? (
         <g key={t}>
-          <line x1={padL + pos(t)} x2={padL + pos(t)} y1={8} y2={8 + ph} stroke={ink.grid} strokeWidth={1} strokeOpacity={0.75} strokeDasharray="3 4" />
-          <text x={padL + pos(t)} y={height - 6} textAnchor="middle" fontSize={11} fill={ink.muted}>{short(t)}</text>
+          <line x1={padL + pos(t)} x2={padL + pos(t)} y1={8} y2={8 + ph} stroke={ink.grid} strokeWidth={1} strokeOpacity={theme === "dark" ? 0.85 : 0.75} strokeDasharray="3 4" />
+          <text x={padL + pos(t)} y={height - 6} textAnchor="middle" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
         </g>
       ) : (
         <g key={t}>
-          <line x1={padL} x2={padL + pw} y1={at(t)} y2={at(t)} stroke={ink.grid} strokeWidth={1} strokeOpacity={0.75} strokeDasharray="3 4" />
+          <line x1={padL} x2={padL + pw} y1={at(t)} y2={at(t)} stroke={ink.grid} strokeWidth={1} strokeOpacity={theme === "dark" ? 0.85 : 0.75} strokeDasharray="3 4" />
           <text x={padL - 6} y={at(t) + 4} textAnchor="end" fontSize={compact ? 10 : 11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
         </g>
       )))}
@@ -249,7 +251,10 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
       )}
       {marks}
       {names.map((l, i) => (i % every ? null : horizontal ? (
-        <text key={`x${i}`} x={padL - 6} y={8 + band * (i + 0.5) + 4} textAnchor="end" fontSize={11} fill={ink.text}>{clip(l, 24)}</text>
+        <text key={`x${i}`} x={padL - 8} y={8 + band * (i + 0.5) + 4} textAnchor="end" fontSize={11} fill={ink.text}>
+          <title>{l}</title>
+          {clip(l, hLabelChars)}
+        </text>
       ) : (
         <text
           key={`x${i}`}
@@ -348,7 +353,7 @@ function Pie({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip: Re
       )}
       {chart.labels.map((l, i) => (
         <g key={`k${i}`}>
-          <rect x={290} y={18 + i * 26} width={10} height={10} fill={colour(i, theme)} />
+          <rect x={290} y={18 + i * 26} width={10} height={10} rx={2} fill={colour(i, theme)} />
           <text x={308} y={27 + i * 26} fontSize={12} fill={ink.text}>{clip(l, 30)}</text>
           <text x={630} y={27 + i * 26} fontSize={12} fill={ink.muted} textAnchor="end" className="tabular-nums">
             {`${Math.round((values[i] / total) * 1000) / 10}%  ${short(values[i])}`}
@@ -376,12 +381,12 @@ function Scatter({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip
     <Svg chart={chart}>
       {ya.map((t) => (
         <g key={`y${t}`}>
-          <line x1={padL} x2={padL + pw} y1={Y(t)} y2={Y(t)} stroke={ink.grid} />
-          <text x={padL - 6} y={Y(t) + 4} textAnchor="end" fontSize={11} fill={ink.muted}>{short(t)}</text>
+          <line x1={padL} x2={padL + pw} y1={Y(t)} y2={Y(t)} stroke={ink.grid} strokeWidth={1} strokeOpacity={theme === "dark" ? 0.85 : 0.75} />
+          <text x={padL - 6} y={Y(t) + 4} textAnchor="end" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
         </g>
       ))}
       {xa.map((t) => (
-        <text key={`x${t}`} x={X(t)} y={8 + ph + 16} textAnchor="middle" fontSize={11} fill={ink.muted}>{short(t)}</text>
+        <text key={`x${t}`} x={X(t)} y={8 + ph + 16} textAnchor="middle" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
       ))}
       <text x={padL + pw} y={H - 4} textAnchor="end" fontSize={11} fill={ink.muted}>{human(chart.x)}</text>
       {chart.series.map((s, si) => s.values.map((v, i) => (v === null || v === undefined || xs[i] === null || xs[i] === undefined ? null : (
@@ -452,21 +457,21 @@ function ColourTable({ chart, theme }: { chart: AskChart; theme: Theme }) {
     <div className="max-h-[420px] overflow-auto">
       <table className="w-full border-collapse text-[12px] tabular-nums">
         <thead className="sticky top-0 bg-bg">
-          <tr className="text-left text-muted">
-            <th className="px-2 py-1 font-medium">{human(chart.x)}</th>
-            {chart.series.map((s) => <th key={s.name} className="px-2 py-1 text-right font-medium">{human(s.name)}</th>)}
+          <tr className="border-b border-border text-left text-muted">
+            <th className="px-2 py-1.5 font-medium">{human(chart.x)}</th>
+            {chart.series.map((s) => <th key={s.name} className="px-2 py-1.5 text-right font-medium">{human(s.name)}</th>)}
           </tr>
         </thead>
         <tbody>
           {chart.labels.map((l, i) => (
-            <tr key={i} className="border-t border-border">
-              <td className="px-2 py-1">{l}</td>
+            <tr key={i} className="border-t border-border/70 first:border-t-0">
+              <td className="px-2 py-1.5">{l}</td>
               {chart.series.map((s, si) => {
                 const v = s.values[i];
                 const [lo, hi] = ranges[si];
                 const known = v !== null && v !== undefined;
                 return (
-                  <td key={si} className="px-2 py-1 text-right" title={full(v, chart.currency)}
+                  <td key={si} className="px-2 py-1.5 text-right whitespace-nowrap" title={full(v, chart.currency)}
                     style={known ? { background: ramp(v, lo, hi, theme), color: inkOn(v, lo, hi, theme) } : undefined}>
                     {known ? full(v) : ""}
                   </td>
@@ -564,7 +569,7 @@ function Legend({ chart, theme }: { chart: AskChart; theme: Theme }) {
       {items.map((s) => (
         <span key={s.name} className="inline-flex items-center gap-1.5">
           <svg width={10} height={10} className="shrink-0" aria-hidden>
-            <rect width={10} height={10} fill={s.colour} />
+            <rect width={10} height={10} rx={2} fill={s.colour} />
           </svg>
           {s.name}
         </span>
@@ -574,8 +579,11 @@ function Legend({ chart, theme }: { chart: AskChart; theme: Theme }) {
 }
 
 /** What the chart is drawn from and what it leaves out, in a line. */
-export function chartNotes(chart: AskChart): string[] {
+export function chartNotes(chart: AskChart, opts?: { includeAggregation?: boolean }): string[] {
   const out: string[] = [];
+  if (chart.aggregation && opts?.includeAggregation !== false) {
+    out.push(chart.aggregation.endsWith(".") ? chart.aggregation : `${chart.aggregation}.`);
+  }
   const rows = chart.rows ?? null;
   if (rows !== null && chart.shown !== null && chart.shown !== undefined && chart.shown < rows) out.push(`Shows ${chart.shown} of ${rows} rows.`);
   if (chart.partial) out.push(chart.rows_total ? `Drawn from the first ${rows ?? "few"} of ${chart.rows_total} rows.` : "The query returned only its first rows: this is of those rows.");
@@ -680,7 +688,8 @@ function useNarrow(box: React.RefObject<HTMLDivElement | null>): number {
 const DRAWN = new Set<string>();
 function drawKey(chart: AskChart): string {
   let h = 5381;
-  const text = `${chart.title}|${chart.kind}|${chart.labels.join(",")}|${chart.series.map((s) => s.values.join(",")).join(";")}`;
+  const panelText = chart.panels?.map((p) => `${p.title}:${p.labels.join(",")}`).join("|") ?? "";
+  const text = `${chart.title}|${chart.kind}|${chart.labels.join(",")}|${panelText}|${chart.series.map((s) => s.values.join(",")).join(";")}`;
   for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
   return `${h}:${text.length}`;
 }
@@ -704,11 +713,24 @@ export function ChartView({ chart }: { chart: AskChart }) {
   else if (chart.kind === "table") body = <ColourTable chart={chart} theme={theme} />;
   else if (chart.kind === "kpi") body = <Kpis chart={chart} theme={theme} />;
   else if (chart.kind === "funnel") body = <Funnel chart={chart} theme={theme} onTip={tip} />;
-  else body = <Cartesian chart={chart} labels={chart.labels} series={chart.series} theme={theme} onTip={tip} width={narrow || W} />;
-  const notes = chartNotes(chart);
+  else body = (
+    <Cartesian
+      chart={chart}
+      labels={chart.labels}
+      series={chart.series}
+      theme={theme}
+      onTip={tip}
+      width={narrow || W}
+      height={chart.spec?.horizontal && chart.labels.length > 10 ? Math.min(460, Math.max(H, 36 + chart.labels.length * 22)) : H}
+    />
+  );
+  const notes = chartNotes(chart, { includeAggregation: false });
   return (
     <div className="space-y-1.5" data-chart-kind={chart.kind} data-draw={first ? "in" : undefined}>
       <Legend chart={chart} theme={theme} />
+      {chart.aggregation && (
+        <p className="text-[12px] text-muted" data-testid="chart-aggregation">{chart.aggregation}</p>
+      )}
       <div ref={tip.box} className="relative" onMouseLeave={tip.hide}>
         {body}
         <Tooltip tip={tip.tip} theme={theme} />

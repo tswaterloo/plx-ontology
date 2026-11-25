@@ -123,7 +123,10 @@ def _mine(backend: Any, reader: Reader, workflow_id: str) -> tuple[dict[str, Any
         raise
     if not rows or rows[0]["person"] not in ids:
         raise UserFacing("not_found", "That workflow is not on your list.", 404)
-    return aw.fold(rows), ids
+    wf = aw.fold(rows)
+    if wf.get("deleted"):
+        raise UserFacing("not_found", "That workflow is not on your list.", 404)
+    return wf, ids
 
 
 def _one_shown(pool: Any, workflow_id: str) -> m.AssistWorkflow:
@@ -258,25 +261,23 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader]) -> None:
     def workflow_update(workflow_id: str, body: m.AssistWorkflowUpdate, who: Reader = Depends(reader)) -> m.AssistWorkflow:
         """Edit a workflow's name, instruction or trigger."""
         from operating import assist_workflows as aw
-        from operating.card_text import mask_served
         wf, _ids = _mine(backend, who, workflow_id)
         if wf["status"] == "stopped":
             raise UserFacing("action_refused", "A stopped workflow cannot be edited.", 409)
-        name = mask_served(" ".join((body.name if body.name is not None else wf["name"]).split()))
-        instruction = mask_served(" ".join((body.instruction if body.instruction is not None else wf["instruction"]).split()))
-        if not instruction:
-            raise UserFacing("invalid_request", "A workflow needs an instruction.", 422)
-        t_kind = body.trigger_kind or wf["trigger_kind"]
-        t_val = body.trigger if body.trigger is not None else wf["trigger"]
         try:
-            clean_trig = aw.validate_trigger(t_kind, t_val)
+            with _pool(backend).connection() as pg:
+                aw.update_workflow(
+                    pg, wf,
+                    name=body.name,
+                    instruction=body.instruction,
+                    trigger_kind=body.trigger_kind,
+                    trigger=body.trigger,
+                )
         except ValueError as exc:
-            raise UserFacing("invalid_request", str(exc), 422) from None
-        with _pool(backend).connection() as pg:
-            aw.append(pg, workflow_id, wf["person"], "updated", {
-                "name": name or instruction, "instruction": instruction,
-                "trigger_kind": t_kind, "trigger": clean_trig,
-            })
+            msg = str(exc)
+            status = 409 if "stopped" in msg.lower() else 422
+            code = "action_refused" if status == 409 else "invalid_request"
+            raise UserFacing(code, msg, status) from None
         return _one_shown(_pool(backend), workflow_id)
 
     @app.post("/api/assist/workflows/{workflow_id}/pause", response_model=m.AssistWorkflow, tags=["actions"],
@@ -313,6 +314,16 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader]) -> None:
         wf, _ids = _mine(backend, who, workflow_id)
         with _pool(backend).connection() as pg:
             aw.stop_workflow(pg, wf)
+        return _one_shown(_pool(backend), workflow_id)
+
+    @app.delete("/api/assist/workflows/{workflow_id}", response_model=m.AssistWorkflow, tags=["actions"],
+                responses=_ERR)
+    def workflow_delete(workflow_id: str, who: Reader = Depends(reader)) -> m.AssistWorkflow:
+        """Delete a workflow from your list and stop any run currently in progress."""
+        from operating import assist_workflows as aw
+        wf, _ids = _mine(backend, who, workflow_id)
+        with _pool(backend).connection() as pg:
+            aw.delete_workflow(pg, wf)
         return _one_shown(_pool(backend), workflow_id)
 
     @app.post("/api/assist/workflows/{workflow_id}/run", response_model=m.AssistWorkflowRunResult, tags=["actions"],

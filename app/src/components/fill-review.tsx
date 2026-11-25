@@ -81,8 +81,8 @@ export function FillReview({ fill }: { fill: InstructFill }) {
           {fill.fields.map((f, i) => (
             <tr key={i} data-status={f.status} className="align-top">
               <td className="pr-4">{f.label}</td>
-              <td className="pr-4 text-muted">{f.before || "—"}</td>
-              <td className={f.status === "filled" ? "pr-4 font-medium" : f.status === "suggested" ? "pr-4 italic" : "pr-4 text-muted"}>{f.after || "—"}</td>
+              <td className="pr-4 text-muted">{f.before || "–"}</td>
+              <td className={f.status === "filled" ? "pr-4 font-medium" : f.status === "suggested" ? "pr-4 italic" : "pr-4 text-muted"}>{f.after || "–"}</td>
               <td className="text-[12px]">
                 <Source f={f} />
               </td>

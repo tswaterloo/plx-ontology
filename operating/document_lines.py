@@ -80,9 +80,6 @@ _EXTRA_ROLES = (
     ("quantity", re.compile(r"^(qty|quantity)( ordered| order| req| requested)?\.?$|"
                             r"^(order|ordered) (qty|quantity)$")),
 )
-MAX_LINES = 60
-
-
 def decimal(raw: Any) -> Decimal | None:
     text = str(raw or "").strip().replace("$", "").replace(",", "").strip("()").strip()
     if not text:
@@ -112,7 +109,7 @@ def code_tokens(text: str) -> list[str]:
             continue
         if tok not in out:
             out.append(tok)
-    return out[:8]
+    return out
 
 
 def _checks(qty: Decimal, price: Decimal, ext: Decimal) -> bool:
@@ -148,7 +145,7 @@ def _priced(lines: list[str]) -> list[dict[str, Any]]:
             continue
         out.append({"tokens": tokens, "quantity": str(qty), "unit": (m["unit"] or "").upper()
                     or None, "unit_price": str(price), "extended": str(ext),
-                    "cite": f"L{n + 1}", "basis": "priced", "text": head[:160]})
+                    "cite": f"L{n + 1}", "basis": "priced", "text": head})
     return out
 
 
@@ -255,7 +252,7 @@ def _listed(lines: list[str]) -> list[dict[str, Any]]:
                     "price_currency": priced["currency"] if priced else None,
                     "price_unknown": priced is False,
                     "extended": None, "cite": f"L{n + 1}", "basis": "listed",
-                    "text": text[:160]})
+                    "text": text})
     return out
 
 
@@ -264,7 +261,7 @@ def _table(text: str, form: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for sheet in sr.grid(text, form):
         rows = sheet.rows
-        for r in sorted(rows)[:200]:
+        for r in sorted(rows):
             roles: dict[str, int] = {}
             for col, _addr, value in rows[r]:
                 head = sr.norm_header(value)
@@ -274,7 +271,7 @@ def _table(text: str, form: str) -> list[dict[str, Any]]:
                     roles[role] = col
             if not ({"item", "customer_item"} & set(roles)) or "quantity" not in roles:
                 continue
-            for body in sorted(k for k in rows if k > r)[:MAX_LINES]:
+            for body in sorted(k for k in rows if k > r):
                 cells = {c: (v, a) for c, a, v in rows[body]}
                 if any(_TOTAL.search(v) for v, _a in cells.values()):
                     break
@@ -290,19 +287,19 @@ def _table(text: str, form: str) -> list[dict[str, Any]]:
                     continue                  # the row's own figures disagree: not read
                 unit = (cells.get(roles.get("unit", -1)) or ("", ""))[0]
                 cite = (cells.get(roles["quantity"]) or ("", ""))[1]
-                out.append({"tokens": tokens[:8], "quantity": str(qty),
-                            "unit": unit.upper()[:12] or None,
+                out.append({"tokens": tokens, "quantity": str(qty),
+                            "unit": unit.upper()[:12] or None,  # guard-ok: unit-of-measure shape hygiene, controlled vocabulary
                             "unit_price": str(price) if price is not None else None,
                             "extended": str(ext) if ext is not None else None,
                             "cite": f"{sheet.name}!{cite}" if sheet.name else cite,
-                            "basis": "table", "text": " ".join(codes)[:160]})
+                            "basis": "table", "text": " ".join(codes)})
             if out:
                 return out
     return out
 
 
 def read_lines(text: str, form: str = "text") -> list[dict[str, Any]]:
-    """The document's candidate item lines (module doc), at most ``MAX_LINES``."""
+    """The document's candidate item lines (module doc), every one."""
     if not text:
         return []
     found = _table(text, form) if form in ("workbook", "csv") else []
@@ -310,7 +307,7 @@ def read_lines(text: str, form: str = "text") -> list[dict[str, Any]]:
         lines = text.splitlines()
         found = _priced(lines) or (_table(text, form) if form == "text" else []) \
             or _listed(lines)
-    return found[:MAX_LINES]
+    return found
 
 
 def po_numbers(text: str) -> list[str]:
@@ -356,7 +353,7 @@ def po_scan(text: str) -> tuple[list[str], int]:
                 for sib in _siblings(value, line[m.end():]):
                     if sib not in out:
                         out.append(sib)
-    return out[:5], unread
+    return out, unread
 
 
 def the_po_number(texts: Iterable[tuple[str, str]]) -> dict[str, Any]:

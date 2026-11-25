@@ -4,9 +4,9 @@
 // question an hourly look raised). The person marks the item done or not needed; nothing
 // here writes to any system.
 
-import { useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ItemActions } from "@/components/autopilot/item-actions";
+import { ItemActions, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, requestDraft, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
@@ -48,19 +48,100 @@ export function TodoSteps({ todos }: { todos: TodoStep[] }) {
   );
 }
 
-export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; feedback?: React.ReactNode }) {
+function elapsedLabel(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem ? `${m}m ${rem}s` : `${m}m`;
+}
+
+function startedAtMs(requestedAt?: string | null): number {
+  if (requestedAt) {
+    const parsed = Date.parse(requestedAt);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+export function TodoCard({
+  item,
+  linked,
+  onGone,
+  onChanged,
+  onOptimistic,
+  onRestore,
+  onFeedback,
+  feedback,
+}: {
+  item: PreparedItem;
+  linked?: boolean;
+  onGone: (id: string) => void;
+  onChanged?: () => void;
+  feedback?: React.ReactNode;
+} & OptimisticCallbacks) {
   const [busy, setBusy] = useState(false);
   const card = useProblemSlot();
   const setError = card.set;
-  const [asked, setAsked] = useState(false);
-  // an Assist matter with no draft yet: "Draft it" asks for one (the list shows it when ready)
-  const canDraft = item.plan_status === "deferred" || item.plan_status === "failed";
+  const initiallyWorking = item.plan_status === "working";
+  const [waitingSince, setWaitingSince] = useState<number | null>(() => (initiallyWorking ? startedAtMs(item.requested_at) : null));
+  const [sawWorking, setSawWorking] = useState<boolean>(initiallyWorking);
+  const [baselinePlanAt, setBaselinePlanAt] = useState<string | null>(null);
+  const [elapsedSec, setElapsedSec] = useState<number>(() => (initiallyWorking ? Math.max(0, Math.floor((Date.now() - startedAtMs(item.requested_at)) / 1000)) : 0));
+  const [draftNote, setDraftNote] = useState<string | null>(null);
+  const asked = waitingSince !== null;
+
+  useEffect(() => {
+    if (waitingSince === null) return;
+    setElapsedSec(Math.max(0, Math.floor((Date.now() - waitingSince) / 1000)));
+    const tick = setInterval(() => setElapsedSec(Math.max(0, Math.floor((Date.now() - waitingSince) / 1000))), 1000);
+    const poll = onChanged ? setInterval(onChanged, 4000) : null;
+    return () => {
+      clearInterval(tick);
+      if (poll) clearInterval(poll);
+    };
+  }, [waitingSince, onChanged]);
+
+  useEffect(() => {
+    if (item.plan_status === "working") {
+      setSawWorking(true);
+      if (waitingSince === null) setWaitingSince(startedAtMs(item.requested_at));
+      return;
+    }
+    const planMoved = baselinePlanAt !== null && Boolean(item.plan_at) && item.plan_at !== baselinePlanAt;
+    if (waitingSince !== null && (sawWorking || planMoved)) {
+      setWaitingSince(null);
+      setSawWorking(false);
+      setBaselinePlanAt(null);
+      if (item.plan_status === "failed") {
+        setDraftNote("Could not prepare a draft for this item. Ask again, or handle it directly.");
+      } else {
+        setDraftNote(null);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.plan_status, item.plan_at, item.requested_at]);
+
+  // An Assist matter with no draft yet: offer a direct draft action ("Draft a follow-up" for
+  // waiting items, "Draft reply" for open mail/Teams items, "Draft it" for deferred, "Ask again" for failed).
+  const isWaiting = /^No answer yet\b/i.test((item.summary ?? "").trim()) || /^No answer yet\b/i.test((item.subject ?? "").trim());
+  const isPromise = /^You said:/i.test((item.summary ?? "").trim());
+  const isMessageChannel = item.channel === "mail" || item.channel === "teams";
+  const canFollowUp = isWaiting && item.plan_status !== "working" && item.plan_status !== "ready" && item.plan_status !== "drafted";
+  const canDraftReply = isMessageChannel && !isWaiting && !isPromise && (item.plan_status === "planned" || item.plan_status === "none");
+  const canDraft = item.plan_status === "deferred" || item.plan_status === "failed" || canFollowUp || canDraftReply;
   const draft = async () => {
     setBusy(true);
     setError(null);
+    setDraftNote(null);
     try {
       await requestDraft(item.item_id);
-      setAsked(true);
+      setBaselinePlanAt(item.plan_at ?? null);
+      setSawWorking(item.plan_status === "working");
+      setWaitingSince(Date.now());
+      setElapsedSec(0);
+      onFeedback?.(canFollowUp ? "Follow-up draft requested" : "Draft requested");
+      onChanged?.();
     } catch (e) {
       setError(plainError(e));
     } finally {
@@ -68,10 +149,23 @@ export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedIte
     }
   };
   const decide = async (decision: "accept") => {
+    if (onOptimistic) {
+      setError(null);
+      onOptimistic(item.item_id, "Marked done");
+      try {
+        await decideAutopilotItem(item.item_id, { decision });
+      } catch (e) {
+        const msg = plainError(e);
+        setError(msg);
+        onRestore?.(item.item_id, msg);
+      }
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       await decideAutopilotItem(item.item_id, { decision });
+      onFeedback?.("Marked done");
       onGone(item.item_id);
     } catch (e) {
       setError(plainError(e));
@@ -83,8 +177,8 @@ export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedIte
     <li
       id={`prepared-${item.item_id}`}
       className={cn(
-        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
-        linked && "border-accent/70 ring-1 ring-accent/30",
+        "w-full space-y-3 py-1 transition-colors",
+        linked && "border-l-2 border-l-accent pl-3",
       )}
       data-testid="prepared-todo"
     >
@@ -95,19 +189,25 @@ export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedIte
         const subHeader = summary && subjectLine ? subjectLine : "";
         return (
           <>
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
               {item.sender && <span className="text-[14px] font-semibold text-fg">{item.sender}</span>}
               {subHeader && (
-                <span className="inline-flex max-w-full items-center truncate rounded-md border border-border/70 bg-bg/80 px-2 py-0.5 text-[12px] text-muted">
-                  {subHeader}
-                </span>
+                <>
+                  <span className="text-faint" aria-hidden>·</span>
+                  <span className="max-w-full truncate text-[13px] text-muted">
+                    {subHeader}
+                  </span>
+                </>
               )}
               {n.labels.map((l) => (
-                <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
-                  {l}
-                </p>
+                <Fragment key={l}>
+                  <span className="text-faint" aria-hidden>·</span>
+                  <p className="text-[11.5px] leading-4 text-faint" data-testid="prepared-label">
+                    {l}
+                  </p>
+                </Fragment>
               ))}
-              <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
+              <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
             </div>
             {headline && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(headline)}</p>}
             {noteText && <p className="text-[13px] leading-relaxed text-muted" data-testid="prepared-note">{noteText}</p>}
@@ -119,30 +219,63 @@ export function TodoCard({ item, linked, onGone, feedback }: { item: PreparedIte
           </>
         );
       })()}
+      {(item.facts ?? []).length > 0 && (
+        <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted" data-testid="todo-facts">
+          {(item.facts ?? []).map((f, i) => (
+            <li key={`${i}-${f}`}>{countedWords(f)}</li>
+          ))}
+        </ul>
+      )}
       <TodoSteps todos={item.todos ?? []} />
+      {(item.links ?? []).length > 0 && (
+        <div className="flex flex-wrap gap-3 text-[13px]">
+          {(item.links ?? []).map((l) => (
+            <a key={l.href} href={l.href} {...(l.href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
+              {l.label}
+            </a>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
         <div className="min-w-0">
           {card.provide(<ItemActions
             item={item}
             onGone={onGone}
+            onChanged={onChanged}
+            onOptimistic={onOptimistic}
+            onRestore={onRestore}
+            onFeedback={onFeedback}
             busy={busy}
             primary={
               <>
                 <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
-                  Done
+                  {busy ? "Saving..." : "Done"}
                 </Button>
                 {canDraft && !asked && (
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => void draft()}>
-                    {item.plan_status === "failed" ? "Ask again" : "Draft it"}
+                    {busy
+                      ? "Requesting..."
+                      : canFollowUp && item.plan_status !== "failed"
+                        ? "Draft a follow-up"
+                        : item.plan_status === "failed"
+                          ? "Ask again"
+                          : canDraftReply
+                            ? "Draft reply"
+                            : "Draft it"}
                   </Button>
                 )}
-                {asked && <span className="text-[12px] text-muted" data-testid="draft-asked">Drafting. It shows here when it is ready.</span>}
+                {asked && (
+                  <span className="text-[12px] text-muted" role="status" data-testid="draft-asked">
+                    Drafting ({elapsedLabel(elapsedSec)}). It shows here when it is ready.
+                  </span>
+                )}
               </>
             }
           />)}
         </div>
         {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
       </div>
+      {draftNote && <p className="text-[12px] text-muted">{draftNote}</p>}
       {card.banner}
     </li>
   );

@@ -60,7 +60,7 @@ export function Section({ s }: { s: BizTable }) {
   s = { ...s, columns: keep.map((i) => s.columns[i]), rows };
   const numeric = s.columns.map((_, i) => isNumeric(s.rows, i));
   return (
-    <section className="mt-7" aria-labelledby={`biz-${s.key}`} data-testid={`biz-section-${s.key}`}>
+    <section className="mt-6 first:mt-0" aria-labelledby={`biz-${s.key}`} data-testid={`biz-section-${s.key}`}>
       <h2 id={`biz-${s.key}`} className="text-[14px] font-medium text-fg">
         {s.title}
       </h2>
@@ -145,13 +145,14 @@ export function BizRecordPage({ allowed, fallbackTitle }: { allowed: readonly Bi
 }
 
 /** A record page's body: its header facts, each section, one Sources line. */
-export function BizArticle({ page }: { page: Page }) {
+export function BizArticle({ page, skipLabels }: { page: Page; skipLabels?: ReadonlySet<string> }) {
+  const facts = skipLabels ? page.facts.filter((f) => !skipLabels.has(f.label)) : page.facts;
   return (
     <article data-testid="biz-page">
       {page.subtitle && <p className="text-[12px] text-muted">{page.subtitle}</p>}
-      {page.facts.length > 0 && (
+      {facts.length > 0 && (
         <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1.5 text-[13px] sm:grid-cols-[max-content_1fr_max-content_1fr]">
-          {page.facts.map((f) => (
+          {facts.map((f) => (
             <div key={f.label} className="contents">
               <dt className="text-muted">{f.label}</dt>
               <dd>

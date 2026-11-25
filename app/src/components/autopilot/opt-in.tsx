@@ -145,24 +145,12 @@ function DraftRow({ c, busy, onSet, onArea, owner = false }: { c: AutopilotDraft
   // what the state means, in a sentence: prepared and waiting, or sent by itself
   const state = !c.on ? "Off. Nothing is prepared for you." : `${on}${who}. ${auto ? "Goes out by itself, within your limits." : "Prepared for you; waits for your confirm."}`;
   return (
-    <li className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-2" data-testid="draft-choice">
-      <div className="min-w-0 space-y-0.5">
-        <p className="text-[13px]">{c.label}</p>
+    <li className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-3" data-testid="draft-choice">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-[13.5px] font-medium text-fg">{c.label}</p>
         <p className={cn("text-[12px]", c.on ? "text-ok" : "text-muted")} data-testid="draft-choice-state">
           {state}
         </p>
-        {c.on && (
-          <div className="flex flex-wrap items-center gap-3 pt-1 text-[12px]" role="radiogroup" aria-label={`${c.label}: how it goes out`} data-testid="draft-choice-mode">
-            <label className="flex items-center gap-1">
-              <input type="radio" name={`mode-${c.choice}`} checked={!auto} disabled={busy} onChange={() => onSet("confirm")} />
-              Wait for my confirm
-            </label>
-            <label className={cn("flex items-center gap-1", !c.auto_ok && !auto && "text-muted")} title={c.auto_ok ? undefined : "Auto opens once past days replayed score high enough for you."}>
-              <input type="radio" name={`mode-${c.choice}`} checked={auto} disabled={busy || (!c.auto_ok && !auto)} onChange={() => onSet("auto")} />
-              Auto: send by itself
-            </label>
-          </div>
-        )}
         {c.score && (
           <p className="num text-[12px] text-muted" data-testid="draft-choice-score">
             {optInScore({ eligible: !!c.auto_ok, score: c.score })}
@@ -170,9 +158,48 @@ function DraftRow({ c, busy, onSet, onArea, owner = false }: { c: AutopilotDraft
         )}
         {c.on && (c.auto_ok || c.conditions) && <Limits c={c} onArea={onArea} />}
       </div>
-      <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(c.on ? "off" : "confirm")}>
-        {c.on ? "Turn off" : "Turn on"}
-      </Button>
+      <div className="flex shrink-0 items-center gap-2">
+        {c.on && (
+          <div
+            className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface p-0.5 text-[12px]"
+            role="radiogroup"
+            aria-label={`${c.label}: how it goes out`}
+            data-testid="draft-choice-mode"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!auto}
+              disabled={busy}
+              onClick={() => onSet("confirm")}
+              className={cn(
+                "inline-flex h-6 items-center rounded-md px-2.5 transition-colors cursor-pointer",
+                !auto ? "bg-bg font-medium text-fg shadow-sm" : "text-muted hover:text-fg",
+              )}
+            >
+              Confirm
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={auto}
+              disabled={busy || (!c.auto_ok && !auto)}
+              title={c.auto_ok ? undefined : "Auto opens once past days replayed score high enough for you."}
+              onClick={() => onSet("auto")}
+              className={cn(
+                "inline-flex h-6 items-center rounded-md px-2.5 transition-colors",
+                auto ? "bg-bg font-medium text-fg shadow-sm cursor-pointer" : "text-muted hover:text-fg",
+                !c.auto_ok && !auto ? "opacity-45 cursor-not-allowed" : "cursor-pointer",
+              )}
+            >
+              Auto
+            </button>
+          </div>
+        )}
+        <Button size="sm" variant="outline" role="switch" aria-checked={c.on} aria-label={`${c.label}: ${c.on ? "on" : "off"}`} disabled={busy} onClick={() => onSet(c.on ? "off" : "confirm")}>
+          {c.on ? "Turn off" : "Turn on"}
+        </Button>
+      </div>
     </li>
   );
 }
@@ -203,7 +230,7 @@ export function DraftsPanel({ area, onArea }: { area: Area; onArea: (a: Area) =>
         What to prepare for me
       </h2>
       <p className="max-w-[46rem] text-[12px] text-muted">
-        Turned on, replies and changes are prepared for you and wait on Home until you confirm them. Auto lets them go without your click, and only opens where replaying past days matched what you did often enough; money and anything unclear still wait for you.{owner ? "" : " You can turn off what the owner turned on for you."}
+        Turned on, replies and changes are prepared for you and wait in Assist until you confirm them. Auto lets them go without your click, and only opens where replaying past days matched what you did often enough; money and anything unclear still wait for you.{owner ? "" : " You can turn off what the owner turned on for you."}
       </p>
       {error && <ErrorNotice message={error} />}
       <ul className="divide-y divide-border" aria-label="What to prepare for me">

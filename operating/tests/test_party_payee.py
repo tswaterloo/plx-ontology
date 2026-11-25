@@ -116,12 +116,55 @@ class PayeeClass(unittest.TestCase):
         self.assertEqual(set(pc.CATEGORY_CLASS.values()) | {"other", "unknown"},
                          set(pc.CLASSES))
 
+    def test_distset_classifies_vendors_without_default_gl(self):
+        ds = pc.distsets(
+            {
+                # single-class distribution sets
+                "d1": rec("dsd:1", distset="PROD  ", idglacct="41100-3000-01"),
+                "d2": rec("dsd:2", distset="IT    ", idglacct="42216-01"),
+                # card-issuer distribution set: finance clearing account + expense/tax lines
+                "d3": rec("dsd:3", distset="CARD  ", idglacct="11160-01"),
+                "d4": rec("dsd:4", distset="CARD  ", idglacct="42216-01"),
+                "d5": rec("dsd:5", distset="CARD  ", idglacct="21140-01"),
+                # strict majority (2 trade, 1 expense)
+                "d6": rec("dsd:6", distset="RM    ", idglacct="41100-3000-01"),
+                "d7": rec("dsd:7", distset="RM    ", idglacct="41100-3000-01"),
+                "d8": rec("dsd:8", distset="RM    ", idglacct="42216-01"),
+                # 50/50 tie fails closed as unknown
+                "d9": rec("dsd:9", distset="UTIL  ", idglacct="41100-3000-01"),
+                "d10": rec("dsd:10", distset="UTIL  ", idglacct="42216-01"),
+            },
+            self.CHART,
+        )
+        for distsetid, want in (("PROD", "trade"), ("IT ", "expense"), ("CARD", "finance"),
+                                ("RM", "trade"), ("UTIL", "unknown"), ("MISSING", "unknown")):
+            cls, refs = pc.classify_vendor(rec("v", glaccnt="", distsetid=distsetid),
+                                           self.CHART, ds)
+            self.assertEqual(cls, want, distsetid)
+            if want != "unknown":
+                self.assertTrue(any(r.object_id.startswith("dsd:") for r in refs), distsetid)
+                self.assertTrue(any(r.object_id.startswith("acct:") for r in refs), distsetid)
+                self.assertTrue(any(r.object_id.startswith("grp:") for r in refs), distsetid)
+        # default glaccnt wins over distsetid when both are present
+        cls, refs = pc.classify_vendor(rec("v", glaccnt="15000-01", distsetid="CARD"),
+                                       self.CHART, ds)
+        self.assertEqual(cls, "capital")
+        self.assertEqual({r.object_id for r in refs}, {"acct:5", "grp:05"})
+
     def test_the_payables_views_carry_it(self):
         for name in ("supplier_balances", "supplier_invoices"):
             view = bv.VIEWS[name]
             self.assertIn("payee_class", [c.name for c in view.cols])
-            self.assertTrue({"RelSageGlAccount", "RelSageGlAcgrp"} <= set(view.reads))
+            self.assertTrue({"RelSageGlAccount", "RelSageGlAcgrp", "RelSageApDsd"} <= set(view.reads))
             self.assertIn("gl_chart", view.memos)
+
+    def test_sales_invoice_line_measures_expose_category_dimension(self):
+        from operating import measures
+        for mid in ("revenue", "gross_margin", "units_sold", "loss_below_cost", "cost_looks_wrong"):
+            m = measures.measures()[mid]
+            self.assertIn("category", m["dimensions"], mid)
+            sql, _entry = measures.statement(mid, by="category")
+            self.assertIn("category", sql, mid)
 
 
 if __name__ == "__main__":

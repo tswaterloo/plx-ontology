@@ -23,7 +23,7 @@ export function ThemeToggle({ className }: { className?: string }) {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   return (
-    <div role="radiogroup" aria-label="Theme" className={cn("inline-flex rounded border border-border-strong text-meta", className)}>
+    <div role="radiogroup" aria-label="Theme" className={cn("inline-flex items-center gap-0.5 rounded-md border border-border bg-surface p-0.5 text-meta", className)}>
       {OPTIONS.map(({ value, label, text }) => {
         const on = mounted && theme === value;
         return (
@@ -35,8 +35,8 @@ export function ThemeToggle({ className }: { className?: string }) {
             aria-label={label}
             onClick={() => setTheme(value)}
             className={cn(
-              "border-l border-border-strong px-2 py-0.5 first:border-l-0 cursor-pointer",
-              on ? "bg-surface-2 font-medium text-fg" : "text-muted hover:text-fg",
+              "rounded-sm px-2 py-0.5 transition-colors cursor-pointer",
+              on ? "bg-bg font-medium text-fg shadow-xs dark:bg-surface-2" : "text-muted hover:text-fg",
             )}
           >
             {text}

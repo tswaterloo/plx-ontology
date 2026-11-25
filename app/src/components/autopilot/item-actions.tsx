@@ -54,13 +54,13 @@ export function MoreMenu({ entries, disabled }: { entries: MenuEntry[]; disabled
         More
       </Button>
       {open && (
-        <div role="menu" className="absolute left-0 z-20 mt-1 min-w-[15rem] border border-border bg-bg py-1 shadow-lift">
+        <div role="menu" className="absolute left-0 top-full z-50 mt-1 min-w-[15rem] rounded-lg border border-border-strong bg-bg py-1 shadow-lift">
           {entries.map((e) => (
             <button
               key={e.label}
               type="button"
               role="menuitem"
-              className={`block w-full px-3 py-1.5 text-left text-[13px] hover:bg-hover cursor-pointer ${e.danger ? "text-late" : ""}`}
+              className={`block w-full px-3 py-1.5 text-left text-[13px] hover:bg-hover cursor-pointer ${e.danger ? "text-late" : "text-fg"}`}
               onClick={() => {
                 setOpen(false);
                 void e.run();
@@ -75,12 +75,40 @@ export function MoreMenu({ entries, disabled }: { entries: MenuEntry[]; disabled
   );
 }
 
+export type OptimisticCallbacks = {
+  /** Optimistically remove the item at 0 ms and show a confirmation message. */
+  onOptimistic?: (id: string, message: string) => void;
+  /** Roll back an optimistic removal if the network request fails. */
+  onRestore?: (id: string, errorMessage: string) => void;
+  /** Show a non-blocking confirmation message without removing the item. */
+  onFeedback?: (message: string) => void;
+};
+
 /**
  * Later (back tomorrow 8 AM) as a button, then More: the card's own entries, Make it a task,
  * Not needed, Never from this sender, Always do this. ``primary`` goes first (the card's
  * main action). Always do this is offered only where the person's replay score earned Auto.
  */
-export function ItemActions({ item, onGone, onChanged, primary, entries = [], busy, setAsideOnly }: { item: PreparedItem; onGone: (id: string) => void; onChanged?: () => void; primary?: React.ReactNode; entries?: MenuEntry[]; busy?: boolean; setAsideOnly?: boolean }) {
+export function ItemActions({
+  item,
+  onGone,
+  onChanged,
+  onOptimistic,
+  onRestore,
+  onFeedback,
+  primary,
+  entries = [],
+  busy,
+  setAsideOnly,
+}: {
+  item: PreparedItem;
+  onGone: (id: string) => void;
+  onChanged?: () => void;
+  primary?: React.ReactNode;
+  entries?: MenuEntry[];
+  busy?: boolean;
+  setAsideOnly?: boolean;
+} & OptimisticCallbacks) {
   const [working, setWorking] = useState(false);
   const [, setError, problem] = useProblem();
   const [note, setNote] = useState<string | null>(null);
@@ -96,42 +124,88 @@ export function ItemActions({ item, onGone, onChanged, primary, entries = [], bu
       setWorking(false);
     }
   };
-  const gone = () => onGone(item.item_id);
-  const later = () => run(() => decideAutopilotItem(item.item_id, { decision: "snooze", until: tomorrowMorning().toISOString() }), gone);
+  const runOptimistic = (act: () => Promise<unknown>, message: string, after?: () => void) => {
+    if (onOptimistic) {
+      setError(null);
+      onOptimistic(item.item_id, message);
+      void act().then(
+        () => after?.(),
+        (e) => {
+          const msg = plainError(e);
+          setError(msg);
+          onRestore?.(item.item_id, msg);
+        },
+      );
+      return;
+    }
+    void run(act, () => {
+      onFeedback?.(message);
+      onGone(item.item_id);
+      after?.();
+    });
+  };
+  const later = () =>
+    runOptimistic(
+      () => decideAutopilotItem(item.item_id, { decision: "snooze", until: tomorrowMorning().toISOString() }),
+      "Snoozed until tomorrow 8 AM",
+    );
   const more: MenuEntry[] = [...entries];
   if (!setAsideOnly) {
     more.push({
       label: "Make it a task",
       run: () =>
-        run(async () => {
+        runOptimistic(async () => {
           await saveMemory({ kind: "commitment", text: taskText(item) });
           await decideAutopilotItem(item.item_id, { decision: "reject", note: TASK_NOTE });
-        }, gone),
+        }, "Added to your tasks"),
     });
   }
-  more.push({ label: "Not needed", run: () => run(() => decideAutopilotItem(item.item_id, { decision: "reject" }), gone) });
+  more.push({
+    label: "Not needed",
+    run: () => runOptimistic(() => decideAutopilotItem(item.item_id, { decision: "reject" }), "Dismissed"),
+  });
   const sender = item.sender.includes("@") ? item.sender : "";
   if (!setAsideOnly && item.sender && onChanged) {
-    more.push({ label: "Never from this sender", run: () => run(() => setNeverSender(item.sender, true), onChanged), danger: true });
+    more.push({
+      label: "Never from this sender",
+      run: () => runOptimistic(() => setNeverSender(item.sender, true), "Hidden future items from this sender", onChanged),
+      danger: true,
+    });
   }
   if (!setAsideOnly && item.always_ok && item.category) {
     if (sender) {
       more.push({
         label: `Always do this for ${sender}`,
-        run: () => run(() => alwaysDoThis(item.item_id, "sender"), () => setNote(`Auto is on for ${sender} under ${item.category_label || "this switch"}. Money and anything unclear still wait for you. Change it under Switches.`)),
+        run: () =>
+          run(
+            () => alwaysDoThis(item.item_id, "sender"),
+            () => {
+              const msg = `Auto is on for ${sender} under ${item.category_label || "this switch"}. Money and anything unclear still wait for you. Change it under Switches.`;
+              setNote(msg);
+              onFeedback?.(`Auto turned on for ${sender}`);
+            },
+          ),
       });
     }
     more.push({
       label: `Always do this: ${item.category_label || "this kind of item"}`,
-      run: () => run(() => alwaysDoThis(item.item_id, "category"), () => setNote(`Auto is on for ${item.category_label || "this switch"}. Money and anything unclear still wait for you. Change it under Switches.`)),
+      run: () =>
+        run(
+          () => alwaysDoThis(item.item_id, "category"),
+          () => {
+            const msg = `Auto is on for ${item.category_label || "this switch"}. Money and anything unclear still wait for you. Change it under Switches.`;
+            setNote(msg);
+            onFeedback?.(`Auto turned on for ${item.category_label || "this switch"}`);
+          },
+        ),
     });
   }
   return (
     <>
       <div className="flex flex-wrap items-start gap-2" data-testid="item-actions">
         {primary}
-        <Button size="sm" variant="outline" disabled={busy || working} onClick={() => void later()}>
-          Later
+        <Button size="sm" variant="outline" disabled={busy || working} onClick={() => later()}>
+          {working ? "Saving..." : "Later"}
         </Button>
         <MoreMenu entries={more} disabled={busy || working} />
       </div>

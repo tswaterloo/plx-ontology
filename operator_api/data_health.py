@@ -58,11 +58,16 @@ def summary(view: Any) -> m.DataHealth:
     return m.DataHealth(status="read", checks=checks, as_of=found.get("as_of"))
 
 
-def page(view: Any, check: str | None = None) -> m.DataHealth:
-    """The findings this reader may see, all checks or one (``check``): the trimmed read."""
+def page(view: Any, check: str | None = None,
+         checks: list[str] | tuple[str, ...] | None = None) -> m.DataHealth:
+    """The findings this reader may see, all checks or one (``check``) or a subset
+    (``checks``): the trimmed read."""
     types = registered()
     if check is not None:
         types = [t for t in types if t.get("type") == check]
+    elif checks is not None:
+        want = set(checks)
+        types = [t for t in types if t.get("type") in want]
     on = [str(t["type"]) for t in types if t.get("default") == "on"]
     found = view.data_health_gaps(on, limit=READ_LIMIT) if on else {"status": "read",
                                                                        "gaps": [], "hidden": {}}
@@ -94,38 +99,71 @@ def page(view: Any, check: str | None = None) -> m.DataHealth:
                         partial=len(gaps) >= READ_LIMIT or bool(found.get("truncated")))
 
 
+def _filter_items(items: list[m.DataHealthItem], q: str | None = None,
+                  object_type: str | None = None) -> list[m.DataHealthItem]:
+    """Filter findings by free-text query ``q`` (summary, record type, record id) and/or
+    exact record type ``object_type`` (case-insensitive)."""
+    out = items
+    if object_type:
+        want_type = object_type.strip().lower()
+        if want_type:
+            out = [it for it in out if it.object_type.strip().lower() == want_type]
+    if q:
+        needle = q.strip().lower()
+        if needle:
+            out = [it for it in out if (
+                needle in it.summary.lower()
+                or needle in it.object_type.lower()
+                or needle in it.object_id.lower()
+            )]
+    return out
+
+
 def window(full: m.DataHealth, check: str | None = None, offset: int = 0,
-           limit: int = LISTED) -> m.DataHealth:
+           limit: int = LISTED, q: str | None = None,
+           object_type: str | None = None) -> m.DataHealth:
     """The page's first read (no ``check``: each check's first ``LISTED`` findings) or one
     check's findings from ``offset`` (``limit`` of them, at most ``PAGE_MAX``), cut from the
     one read the reader's page keeps (a page of findings never reads the store again).
-    A check the reader does not have is not found: an empty page, never another's rows."""
+    Optional ``q`` and ``object_type`` filter across ALL rows before slicing so counts
+    reflect the exact filtered total. A check the reader does not have is not found: an
+    empty page, never another's rows."""
     limit = max(1, min(int(limit), PAGE_MAX))
     offset = max(0, int(offset))
     if full.status != "read":
         return full
+    filtering = bool((q and q.strip()) or (object_type and object_type.strip()))
     out = []
     for c in full.checks:
         if check is not None and c.type != check:
             continue
+        pool = _filter_items(c.items, q=q, object_type=object_type) if filtering else c.items
         if check is None:
             start, stop = 0, LISTED
         else:
             start, stop = offset, offset + limit
-        shown = c.items[start:stop]
-        out.append(c.model_copy(update={"items": shown,
-                                        "more": max(0, len(c.items) - start - len(shown))}))
+        shown = pool[start:stop]
+        update: dict[str, Any] = {
+            "items": shown,
+            "more": max(0, len(pool) - start - len(shown)),
+        }
+        if filtering:
+            update["count"] = len(pool)
+        out.append(c.model_copy(update=update))
     return full.model_copy(update={"checks": out})
 
 
-def export_rows(full: m.DataHealth, check: str | None = None) -> list[list[str]]:
+def export_rows(full: m.DataHealth, check: str | None = None,
+                q: str | None = None, object_type: str | None = None) -> list[list[str]]:
     """Every finding the reader may see (one check's, or all), as rows of
     check, what was found, record type, record page; spreadsheet formulas are defused."""
+    filtering = bool((q and q.strip()) or (object_type and object_type.strip()))
     rows = [["Check", "Finding", "Record type", "Record page"]]
     for c in full.checks:
         if not c.on or (check is not None and c.type != check):
             continue
-        for it in c.items:
+        pool = _filter_items(c.items, q=q, object_type=object_type) if filtering else c.items
+        for it in pool:
             rows.append([_cell(c.label), _cell(it.summary), _cell(it.object_type),
                          _cell(it.open_url)])
     return rows

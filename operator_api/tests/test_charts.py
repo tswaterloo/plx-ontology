@@ -522,6 +522,79 @@ class DocumentChartsTest(unittest.TestCase):
                 b._document_charts("ana", raw)
         self.assertEqual(b._document_charts("ana", None), [])
 
+    def test_plain_english_chart_titles_expand_amt_and_iso_dates(self):
+        from operator_api import charts as ch
+        got = ch.build(
+            {"type": "bar", "x": "bucket", "y": ["amount"]},
+            ["bucket", "amount"],
+            [["1-30", "100"], ["31-60", "250"]],
+            title="Amt by aging bucket as of 2026-11-25",
+        )
+        self.assertEqual(got["title"], "Amount by aging bucket as of 25 Nov 2026")
+        iso_range = ch.build(
+            {"type": "line", "x": "month", "y": ["revenue"]},
+            ["month", "revenue"],
+            [["2026-10", "500"], ["2026-11", "600"]],
+            title="Revenue 2026-01-01 to 2026-11-25",
+        )
+        self.assertEqual(iso_range["title"], "Revenue 1 Jan 2026 to 25 Nov 2026")
+
+    def test_finance_below_cost_and_price_drop_tables_show_customer_product_and_currency(self):
+        import json
+        from pathlib import Path
+        from operator_api import charts
+        builtin = json.loads(
+            (Path(__file__).resolve().parents[1] / "insights_builtin.json").read_text()
+        )["insights"]
+        by_id = {item["id"]: item for item in builtin}
+        bc = by_id["customers_below_cost"]
+        self.assertEqual(bc["chart"]["kind"], "table")
+        self.assertEqual(bc["chart"]["x"], "customer_and_product")
+        self.assertIn("under_cost", bc["chart"]["y"])
+        built_bc = charts.build(
+            bc["chart"],
+            ["customer_and_product", "customer", "item", "item_name", "currency", "paid_percent_of_cost", "under_cost"],
+            [
+                ["Crown Grooming Ltd. · Hair Wax 100ml (CAD)", "Crown Grooming Ltd.", "I1", "Hair Wax 100ml", "CAD", 82, 420.5],
+                ["Crown Grooming Ltd. · Beard Oil 50ml (USD)", "Crown Grooming Ltd.", "I2", "Beard Oil 50ml", "USD", 75, 310.0],
+            ],
+            title=bc["title"],
+        )
+        self.assertEqual(
+            built_bc["labels"],
+            ["Crown Grooming Ltd. · Hair Wax 100ml (CAD)", "Crown Grooming Ltd. · Beard Oil 50ml (USD)"],
+        )
+
+        pd = by_id["customers_price_dropped"]
+        self.assertEqual(pd["chart"]["kind"], "table")
+        self.assertEqual(pd["chart"]["x"], "customer_and_product")
+        self.assertIn("dropped_percent", pd["chart"]["y"])
+        self.assertIn("revenue_given_up", pd["chart"]["y"])
+        built_pd = charts.build(
+            pd["chart"],
+            ["customer_and_product", "customer", "item", "item_name", "currency", "dropped_percent", "revenue_given_up"],
+            [["SIDIA · Body Mist 100ml (USD)", "SIDIA", "I9", "Body Mist 100ml", "USD", 18, 1250.0]],
+            title=pd["title"],
+        )
+        self.assertEqual(built_pd["labels"], ["SIDIA · Body Mist 100ml (USD)"])
+
+    def test_measure_chart_preserves_measure_parameters_for_pinning_and_sql_inspection(self):
+        from operating import measures
+        from operator_api import charts
+
+        with_params = next(
+            (mid for mid, entry in measures.measures().items() if measures.parameters_of(entry)),
+            None,
+        )
+        if with_params is None:
+            self.skipTest("no parameterized measure in catalogue")
+        param_id = measures.parameters_of(measures.measures()[with_params])[0]["id"]
+        default_entry = charts._measure_of({"measure": with_params})
+        enabled_entry = charts._measure_of({"measure": with_params, "parameters": {param_id: True}})
+        self.assertIsNotNone(default_entry)
+        self.assertIsNotNone(enabled_entry)
+        self.assertNotEqual(default_entry.get("sql"), enabled_entry.get("sql"))
+
 
 if __name__ == "__main__":
     unittest.main()

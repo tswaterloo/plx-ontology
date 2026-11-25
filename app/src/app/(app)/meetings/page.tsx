@@ -29,7 +29,7 @@ function Meetings() {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar heading title="Meetings" />
-      <nav className="flex h-10 shrink-0 items-stretch gap-4 border-b border-border px-5" aria-label="Meetings" role="tablist">
+      <nav className="flex h-9 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border bg-bg px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden" aria-label="Meetings" role="tablist">
         {VIEWS.map((v) => (
           <Link
             key={v.view}
@@ -37,8 +37,8 @@ function Meetings() {
             role="tab"
             aria-selected={view === v.view}
             className={cn(
-              "relative flex items-center text-[13px]",
-              view === v.view ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
+              "relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors",
+              view === v.view ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
             )}
           >
             {v.label}

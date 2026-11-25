@@ -49,18 +49,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from integrations import graph_subscription_sender as sender
 from integrations.graph_notifications import ENV_CLIENT_STATE, ENV_TENANT, _write_json
 
 ENV_CONFIG = "PLX_GRAPH_SUBS_CONFIG"
+ENV_CREDENTIAL_PREFIX = "PLX_GRAPH_SUBS_CREDENTIAL_PREFIX"
+ALLOWED_CREDENTIAL_PREFIXES = ("AZURE", "MICROSOFT_GRAPH")
 ENV_CLIENT_ID, ENV_CLIENT_SECRET = "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"
 STATUS_FILE = Path("host") / "graph-subscriptions.json"
 STATUS_SCHEMA = "plx-graph-subscriptions/v1"
 MAX_MINUTES = {"mail": 10080, "teams": 4320}
 DEFAULT_MINUTES = {"mail": 4200, "teams": 4000}
-MIN_MINUTES = 60
+MIN_MINUTES = 15
+LIFECYCLE_REQUIRED_OVER_MINUTES = 60
 RENEW_AT = 0.5                    # renew when this share of the lifetime or less remains
 ALARM_AT = 0.25                   # ops alarm when this share or less remains
 REQUEST_SECONDS = 15
@@ -79,6 +82,21 @@ _RESOURCES = {          # a subscription's resource (no message id), by source
 def resource_ok(source: Any, resource: Any) -> bool:
     return source in _RESOURCES and isinstance(resource, str) and len(resource) <= 512 \
         and _RESOURCES[source].match(resource) is not None
+
+
+def _url_ok(value: Any) -> bool:
+    """Accept EventHub Key Vault URLs and HTTPS webhook URLs (with FQDN and non-empty path)."""
+    if not isinstance(value, str) or len(value) > 2048 or any(c.isspace() for c in value):
+        return False
+    if value.startswith("EventHub:https://"):
+        return True
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None:
+        return False
+    host = parsed.hostname or ""
+    if "." not in host or not parsed.path or parsed.path == "/":
+        return False
+    return True
 
 
 class NotConfigured(Exception):
@@ -134,16 +152,14 @@ class Settings:
             if not resource_ok(source, resource):
                 raise SettingsInvalid(f"config_resource_invalid:{name}")
             for value in (url, life_url):
-                if value is not None and (not isinstance(value, str)
-                                          or not value.startswith("EventHub:https://")
-                                          or len(value) > 2048):
+                if value is not None and not _url_ok(value):
                     raise SettingsInvalid(f"config_url_invalid:{name}")
             if url is None or not isinstance(kind, str) \
                     or not re.fullmatch(r"[a-z]+(,[a-z]+){0,2}", kind):
                 raise SettingsInvalid(f"config_entry_invalid:{name}")
             if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES[source]:
                 raise SettingsInvalid(f"config_lifetime_invalid:{name}")
-            if source == "teams" and minutes > MIN_MINUTES and not life_url:
+            if source == "teams" and minutes > LIFECYCLE_REQUIRED_OVER_MINUTES and not life_url:
                 raise SettingsInvalid(f"config_lifecycle_url_required:{name}")
             if any(_norm(w.resource) == _norm(resource)
                    and _norm_url(w.notification_url) == _norm_url(url) for w in wanted):
@@ -152,8 +168,18 @@ class Settings:
         state = (environ.get(ENV_CLIENT_STATE) or "").strip()
         if not 16 <= len(state) <= 128:
             raise SettingsInvalid("client_state_length")
-        creds = [(environ.get(n) or "").strip() for n in
-                 (ENV_TENANT, ENV_CLIENT_ID, ENV_CLIENT_SECRET)]
+        raw_prefix = (environ.get(ENV_CREDENTIAL_PREFIX) or "").strip()
+        if not raw_prefix:
+            doc_prefix = document.get("credential_prefix")
+            if doc_prefix is not None and not isinstance(doc_prefix, str):
+                raise SettingsInvalid("credential_prefix_invalid")
+            raw_prefix = (doc_prefix or "AZURE").strip()
+        prefix = raw_prefix.upper()
+        if prefix not in ALLOWED_CREDENTIAL_PREFIXES:
+            raise SettingsInvalid("credential_prefix_invalid")
+        cred_keys = (ENV_TENANT, ENV_CLIENT_ID, ENV_CLIENT_SECRET) if prefix == "AZURE" else (
+            f"{prefix}_TENANT_ID", f"{prefix}_CLIENT_ID", f"{prefix}_CLIENT_SECRET")
+        creds = [(environ.get(n) or "").strip() for n in cred_keys]
         if not all(creds):
             raise SettingsInvalid("credentials_incomplete")
         return cls(tuple(wanted), state, *creds)

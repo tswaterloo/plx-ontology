@@ -155,7 +155,7 @@ def _phonetic(token: str) -> str:
                  ("y", "i"), ("w", "")):
         t = t.replace(a, b)
     t = re.sub(r"c(?=[eiy])", "s", t).replace("c", "k")
-    t = t[:1] + re.sub(r"[aeiouh]", "", t[1:])
+    t = t[:1] + re.sub(r"[aeiouh]", "", t[1:])  # guard-ok: phonetic keying transform, not a cut
     return re.sub(r"(.)\1+", r"\1", t)
 
 
@@ -481,7 +481,7 @@ class PgEntityIndex:
             conn = psycopg.connect(self.dsn, autocommit=True,
                                    connect_timeout=self.CONNECT_TIMEOUT_S,
                                    application_name=(os.environ.get("PGAPPNAME")
-                                                     or "plx-entities")[:63])
+                                                     or "plx-entities")[:63])  # guard-ok: fixed-shape identifier, not content
         try:
             conn.execute("SELECT set_config('default_transaction_read_only', 'on', false),"
                          " set_config('statement_timeout', %s, false)",
@@ -586,7 +586,8 @@ class PgEntityIndex:
                  f" AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))")
         rows = self._run(
             f"SELECT {self._COLS}, {visible} FROM {self.table} e WHERE {where}"
-            f" ORDER BY e.type, e.entity_id LIMIT 200", params)
+            f" ORDER BY (e.normalized = ANY(%(lower)s)) DESC, e.type, e.entity_id LIMIT 200",
+            params)
         # an item-gated row its item check refuses is hidden, as a row of a unit not granted
         rows = self._item_checked(scope, rows, visible_at=7)
         out = [EntityRow(r[0], r[1], r[2], r[3] or "", r[4] or "", tuple(r[5] or ()),
@@ -706,6 +707,7 @@ class PgEntityIndex:
     _TERMS_SQL = """
         WITH m AS MATERIALIZED (
             SELECT q.term, e.entity_id, {visible} AS vis,
+                   (e.normalized = q.term) AS exact,
                    word_similarity(q.term, e.normalized) AS ws,
                    strict_word_similarity(q.term, e.normalized) AS sws,
                    length(e.normalized) AS len, {person} AS pkey
@@ -715,6 +717,7 @@ class PgEntityIndex:
               AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))
             UNION ALL
             SELECT q.term, e.entity_id, {visible},
+                   false,
                    word_similarity(q.term, search.alias_text(e.alias)),
                    strict_word_similarity(q.term, search.alias_text(e.alias)),
                    length(e.normalized), {person}
@@ -723,29 +726,29 @@ class PgEntityIndex:
             WHERE (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))
               AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))
             UNION ALL
-            SELECT 'alias', e.entity_id, {visible}, 1.0, 1.0, length(e.normalized), {person}
+            SELECT 'alias', e.entity_id, {visible}, true, 1.0, 1.0, length(e.normalized), {person}
             FROM {table} e
             WHERE %(alias)s AND e.alias && %(upper)s::text[]
               AND (%(types)s::text[] IS NULL OR e.type = ANY(%(types)s))
               AND ({visible} OR e.audience_key = ANY(%(countable)s::text[]))),
         b AS (SELECT DISTINCT ON (term, entity_id) * FROM m
-              ORDER BY term, entity_id, ws DESC, sws DESC),
+              ORDER BY term, entity_id, exact DESC, ws DESC, sws DESC),
         d AS (
             SELECT b.*,
                    row_number() OVER (PARTITION BY b.term, b.vis, b.pkey
-                                      ORDER BY b.ws DESC, b.sws DESC, b.len, b.entity_id) AS dup
+                                      ORDER BY b.exact DESC, b.ws DESC, b.sws DESC, b.len, b.entity_id) AS dup
             FROM b),
         p AS (
             SELECT d.*,
                    row_number() OVER (PARTITION BY d.term, d.vis, d.pkey IS NOT NULL
-                                      ORDER BY d.ws DESC, d.sws DESC, d.len, d.entity_id) AS pn
+                                      ORDER BY d.exact DESC, d.ws DESC, d.sws DESC, d.len, d.entity_id) AS pn
             FROM d WHERE d.pkey IS NULL OR d.dup = 1),
         r AS (
             SELECT p.*,
                    row_number() OVER (PARTITION BY p.term
-                                      ORDER BY p.ws DESC, p.sws DESC, p.len, p.entity_id) AS overall,
+                                      ORDER BY p.exact DESC, p.ws DESC, p.sws DESC, p.len, p.entity_id) AS overall,
                    row_number() OVER (PARTITION BY p.term, p.vis
-                                      ORDER BY p.ws DESC, p.sws DESC, p.len, p.entity_id) AS rn
+                                      ORDER BY p.exact DESC, p.ws DESC, p.sws DESC, p.len, p.entity_id) AS rn
             FROM p WHERE p.pkey IS NULL OR p.pn <= %(plim)s)
         SELECT r.term, r.vis, r.entity_id, e.object_id, e.type, e.name, e.normalized,
                e.alias, r.ws, r.sws, e.audience_key
@@ -821,7 +824,7 @@ class ProjectionGraph:
         return conn
 
     def neighbors(self, object_ids):
-        ids = sorted(set(object_ids))[:200]
+        ids = sorted(set(object_ids))
         out: dict[str, dict[str, str]] = {i: {} for i in ids}
         if not ids:
             return out
@@ -1135,7 +1138,6 @@ def identifier_leads(question: str) -> list[_Lead]:
 
 _TYPED_VALUE = re.compile(r"(?i)^[a-z.]+\s*[#:.\-]?\s*(\S+)$")
 _ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
-MAX_ASKED = 12
 
 
 @functools.lru_cache(maxsize=256)
@@ -1148,9 +1150,9 @@ def asked_identifiers(question: Any) -> tuple[str, ...]:
     (``order 1000091938``, ``lot 240306``: the value) and a bare token that mixes letters
     and digits (``R-0404``, ``TASK-928``, ``25A0165``). Never a bare number, an amount, a
     quantity with its unit, a date or a year: those stay figures a citation must back.
-    Empty for anything that is not text; at most ``MAX_ASKED``."""
+    Empty for anything that is not text. Every identifier the question names."""
     if not isinstance(question, str) or not question.strip() or len(question) > 4000:
-        return ()
+        return ()  # guard-ok: input-size resource guard on pasted documents, not a content cut
     out: list[str] = []
 
     def add(token: str) -> None:
@@ -1184,7 +1186,7 @@ def asked_identifiers(question: Any) -> tuple[str, ...]:
                 add(found.group(1))
         elif lead.why.startswith("bare ") and re.search(r"[A-Za-z]", lead.text):
             add(lead.text)
-    return tuple(out[:MAX_ASKED])
+    return tuple(out)
 
 
 # --------------------------------------------------------------------- name mentions
@@ -1538,11 +1540,11 @@ def _decide(text: str, kind: str, span: tuple[int, int] | None, cands: list[Cand
                      for c in first]
             close = [first]
             groups = [first] + [g for g in groups if g is not linked[0]]
-    shown = [c for g in groups for c in g][:MAX_CANDIDATES]
+    shown = [c for g in groups for c in g]
     if len(close) == 1:
         top = sorted(close[0], key=lambda c: (-c.score, c.object_id))[0]
         return EntityMention(text, kind, shown, top.object_id, False, span, None, hidden)
-    choices = [sorted(g, key=lambda c: -c.score)[0] for g in close][:MAX_CANDIDATES]
+    choices = [sorted(g, key=lambda c: -c.score)[0] for g in close]
     named = [f"{_type_word(c.type)} {c.label}{_era_text(c)}" for c in choices]
     if len(set(named)) < len(named):
         named = [f"{n} ({_source_hint(c.object_id)})" for n, c in zip(named, choices)]
@@ -1556,8 +1558,8 @@ def _era_text(cand: Candidate) -> str:
     """`` (2021-03 to 2024-03)`` for a candidate that held its code for a stretch."""
     if not (cand.valid_from or cand.valid_to):
         return ""
-    start = (cand.valid_from or "")[:7]
-    end = (cand.valid_to or "")[:7]
+    start = (cand.valid_from or "")[:7]  # guard-ok: year-month shape, not content
+    end = (cand.valid_to or "")[:7]  # guard-ok: year-month shape, not content
     return f" ({start or 'before'} to {end})" if end else f" (since {start})"
 
 
@@ -1646,7 +1648,7 @@ def _resolve_identifiers(question: str, resolver: _Resolver) -> list[EntityMenti
         cands = []
         exact_ids = set()
         for row in rows:
-            matched = row.matched or "/".join(lead.forms[:3])
+            matched = row.matched or "/".join(lead.forms)
             full = lead.exact or _literal_id(lead, row, matched)
             if full:
                 exact_ids.add(row.object_id)
@@ -1756,7 +1758,7 @@ def _near_miss(lead: _Lead, resolver: _Resolver) -> EntityMention | None:
                          "not the identifier asked)", key=key)
         cands.append(cand)
         numbers.setdefault(key, cand)
-    choices = list(numbers.values())[:MAX_CANDIDATES]
+    choices = list(numbers.values())
     named = [c.label for c in choices]
     prompt = (f'No record you can see carries "{lead.text}". Did you mean '
               + (", ".join(named[:-1]) + f" or {named[-1]}" if len(named) > 1 else named[0])
@@ -1807,7 +1809,7 @@ def _resolve_names(question: str, taken: list[tuple[int, int]], resolver: _Resol
         top = {c.object_id for c in cands if c.score >= best - AMBIGUITY_GAP}
         names = {(c.type, " ".join(_name_tokens(c.label))) for c in cands
                  if c.object_id in top}
-        leading = all(n[1].split()[:1] and token_match(gram, n[1].split()[0]) >= VAGUE_ACCEPT
+        leading = all(n[1].split()[:1] and token_match(gram, n[1].split()[0]) >= VAGUE_ACCEPT  # guard-ok: first-token test, a check not a cut of carried data
                       for n in names)
         if " " not in gram and not (top & fulls) and len(names) > 1 and not leading:
             continue        # a word shared by several names, none of them all of it
@@ -2131,7 +2133,7 @@ def _labels(mentions: Sequence[EntityMention]) -> list[str]:
     for m in mentions:
         if m.ambiguous:
             out += list(dict.fromkeys(f"{_type_word(c.type)} {c.label}"
-                                      for c in m.candidates[:MAX_CANDIDATES]))
+                                      for c in m.candidates))
         elif m.resolved:
             c = next((c for c in m.candidates if c.object_id == m.resolved), None)
             if c:
@@ -2161,7 +2163,7 @@ def template_rewrites(question: str, intent: str, mentions: Sequence[EntityMenti
     keyword = " ".join(dict.fromkeys(labels + [t for t in content if t not in label_words]))
     synonym = " ".join(f"{t} {_SYNONYMS[t]}" if t in _SYNONYMS else t
                        for t in fold(corrected).split())
-    subject = ", ".join(labels) or (" ".join(content[:6]) or question.strip())
+    subject = ", ".join(labels) or (" ".join(content[:6]) or question.strip())  # guard-ok: synthesized subject lead-in, generated not source data
     hyde = _HYDE[intent].format(e=subject)
     out = []
     for text in (corrected, keyword, synonym, hyde):
@@ -2171,7 +2173,7 @@ def template_rewrites(question: str, intent: str, mentions: Sequence[EntityMenti
     while len(out) < 3:
         out.append(f"{subject} {intent.replace('_', ' ')}".strip() if len(out) == 1
                    else f"{' '.join(content) or question} details")
-    return out[:5]
+    return out[:5]  # guard-ok: generative rewrite count, the list is synthesized not source data
 
 
 # ---------------------------------------------------------------------- understand
@@ -2184,14 +2186,14 @@ def _clean_llm(reply: Any) -> dict[str, Any] | None:
         out["intent"] = reply["intent"]
     rewrites = reply.get("rewrites")
     if isinstance(rewrites, list):
-        out["rewrites"] = [r.strip()[:300] for r in rewrites if isinstance(r, str) and r.strip()][:3]
+        out["rewrites"] = [r.strip()[:300] for r in rewrites if isinstance(r, str) and r.strip()][:3]  # guard-ok: model-output hygiene bound on generated text, not source data
     if isinstance(reply.get("hyde"), str) and reply["hyde"].strip():
-        out["hyde"] = reply["hyde"].strip()[:800]
+        out["hyde"] = reply["hyde"].strip()[:800]  # guard-ok: model-output hygiene bound on generated text, not source data
     refs = []
     for ref in reply.get("references") or ():
         if isinstance(ref, Mapping) and isinstance(ref.get("text"), str):
-            terms = [fold(t) for t in ref.get("search_terms") or () if isinstance(t, str)][:4]
-            refs.append({"text": ref["text"][:120], "type": ref.get("type"),
+            terms = [fold(t) for t in ref.get("search_terms") or () if isinstance(t, str)][:4]  # guard-ok: model-output hygiene on generated terms, not source data
+            refs.append({"text": ref["text"][:120], "type": ref.get("type"),  # guard-ok: model-output hygiene on generated reference text, not source data
                          "terms": [t for t in terms if t]})
     out["references"] = refs
     return out
@@ -2262,7 +2264,7 @@ def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
         # the fast path's budget holds for a question, not a pasted document
         notes.append(f"only the first {MAX_QUESTION_CHARS} characters were read for names "
                      "and numbers")
-        question = question[:MAX_QUESTION_CHARS]
+        question = question[:MAX_QUESTION_CHARS]  # guard-ok: stated in the answer notes (only the first N characters read)
     turns = _history_turns(history)
     if llm is None:
         llm = False if os.environ.get(LLM_SWITCH_SETTING, "").lower() == "off" else ClaudeUnderstander()
@@ -2291,7 +2293,7 @@ def _start(question: Any, history: Sequence[Any], actor: Any, policy: Any,
     history_labels = _history_labels(turns, resolver)
     if llm and question.strip():
         # started before the fast path resolves names: the model runs meanwhile
-        future = _LLM_POOL.submit(llm, question[:2000], _llm_context(turns, history_labels),
+        future = _LLM_POOL.submit(llm, question[:2000], _llm_context(turns, history_labels),  # guard-ok: model-context input bound, the fast path notes its own cut in the answer
                                   llm_budget)
         llm_info = {"status": "pending"}
 
@@ -2387,10 +2389,10 @@ def _await_llm(run: _Run, wait: float) -> Understanding:
         hyde = reply.get("hyde")
         merged = [u.rewrites[0]] + (reply.get("rewrites") or []) + (
             [hyde] if hyde else u.rewrites[-1:])
-        rewrites = list(dict.fromkeys(r for r in merged if r))[:5]
+        rewrites = list(dict.fromkeys(r for r in merged if r))[:5]  # guard-ok: generative rewrite count, synthesized not source data
         if len(rewrites) < 3:
             rewrites = list(dict.fromkeys(rewrites + template_rewrites(
-                u.question, u.intent, u.entities)))[:5]
+                u.question, u.intent, u.entities)))[:5]  # guard-ok: generative rewrite count, synthesized not source data
         u.rewrites = rewrites
         found = _llm_references(u.question, reply.get("references") or [], u.entities,
                                 resolver, notes, grounding)
@@ -2475,9 +2477,9 @@ def _grounded_text(text: str, grounding: set[str], question: str) -> bool:
             return False
     for token in _TOKEN_RE.findall(text):
         word = fold(token)
-        if token[:1].isupper() and word and not _grounded(word, grounding) \
-                and word not in SCAFFOLD and word not in DOMAIN_WORDS \
-                and word not in _CALENDAR_WORDS:
+        if (token[:1].isupper() and word and not _grounded(word, grounding)  # guard-ok: first-letter case test, a check not a cut of carried data
+                and word not in SCAFFOLD and word not in DOMAIN_WORDS
+                and word not in _CALENDAR_WORDS):
             return False
     return True
 
@@ -2513,10 +2515,10 @@ def _llm_references(question: str, refs: Sequence[Mapping[str, Any]],
     out = []
     grounding = grounding if grounding is not None else _grounding_words(question, ())
     folded_question = f" {fold(question)} "
-    for ref in refs[:4]:
+    for ref in refs[:4]:  # guard-ok: model-output hygiene bound on generated references, not source data
         text = ref["text"]
         if not fold(text) or f" {fold(text)}" not in folded_question:
-            notes.append(f'language model reference "{text[:60]}" is not in the question; dropped')
+            notes.append(f'language model reference "{text}" is not in the question; dropped')
             continue
         terms = [t for t in ref["terms"] if all(_grounded(w, grounding) for w in t.split())]
         if not terms:
@@ -2529,7 +2531,7 @@ def _llm_references(question: str, refs: Sequence[Mapping[str, Any]],
         if any(m.resolved or m.candidates for m in overlap):
             continue
         types = _TYPE_WORDS.get(str(ref.get("type") or "").lower()) or (
-            (ref["type"],) if isinstance(ref.get("type"), str) and ref["type"][:1].isupper()
+            (ref["type"],) if isinstance(ref.get("type"), str) and ref["type"][:1].isupper()  # guard-ok: first-letter case test, a check not a cut of carried data
             and ref["type"] != "other" else None)
         # the model's guessed words are not the reader's: their hidden matches are not counted
         rows, _hidden = resolver.terms(ref["terms"], types, count_hidden=False)

@@ -68,9 +68,9 @@ PG_META_KEYS = ("built_at", "freshness", "content_digest")
 SCREENS_AHEAD_WORKERS = 1   # the API's own; the warm-up process runs WARM_READ_WORKERS
 
 
-SCREENS_AHEAD = ("_home_served", ("late_list", {"offset": 0, "limit": 100}),
+SCREENS_AHEAD = ("_home_served", "home_needs", ("late_list", {"offset": 0, "limit": 100}),
                  ("briefing", {"since_visit": False}), "_briefing_pages_ahead", "_home_pages_ahead", "_sidebar_served", "_late_trails_ahead",
-                 "my_work", "autopilot_area", "autopilot_prepared_list",
+                 "my_work", "autopilot_area", "autopilot_prepared_list", "assist_drafts",
                  "suggestions", "approvals_queue", "reply_triage", "upcoming_meetings",
                  ("answer_bank", None), "_insights_ahead", ("my_action_items", None),
                  ("weekly_review", None), "workload", "team_view")
@@ -102,9 +102,10 @@ MEMORY_DECIDE_SECONDS = 3.0   # one ask of the read policy for memory (backgroun
 SHAPE_WAIT_FACTOR = 3   # past that, the bare shaping or the slow one waited for this many times as long
 
 
-PREWARM_SCREENS = (("home",), ("home", "alerts"), ("late", 0, 100), ("briefing", False),
+PREWARM_SCREENS = (("home_needs",), ("home",), ("home", "alerts"), ("late", 0, 100), ("briefing", False),
                    ("sidebar",),
-                   ("autopilot",), ("autopilot_drafts",), ("suggestions",), ("approvals",), ("replies",),
+                   ("autopilot",), ("autopilot_drafts",), ("assist_drafts", False),
+                   ("suggestions",), ("approvals",), ("replies",),
                    ("meetings",), ("my_work",), ("workload",), ("team",))
 
 

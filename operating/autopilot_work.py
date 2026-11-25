@@ -303,7 +303,7 @@ class MCQuestions:
         if q is None:
             return None
         options = [str(o.get("label") or o.get("text") or "") if isinstance(o, Mapping)
-                   else str(o) for o in q.get("options") or ()][:8]
+                   else str(o) for o in q.get("options") or ()]
         rec = q.get("recommended")
         answer = q.get("answer") if isinstance(q.get("answer"), Mapping) else {}
         withdrawn = q.get("withdrawal") if isinstance(q.get("withdrawal"), Mapping) else {}
@@ -311,10 +311,10 @@ class MCQuestions:
                 "addressee": str(q.get("addressee") or ev["addressee"]).strip().lower(),
                 "asked_at": str(q.get("askedAt") or ""),
                 "text": autopilot_records.shown(q.get("text"), autopilot_queue.TEXT_CHARS),
-                "context": str(q.get("context") or "")[:1500],
+                "context": str(q.get("context") or ""),
                 "options": options,
                 "recommended": rec if isinstance(rec, int) and 0 <= rec < len(options) else None,
-                "reason": str(q.get("recommendationReason") or "")[:800],
+                "reason": str(q.get("recommendationReason") or ""),
                 "answered_at": str(answer.get("answeredAt") or ""),
                 "answered_by": str(answer.get("answeredBy") or "").strip().lower(),
                 "withdrawn_at": str(withdrawn.get("at") or withdrawn.get("withdrawnAt") or "")}
@@ -473,7 +473,7 @@ def resolve_customer(ctx: Any, event: Mapping[str, Any], text: str) -> dict[str,
                 basis += "+bill_to"
     if len(by_number) != 1:
         return {"number": None, "reason": "several_customers", "candidates":
-                sorted(by_number)[:6]}
+                sorted(by_number)}
     number, records = next(iter(by_number.items()))
     row = live[records[0]]
     ctx.cite(row, "erp_code", "name")
@@ -602,7 +602,7 @@ def last_prices(ctx: Any, customer_records: Sequence[str]) -> dict[str, dict[str
              "ordered_quantity", "order")):
         heads = [o for o in ctx.linked_many(customer_records, (head_link,))
                  if not o.startswith("Customer:")]
-        rows = ctx.read(heads[:3000], (date_prop, "invoice_number", "order_number", "currency"))
+        rows = ctx.read(heads, (date_prop, "invoice_number", "order_number", "currency"))
         latest = sorted(rows, key=lambda o: autopilot_records._v(rows[o], date_prop), reverse=True)
         latest = latest[:PRICE_INVOICES]
         lines_of = ctx.touching(latest, (line_link,))
@@ -658,7 +658,7 @@ def item_available(ctx: Any, items: Sequence[str], need: Decimal,
         return {"date": ctx.as_of.isoformat(), "basis": f"on hand {on_hand}"}
     supply = on_hand
     po_lines = ctx.touching(items, ("PurchaseOrderLine.for_item",))
-    flows, why = autopilot_handlers.supply_flows(ctx, [a for _t, a, _b in po_lines][:200], unit)
+    flows, why = autopilot_handlers.supply_flows(ctx, [a for _t, a, _b in po_lines], unit)
     if why is not None:
         return {"date": None, "basis": f"not checked: an open PO line's unit is "
                 f"{'not stated' if why == 'unit_unknown' else 'another unit'}"}
@@ -710,7 +710,7 @@ def draft(to: str, subject: str, parts: Sequence[str], facts: Mapping[str, Any],
               and a.lower() != to.lower() and a not in more]
     return {"channel": "email", "to": [{"address": a} for a in [to, *more]],
             **({"cc": [{"address": a} for a in copied]} if copied else {}),
-            "subject": subject[:200],
+            "subject": subject,
             "body": body, "in_reply_to": in_reply_to, "copy_check": {
                 "ok": check.get("ok"), "findings": len(check.get("findings") or ())}}
 
@@ -747,10 +747,10 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     files = attachments(ctx, event, unread=unread)
     pos = dl.unique([*dl.po_numbers(subject), *autopilot_handlers._numbers(autopilot_queue.PO_NUMBER, subject),
                      *[p for f in files for p in dl.po_numbers(f["text"])],
-                     *dl.po_numbers(body[:2000])])
+                     *dl.po_numbers(body)])
     if not pos and re.match(r"^\s*(?:re|aw|sv|fw|fwd)\s*:", subject, re.I):
         return {"skip": "reply_without_po_number"}
-    named = autopilot_handlers.identified(ctx, subject, body[:2000])
+    named = autopilot_handlers.identified(ctx, subject, body)
     if named and all(o.startswith(("PurchaseOrder:", "Receipt:")) for o in named):
         return {"skip": "names_our_purchase_order"}
     entered = [o for o in named if o.startswith("SalesOrder:")]
@@ -769,7 +769,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     sources = [(f["name"], f["form"], f["text"], f["handle"]) for f in files] + \
         [("mail body", "text", body, None)]
     po_text = "\n".join(t for _n, _f, t, _h in sources)
-    customer = resolve_customer(ctx, event, po_text[:20000])
+    customer = resolve_customer(ctx, event, po_text)
     entered = list(dict.fromkeys(entered))
     if entered:
         # only an order THIS customer placed is "already entered": a customer PO number is
@@ -804,7 +804,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     found = resolve_items(ctx, [t for ln in lines for t in ln["tokens"]])
     for ln in lines:                    # an item code the identifier table lacks: its record
         if not any(found.get(t.upper()) for t in ln["tokens"]):
-            for t in ln["tokens"][:3]:
+            for t in ln["tokens"]:
                 try:
                     hits = ctx.find("Product", "code", t)
                 except autopilot_handlers.FindUnavailable:
@@ -864,7 +864,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                            "the last price is in another unit or currency"),
                           "price_differs": bool(stated and last and autopilot_records._decimal(stated) !=
                                                 autopilot_records._decimal(last["price"])),
-                          "available": avail, "cite": ln["cite"], "items": records[:4]})
+                          "available": avail, "cite": ln["cite"], "items": records})
     out: dict[str, Any] = {"po_numbers": pos, "customer": customer, "lines": out_lines,
                            "unresolved_lines": unresolved, "read_from": read_from,
                            "gaps": [], "links": []}
@@ -873,7 +873,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     if unread:
         # files the lines were not read from: said on the item, never silently skipped
         out["files_not_read"] = [{"name": u.get("name") or "", "why": u["why"]}
-                                 for u in unread][:10]
+                                 for u in unread]
         out["gaps"].append(f"files_not_read:{len(unread)}")
     if unresolved:
         out["gaps"].append("lines_not_resolved")
@@ -891,7 +891,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     ship = max(dates) if out_lines and all(dates) else None
     # the entry names the customer the PO itself states, never only the sender's record
     # (mail comes from distributors and brokers too: entry_assist.customer_of)
-    stated = customers_stated(ctx, po_text[:200_000]) if customer.get("number") else {}
+    stated = customers_stated(ctx, po_text) if customer.get("number") else {}
     said = customer_numbers(ctx, stated.get("account") or stated.get("name") or [])
     confirmed = bool(customer.get("number")) and list(said) == [customer["number"].upper()]
     if customer.get("number") and not confirmed:
@@ -902,7 +902,7 @@ def h_order_entry(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         out["write"] = {
             "system": "bc", "operation": "sales_order_create",
             "payload": {"customerNumber": customer["number"],
-                        "externalDocumentNumber": the_po[:35],
+                        "externalDocumentNumber": the_po[:35],  # guard-ok: BC externalDocumentNumber field width
                         "orderDate": ctx.as_of.isoformat(),
                         "salesOrderLines": [
                             {"lineType": "Item", "lineObjectNumber": ln["item"],
@@ -1002,7 +1002,7 @@ def po_followup_done(st: Any, po: str) -> bool:
     links = ap._linked(st, po)
     if {t for t, _o in links} & set(PO_ANSWERED):
         return True
-    twins = [o for t, o in links if t == "PurchaseOrder.same_record_as"][:4]
+    twins = [o for t, o in links if t == "PurchaseOrder.same_record_as"]
     return bool(twins and st.touching(twins, PO_ANSWERED))
 
 
@@ -1049,7 +1049,7 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
         if kinds & {"SupplierConfirmation.confirms", "Receipt.receives",
                     "PurchaseOrder.bc_posted_as"}:
             continue
-        twins = [o for t, o in links if t == "PurchaseOrder.same_record_as"][:4]
+        twins = [o for t, o in links if t == "PurchaseOrder.same_record_as"]
         twin_kinds = {t for row in st.touching(twins, ("SupplierConfirmation.confirms",
                                                        "Receipt.receives"))
                       for t in (row[2],)} if twins else set()
@@ -1058,7 +1058,7 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
         links += [(row[2], row[3] if row[4] in twins else row[4])
                   for row in (st.touching(twins, None) if twins else [])]
         mails = [o for _t, o in links if o.startswith("Email:")]
-        mrows = autopilot_records._read(st, mails[:40], ("sender", "to_addresses", "sent_at", "mailbox"))
+        mrows = autopilot_records._read(st, mails, ("sender", "to_addresses", "sent_at", "mailbox"))
         # the buyer: whoever of ours most recently sent mail naming the PO (to the supplier
         # first), else the person whose own mailbox most recently holds such mail
         replied, owner, to, sent_by, held_by = False, None, None, None, None
@@ -1091,14 +1091,14 @@ def po_due_events(st: Any, registry: Mapping[str, Any], as_of: date, domains: Se
                     "status": autopilot_records._v(row, "status"), "owner_hint": owner, "supplier_to": to,
                     "audience": autopilot_records._types(st, [oid]).get(oid, ("", ""))[1],
                     "handles": [c["l1_handle"] for c in row.values()
-                                if c.get("l1_handle")][:3],
+                                if c.get("l1_handle")],
                     "fields": {"po_number": number,
                                "order_date": autopilot_records._v(row, "order_date")[:10]}})
     return out
 
 
 def _po_lines(ctx: Any, po: str) -> list[dict[str, Any]]:
-    lines = ctx.linked(po, (autopilot_queue.PO_LINE_OF,))[:autopilot_queue.MAX_LINES]
+    lines = ctx.linked(po, (autopilot_queue.PO_LINE_OF,))
     rows = ctx.read(lines, ("item_code", "description", "ordered_quantity", "received_quantity",
                             "uom", "bc_expected_receipt_date", "line_type"))
     out = []
@@ -1108,7 +1108,7 @@ def _po_lines(ctx: Any, po: str) -> list[dict[str, Any]]:
         if qty is None or qty <= 0:
             continue
         ctx.cite(r, "item_code", "ordered_quantity")
-        out.append({"line": line, "item": autopilot_records._v(r, "item_code") or autopilot_records._v(r, "description")[:40],
+        out.append({"line": line, "item": autopilot_records._v(r, "item_code") or autopilot_records._v(r, "description"),
                     "quantity": _qty(autopilot_records._v(r, "ordered_quantity")), "uom": autopilot_records._v(r, "uom"),
                     "expected": autopilot_records._v(r, "bc_expected_receipt_date")[:10] or None})
     return out
@@ -1124,11 +1124,11 @@ def _supplier_contact(ctx: Any, po: str) -> str | None:
     rows = ctx.read(sups, ("csr_email", "rep_email", "bc_email"))
     if not any(autopilot_records._v(r, p) for r in rows.values()
                for p in ("csr_email", "rep_email", "bc_email")):
-        twins = ctx.linked(po, ("PurchaseOrder.same_record_as",))[:4]
+        twins = ctx.linked(po, ("PurchaseOrder.same_record_as",))
         more = sorted(with_twins(ctx, set(sups) | set(ctx.linked_many(
             twins, ("PurchaseOrder.ordered_from",))), SUPPLIER_TWIN) - set(sups))
-        rows = {**rows, **ctx.read(more[:8], ("csr_email", "rep_email", "bc_email"))}
-        sups = [*sups, *more[:8]]
+        rows = {**rows, **ctx.read(more, ("csr_email", "rep_email", "bc_email"))}
+        sups = [*sups, *more]
     found = []
     # the PO's own supplier first, then its twins' in id order: one address, every run the same
     for r in (rows[o] for o in sups if o in rows):
@@ -1154,7 +1154,7 @@ def h_po_followup(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"skip": "supplier_contact_unknown"}
     number, ordered = autopilot_records._v(head, "po_number"), autopilot_records._v(head, "order_date")[:10]
     age = (ctx.as_of - date.fromisoformat(ordered)).days if ordered else None
-    shown = lines[:3]
+    shown = lines[:3]  # guard-ok: the facts state plainly how many lines are shown and how many more
     listed = "; ".join(f"{x['item']} x {x['quantity']}" + (f" {x['uom']}" if x["uom"] else "")
                        for x in shown)
     more = len(lines) - len(shown)
@@ -1203,7 +1203,7 @@ def stated_dates(text: str, as_of: date) -> list[date]:
             if m["iso"]:
                 day = date.fromisoformat(m["iso"])
             else:
-                mon = int(m["m1"]) if m["m1"] else _MONTH[(m["mon"] or m["mon3"])[:3].lower()]
+                mon = int(m["m1"]) if m["m1"] else _MONTH[(m["mon"] or m["mon3"])[:3].lower()]  # guard-ok: parsing a three-letter month abbreviation
                 d = int(m["d1"] or m["d2"] or m["d3"])
                 y = m["y1"] or m["y2"] or m["y3"]
                 year = (int(y) + (2000 if len(y) == 2 else 0)) if y else as_of.year
@@ -1222,13 +1222,13 @@ def _impacted(ctx: Any, po: str, by: date) -> list[dict[str, Any]]:
     (pegging links first when the store holds them)."""
     pegged = [o for o in ctx.linked(po) if o.startswith("SalesOrder:")]
     orders: dict[str, str] = {o: "" for o in pegged}
-    for pl in ctx.linked(po, (autopilot_queue.PO_LINE_OF,))[:autopilot_queue.MAX_LINES]:
+    for pl in ctx.linked(po, (autopilot_queue.PO_LINE_OF,)):
         for item in ctx.linked(pl, (autopilot_queue.PO_LINE_ITEM,))[:1]:
             code = autopilot_records._v(ctx.read([item], ("code",)).get(item), "code")
-            for sl in ctx.linked(item, (autopilot_queue.SO_LINE_ITEM,))[:200]:
+            for sl in ctx.linked(item, (autopilot_queue.SO_LINE_ITEM,)):
                 for order in ctx.linked(sl, (autopilot_queue.SO_LINE_OF,))[:1]:
                     orders.setdefault(order, code)
-    rows = ctx.read(list(orders)[:300], ("order_number", "status", "required_date"))
+    rows = ctx.read(list(orders), ("order_number", "status", "required_date"))
     out = []
     for o, r in rows.items():
         req = ap._instant(autopilot_records._v(r, "required_date"))
@@ -1239,7 +1239,7 @@ def _impacted(ctx: Any, po: str, by: date) -> list[dict[str, Any]]:
             out.append({"object_id": o, "order_number": autopilot_records._v(r, "order_number"),
                         "required_date": autopilot_records._v(r, "required_date")[:10], "item": orders[o],
                         "pegged": o in pegged})
-    return sorted(out, key=lambda x: x["required_date"])[:20]
+    return sorted(out, key=lambda x: x["required_date"])
 
 
 def h_supplier_eta(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
@@ -1307,7 +1307,7 @@ AMOUNT = re.compile(r"(?:\$|USD|CAD)\s?([0-9][0-9,]*(?:\.[0-9]{2})?)")
 
 def _status_lines(ctx: Any, orders: Sequence[str]) -> tuple[list[str], dict[str, Any]]:
     lines, facts = [], {}
-    for i, order in enumerate(orders[:3]):
+    for i, order in enumerate(orders):
         f = autopilot_handlers._order_facts(ctx, order)
         ship = f["shipments"][0] if f["shipments"] else None
         facts[f"order{i}"] = f["order_number"]
@@ -1363,8 +1363,8 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     orders = [o for o in named if o.startswith("SalesOrder:")]
     pos = [o for o in named if o.startswith("PurchaseOrder:")]
     pos += [o for o in autopilot_handlers.identified(ctx, subject, own) if o.startswith("PurchaseOrder:")]
-    pos = list(dict.fromkeys(pos))[:3]
-    amounts = [a for a in AMOUNT.findall(own)][:3]
+    pos = list(dict.fromkeys(pos))
+    amounts = [a for a in AMOUNT.findall(own)]
     out: dict[str, Any] = {"gaps": [], "evidence": [], "links": []}
     if "approval_request" in intents or pt.approval_ask(own):
         family = pt.approval_family(own)
@@ -1375,7 +1375,7 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             sup = ctx.linked(po, ("PurchaseOrder.ordered_from",))
             prior = [o for o in ctx.linked_many(sup, ("PurchaseOrder.ordered_from",))
                      if o.startswith("PurchaseOrder:") and o != po]
-            prow = ctx.read(prior[:200], ("total_cost", "order_date", "status", "currency"))
+            prow = ctx.read(prior, ("total_cost", "order_date", "status", "currency"))
             this = autopilot_records._decimal(autopilot_records._v(head, "total_cost"))
             money = _po_currency(head)
             # the supplier's earlier POs in this PO's own currency only: a USD median is no
@@ -1411,14 +1411,14 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             reasons.append("no PO or order named: decide from the message")
         out.update(kind="decision", family=family, recommendation=rec, reasons=reasons,
                    evidence=evidence, amounts=amounts,
-                   summary=f"Decision ({family}): {subject[:100]} - recommend {rec}")
+                   summary=f"Decision ({family}): {subject} - recommend {rec}")
         return out
     if FINANCE.search(own) and (amounts or "?" in own) and \
             event.get("side") in ("internal", "customer", "supplier"):
         out.update(kind="decision", family="finance", recommendation="ask_cfo",
                    reasons=["cash position and AP/AR due are not in the records yet"],
                    amounts=amounts, gaps=["cash_position_not_held"],
-                   summary=f"Finance ask: {subject[:100]}"
+                   summary=f"Finance ask: {subject}"
                            + (f" ({', '.join('$' + a for a in amounts)})" if amounts else ""))
         return out
     side = event.get("side")
@@ -1428,7 +1428,7 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
         if cust:
             heads = [o for o in ctx.linked_many(cust, ("SalesOrder.ordered_by",))
                      if o.startswith("SalesOrder:")]
-            rows = ctx.read(heads[:400], ("order_number", "status", "order_date"))
+            rows = ctx.read(heads, ("order_number", "status", "order_date"))
             open_orders = sorted((autopilot_records._v(r, "order_date")[:10], autopilot_records._v(r, "order_number"), o)
                                  for o, r in rows.items()
                                  if not autopilot_queue.CLOSED.search(autopilot_records._v(r, "status")))[-5:]
@@ -1437,7 +1437,7 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                    reasons=lines or ["no order named in the message"],
                    evidence=[{"object_id": o, "order": n, "date": d} for d, n, o in open_orders],
                    summary="Escalation from " + autopilot_engine.sender_label(
-                       event.get("sender"), event.get("sender_name")) + f": {subject[:100]}")
+                       event.get("sender"), event.get("sender_name")) + f": {subject}")
         return out
     orders = _current(ctx, orders)
     if orders and ({"status_request", "document_request"} & intents or "?" in own):
@@ -1457,9 +1457,9 @@ def h_desk(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
                     others=event.get("reply_all"))
         if msg is None:
             return {"skip": "draft_failed_copy_gate"}
-        out.update(kind="answer", summary=f"Answer drafted: {' '.join(lines)[:140]}",
+        out.update(kind="answer", summary=f"Answer drafted: {' '.join(lines)}",
                    draft=msg, links=[{"label": "Open the order", "href": autopilot_records.object_href(o)}
-                                     for o in orders[:3]])
+                                     for o in orders])
         return out
     if PRICE_ASK.search(own) and (orders or pos):
         return {"skip": "price_ask_without_price_records"}
@@ -1477,12 +1477,12 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
     subject = event.get("subject") or ""
     text = body_text(ctx, event)
     own = text.split("\nFrom:")[0]
-    asked = [q.strip() for q in QUESTION.findall(own)][:3]
+    asked = [q.strip() for q in QUESTION.findall(own)]
     named = autopilot_handlers._records_named(ctx, {"subject": subject, "text": own,
                                     "records": event.get("records") or []})
     pos = [o for o in [*(event.get("records") or ()), *autopilot_handlers.identified(ctx, subject, own)]
            if o.startswith("PurchaseOrder:")]
-    records = list(dict.fromkeys([*named, *pos]))[:6]
+    records = list(dict.fromkeys([*named, *pos]))
     orders = _current(ctx, [o for o in records if o.startswith("SalesOrder:")])
     # the drafted answer names only the sender's customer's own orders (never another
     # customer's under a shared number); unresolved sender: no draft (the card keeps the
@@ -1495,7 +1495,7 @@ def h_reply_prep(ctx: Any, event: Mapping[str, Any]) -> dict[str, Any]:
             "engaged": bool(event.get("engaged")),
             "correspondent": bool(event.get("correspondent"))},
         "records": [{"object_id": o} for o in records],
-        "links": [{"label": "Open the record", "href": autopilot_records.object_href(o)} for o in records[:3]],
+        "links": [{"label": "Open the record", "href": autopilot_records.object_href(o)} for o in records],
         "gaps": [] if lines else ["sender_customer_unresolved"] if mine is None
         else ["no_record_states_the_answer"]}
     if lines and event.get("channel") == "mail":
@@ -1522,7 +1522,7 @@ def reply_summary(event: Mapping[str, Any], questions: int = 0) -> str:
     subject) reads by the start of its text."""
     who = autopilot_engine.sender_label(event.get("sender"), event.get("sender_name"))
     subject = str(event.get("subject") or "")
-    about = subject[:100]
+    about = subject
     if not about and event.get("channel") == "teams":
         snippet = autopilot_engine.message_snippet(event.get("text") or event.get("snippet"))
         more = "\u2026" if len(snippet) > REPLY_SNIPPET else ""
@@ -1556,7 +1556,7 @@ def brief(items: Sequence[Mapping[str, Any]], now: datetime) -> dict[str, Any]:
         "eta_slips": pick(lambda i: ((work(i).get("eta") or {}).get("slip_days") or 0) > 0),
     }
     return {"at": ap._iso(now), "counts": {k: len(v) for k, v in sections.items()},
-            "top": {k: [{"item_id": i["item_id"], "title": i["title"]} for i in v[:5]]
+            "top": {k: [{"item_id": i["item_id"], "title": i["title"]} for i in v]
                     for k, v in sections.items()}}
 
 
@@ -1573,7 +1573,7 @@ def _outbound(st: Any, mails: Sequence[str], domains: Sequence[str],
               directory: Mapping[str, str], until: str) -> list[tuple[str, str, list[str]]]:
     """(sent at, the internal sender's id, the outside To addresses) of the mails sent
     from inside to outside before ``until``, oldest first."""
-    rows = autopilot_records._read(st, list(mails)[:60], ("sender", "to_addresses", "sent_at"))
+    rows = autopilot_records._read(st, list(mails), ("sender", "to_addresses", "sent_at"))
     out = []
     for r in rows.values():
         at = autopilot_records._v(r, "sent_at")
@@ -1638,7 +1638,7 @@ def invoice_due_events(st: Any, registry: Mapping[str, Any], as_of: date,
                     "status": "invoiced", "owner_hint": owner, "customer_to": to,
                     "audience": autopilot_records._types(st, [oid]).get(oid, ("", ""))[1],
                     "handles": [c["l1_handle"] for c in row.values()
-                                if c.get("l1_handle")][:3],
+                                if c.get("l1_handle")],
                     "fields": {"invoice_number": number,
                                "invoice_date": autopilot_records._v(row, "invoice_date")[:10]}})
     return out
@@ -1766,7 +1766,7 @@ def routine_due_events(st: Any, queue: Any, registry: Mapping[str, Any], as_of: 
                     "owner_hint": owner, "series": key, "match_hours": 24,
                     "audience": f"mail:{owner}",
                     "fields": {"cadence": cadence, "sends": len(rows), "days": len(days),
-                               "last_sent": last["at"][:10], "last_subject": subject[:200],
+                               "last_sent": last["at"][:10], "last_subject": subject,
                                "recipients": to}})
     return out
 
@@ -1857,7 +1857,7 @@ def rd_due_events(st: Any, registry: Mapping[str, Any], as_of: date, people: Any
                                "last_on": latest["last_at"].date().isoformat(),
                                "first_on": min(r["first_at"] for r in group).date().isoformat(),
                                "threads": len(group), "contact": latest["contact"],
-                               "subject": t.subject(latest["last"])[:200]}})
+                               "subject": t.subject(latest["last"])}})
     return out
 
 

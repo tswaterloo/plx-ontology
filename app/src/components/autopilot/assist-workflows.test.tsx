@@ -6,10 +6,13 @@ const state = vi.hoisted(() => ({
   routines: [] as unknown[],
   templates: [] as unknown[],
   created: [] as unknown[],
+  updated: [] as { id: string; body: unknown }[],
   paused: [] as string[],
   resumed: [] as string[],
   stopped: [] as string[],
+  deleted: [] as string[],
   ran: [] as string[],
+  failDelete: false,
 }));
 
 vi.mock("@/lib/api", async (orig) => ({
@@ -17,9 +20,24 @@ vi.mock("@/lib/api", async (orig) => ({
   getAssistWorkflows: () => Promise.resolve({ workflows: state.workflows, routines: state.routines, templates: state.templates, status: "ok", reason: "" }),
   parseAssistWorkflow: (text: string) => Promise.resolve({ name: text, instruction: "Send me late POs by supplier", trigger_kind: "schedule", trigger: { cadence: "weekly", weekday: "monday", hour: 8, minute: 0 }, trigger_summary: "Every Monday at 8:00 AM ET" }),
   createAssistWorkflow: (body: unknown) => (state.created.push(body), Promise.resolve(wf("w_new", { name: "Every Monday at 8:00 AM ET: Send me late POs by supplier" }))),
+  updateAssistWorkflow: (id: string, body: Record<string, unknown>) => (
+    state.updated.push({ id, body }),
+    Promise.resolve(wf(id, {
+      name: String(body.name ?? "Weekly late POs"),
+      instruction: String(body.instruction ?? "Send me late POs by supplier"),
+      trigger_kind: (body.trigger_kind as string) ?? "schedule",
+      trigger: (body.trigger as Record<string, unknown>) ?? { cadence: "weekly", weekday: "tuesday", hour: 9, minute: 0 },
+      trigger_summary: "Every Tuesday at 9:00 AM ET",
+    }))
+  ),
   pauseAssistWorkflow: (id: string) => (state.paused.push(id), Promise.resolve(wf(id, { status: "paused", pause_reason: "paused_by_person" }))),
   resumeAssistWorkflow: (id: string) => (state.resumed.push(id), Promise.resolve(wf(id, { status: "active", pause_reason: "" }))),
   stopAssistWorkflow: (id: string) => (state.stopped.push(id), Promise.resolve(wf(id, { status: "stopped", pause_reason: "stopped_by_person" }))),
+  deleteAssistWorkflow: (id: string) => {
+    state.deleted.push(id);
+    if (state.failDelete) return Promise.reject(new Error("Could not delete right now."));
+    return Promise.resolve(wf(id, { status: "stopped", pause_reason: "deleted_by_person" }));
+  },
   runAssistWorkflow: (id: string) => (state.ran.push(id), Promise.resolve({ workflow: wf(id, { runs: [{ job_id: "j_run", triggered_at: "2026-11-24T20:05:00Z", kind: "run_now", trigger_note: "Run on demand", job: job("j_run") }] }), job: job("j_run") })),
 }));
 vi.mock("@/components/prepared-change", () => ({ PreparedChange: ({ id }: { id: string }) => <p data-testid="card">{id}</p> }));
@@ -95,6 +113,52 @@ describe("Assist workflows", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
     await waitFor(() => expect(state.stopped).toEqual(["w1"]));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop" })).toBeNull());
+    expect(screen.getByTestId("workflow-toast")).toHaveTextContent("Workflow stopped.");
+  });
+
+  it("supports inline Edit and instant optimistic Delete with toast and rollback on error", async () => {
+    state.workflows = [wf("w1")];
+    state.templates = [];
+    state.routines = [];
+    state.updated = [];
+    state.deleted = [];
+    state.failDelete = false;
+
+    render(<AssistWorkflowsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const nameInput = screen.getByLabelText("Workflow name");
+    const instrInput = screen.getByLabelText("Workflow instruction");
+    fireEvent.change(nameInput, { target: { value: "Tuesday late POs" } });
+    fireEvent.change(instrInput, { target: { value: "Group late POs by supplier" } });
+    fireEvent.change(screen.getByLabelText("Edit schedule weekday"), { target: { value: "tuesday" } });
+    fireEvent.change(screen.getByLabelText("Edit schedule hour"), { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(state.updated).toHaveLength(1));
+    expect(state.updated[0].id).toBe("w1");
+    expect(await screen.findByText("Tuesday late POs")).toBeInTheDocument();
+    expect(screen.getByTestId("workflow-toast")).toHaveTextContent("Workflow updated.");
+
+    // Delete succeeds optimistically and removes the card
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(screen.queryByTestId("assist-workflow")).toBeNull();
+    expect(screen.getByTestId("workflow-toast")).toHaveTextContent("Workflow deleted.");
+    await waitFor(() => expect(state.deleted).toEqual(["w1"]));
+  });
+
+  it("restores workflow and shows alert when Delete fails", async () => {
+    state.workflows = [wf("w_keep")];
+    state.templates = [];
+    state.routines = [];
+    state.deleted = [];
+    state.failDelete = true;
+
+    render(<AssistWorkflowsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(state.deleted).toEqual(["w_keep"]));
+    expect(await screen.findByTestId("assist-workflow")).toBeInTheDocument();
+    expect(await screen.findByTestId("workflow-action-error")).toBeInTheDocument();
+    state.failDelete = false;
   });
 
   it("lets a person turn a mined routine into a workflow from the Routines tab", async () => {

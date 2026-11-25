@@ -2249,11 +2249,21 @@ def _sales_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             yield row
 
 
+import sys as _sys
+if __name__ == "__main__":
+    _sys.modules.setdefault("operating.pg.business_views", _sys.modules[__name__])
+
 # The products, batches, stock and purchasing views (their own module, registered here in
 # this order after the sales views); their names stay readable as this module's.
 from operating.pg import business_views_supply as _supply  # noqa: E402,F401
 # every Sage AR document with its paid date (receivables of a past day)
 from operating.pg import business_views_ar as _ar  # noqa: E402,F401
+# typed customer shipments with linked sales order required_date and on_time verdict
+from operating.pg import business_views_shipments as _shipments  # noqa: E402,F401
+# typed supply-chain views: receipts, assembly_orders, lots (PLAN-A18 Part 2)
+from operating.pg import business_views_chain as _chain  # noqa: E402,F401
+# typed chain views Part 3: receipt_lines, quotes, freight_bills (PLAN-A18 Part 3)
+from operating.pg import business_views_chain_extra as _chain_extra  # noqa: E402,F401
 # the org chart (staff), read from the org capture's store beside the staff Persons
 from operating.pg import business_staff as _staff  # noqa: E402,F401
 # registered last, after the business views of their rank (stale_views orders them so):
@@ -2556,6 +2566,19 @@ def _refresh_locked(dsn: str, meta: Any, schema: Any, when: dt.date, force: bool
               file=sys.stderr, flush=True)
     if remade:   # the measures over the views just made again (contract C3)
         _measure_values(dsn, meta, sorted(set(remade)), out)
+    # daily AR snapshot (PLAN-P2-A5, migration 0087): lightweight upsert after customer_balances
+    # refreshes or when today's snapshot has not been recorded yet
+    if meta.execute(f"SELECT to_regclass('{SCHEMA}.ar_daily_snapshots')").fetchone()[0] is not None:
+        if "customer_balances" in remade or not meta.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {SCHEMA}.ar_daily_snapshots "
+                "WHERE snapshot_date = %s)", (when,)).fetchone()[0]:
+            try:
+                from operating.pg import ar_daily_snapshots
+                out["ar_daily_snapshots"] = ar_daily_snapshots.run(meta, schema=SCHEMA)
+            except Exception as exc:  # noqa: BLE001 - reported; never fails the refresh
+                out["ar_daily_snapshots_failed"] = f"{type(exc).__name__}: {exc}"
+                print(json.dumps({"ar_daily_snapshots_failed": out["ar_daily_snapshots_failed"]}),
+                      file=sys.stderr, flush=True)
     if failures and tracked:
         out["failed"] = {n: {"reason": r, **vs.failed(meta, SCHEMA, n, r, version=prints.get(n))}
                          for n, r in failures.items() if not r.startswith("BuildPaused: ")}

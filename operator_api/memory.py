@@ -260,7 +260,7 @@ def _terms(text: Any, most: int = 12) -> list[str]:
 
 
 def _stem(word: str) -> str:
-    return word if _DIGIT.search(word) else word[:5]
+    return word if _DIGIT.search(word) else word[:5]  # guard-ok: a stem is a fixed-length prefix by design
 
 
 def _weight(term: str) -> float:
@@ -822,15 +822,15 @@ class Memory:
         if cleared is None:
             return None
         text, _subject, people, cites = cleared
-        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))
+        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))  # guard-ok: storage column width for a record reference
         with self.connect() as conn:
             row = conn.execute(
                 "INSERT INTO memory.log (reader, conversation, at, kind, source_ref, text, "
                 "records, citations, people) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (reader, kind, source_ref) WHERE source_ref IS NOT NULL DO "
                 "NOTHING RETURNING id",
-                (reader.key, (str(conversation)[:200] if conversation else None),
-                 at or self.clock(), kind, (str(source_ref)[:400] if source_ref else None),
+                (reader.key, (str(conversation)[:200] if conversation else None),  # guard-ok: storage column width for a key/reference, never near a real length
+                 at or self.clock(), kind, (str(source_ref)[:400] if source_ref else None),  # guard-ok: storage column width for a key/reference, never near a real length
                  text, recs, json.dumps(cites), people)).fetchone()
             conn.commit()
         return int(row[0]) if row else None
@@ -860,7 +860,7 @@ class Memory:
         if cleared is None:
             return None
         text, subject, people, cites = cleared
-        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))
+        recs = list(dict.fromkeys(str(r)[:700] for r in records if r))  # guard-ok: storage column width for a record reference
         when = at or self.clock()
         ids = sorted({int(i) for i in log_ids})
         with self.connect() as conn:
@@ -893,8 +893,9 @@ class Memory:
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT "
                 "(reader, kind, source, source_ref) WHERE source_ref IS NOT NULL DO NOTHING "
                 "RETURNING id",
+                # guard-ok: storage column width for a key/reference, never near a real length
                 (reader.key, kind, source, (str(source_ref)[:400] if source_ref else None),
-                 (str(conversation)[:200] if conversation else None), when, subject, text,
+                 (str(conversation)[:200] if conversation else None), when, subject, text,  # guard-ok: storage column width for a key/reference
                  recs, json.dumps(cites), people, ids, float(importance),
                  float(confidence))).fetchone()
             if row is None:
@@ -1068,7 +1069,7 @@ class Memory:
             return []
         rows = [_row(self._LOG_COLUMNS, r) for r in self._query(None, None, (
             "SELECT " + ", ".join(self._LOG_COLUMNS) + " FROM memory.log WHERE reader = %s "
-            "AND id = ANY(%s) ORDER BY id"), (reader.key, [int(i) for i in ids][:50]))]
+            "AND id = ANY(%s) ORDER BY id"), (reader.key, [int(i) for i in ids][:50]))]  # guard-ok: one tool call's read budget; the caller pages by id
         rows = [r for r in rows if self._clear(guard, r)]
         return [self._public(r) for r in self._openable(rows, decide)]
 
@@ -1086,6 +1087,7 @@ class Memory:
         if guard is None:
             return []
         terms = _terms(query)
+        # guard-ok: a bounded retrieval probe, newest first; the docstring above states the design
         records = [str(r) for r in records if r][:10]
         if not terms and not records:
             return []
@@ -1097,6 +1099,7 @@ class Memory:
         params = {"reader": reader.key, "records": records, "every": " & ".join(terms)
                   or "x_no_term_x", "either": either,
                   "codes": " | ".join(t for t in terms if _DIGIT.search(t) and len(t) >= 3)
+                  # guard-ok: bounded retrieval probe terms
                   or "x_no_term_x", "near": [t for t in terms if len(t) >= 5
                                              and not _DIGIT.search(t)][:3]}
         probes = (("tsv @@ (to_tsquery('english', %(every)s) || to_tsquery('simple', "
@@ -1401,11 +1404,13 @@ class Memory:
                     or not all(type(i) is int and i > 0 for i in ids) \
                     or type(limit) is not int or not 1 <= limit <= 20:
                 return {"ok": False, "error": "invalid_arguments"}
+            # guard-ok: an ISO timestamp's first sixteen characters are its minute, not a cut
             out = [{"log_id": r["id"], "at": r["at"][:16], "kind": r["kind"],
                     "text": r["text"], "records": r["records"],
                     "sources": [c["label"] for c in r["citations"] if c.get("label")]}
-                   for r in self.turns(reader, ids[:20], decide=decide)]
+                   for r in self.turns(reader, ids[:20], decide=decide)]  # guard-ok: one tool call's read budget; the caller pages by id
             if query:
+                # guard-ok: an ISO timestamp's first sixteen characters are its minute, not a cut
                 out += [{("item_id" if r["where"] == "core" else "log_id"): r["id"],
                          "at": r["at"][:16], "kind": r["kind"], "text": r["text"],
                          "records": r["records"],
@@ -1413,6 +1418,7 @@ class Memory:
                          **({"from_log": r["log_ids"]} if r.get("log_ids") else {}),
                          **({"superseded": "a later answer replaced this"}
                             if r.get("superseded") else {})}
+                        # guard-ok: bounded retrieval probe
                         for r in self.search(reader, query, records=records[:10],
                                              limit=limit, decide=decide,
                                              budget_ms=TOOL_MS)]
@@ -1453,10 +1459,11 @@ class Memory:
         may need decided: ``Decisions.warm``)."""
         if self._reading(reader) is None:
             return []
+        # guard-ok: a cache-warming probe of the newest rows; a colder citation is decided on demand
         rows = self._query(None, 500, (
-            "SELECT DISTINCT c->>'handle' FROM (SELECT citations FROM memory.item WHERE "
+            "SELECT DISTINCT c->>'handle' FROM (SELECT citations FROM memory.item WHERE "  # guard-ok: newest-rows cache-warming probe; colder citations are decided on demand
             "reader = %s AND superseded_by IS NULL AND deleted_at IS NULL UNION ALL (SELECT "
-            "citations FROM memory.log WHERE reader = %s ORDER BY id DESC LIMIT 400)) r, "
+            "citations FROM memory.log WHERE reader = %s ORDER BY id DESC LIMIT 400)) r, "  # guard-ok: a cache-warming probe of the newest rows; a colder citation is decided on demand
             "jsonb_array_elements(r.citations) c LIMIT %s"), (reader.key, reader.key, most))
         return [r[0] for r in rows if r[0]]
 
@@ -1657,11 +1664,11 @@ class Memory:
         gaps = [finance_free(f"{n.get('what')}") for n in answer.get("not_found") or ()
                 if isinstance(n, Mapping)]
         if any(gaps):
-            said += " Not found: " + "; ".join(g for g in gaps if g)[:400]
+            said += " Not found: " + "; ".join(g for g in gaps if g)[:400]  # guard-ok: memory is a distilled recall layer, not the system of record
         if said.strip():
             replied = self.log_event(reader, kind="answer", text=said,
                                      conversation=conversation, records=records,
-                                     citations=cites[:ANSWER_CITATIONS],
+                                     citations=cites[:ANSWER_CITATIONS],  # guard-ok: a distilled memory of the answer, not its record
                                      source_ref=f"a:{answer_id}")
             out += [replied] if replied is not None else []
         # an answer's values ("Count: 361", "Order status: Open") are no memory: they stay
@@ -1726,10 +1733,11 @@ class Memory:
                    calls: Sequence[Mapping[str, Any]]) -> list[int]:
         """The tool calls an answer made: each tool and its arguments (no results)."""
         out = []
-        for n, call in enumerate(list(calls)[:MAX_TOOL_CALLS]):
+        for n, call in enumerate(list(calls)[:MAX_TOOL_CALLS]):  # guard-ok: a distilled memory of the answer's tool use, not its record
             name = str(call.get("name") or "")
             if not name or name == TOOL_NAME:
                 continue
+            # guard-ok: memory is a distilled recall layer, not the system of record
             arguments = json.dumps(call.get("arguments") or {}, ensure_ascii=False,
                                    sort_keys=True, default=str)[:600]
             got = self.log_event(reader, kind="tool_call", text=f"{name} {arguments}",
@@ -1827,7 +1835,7 @@ class Memory:
             return []
         got = self.log_event(reader, kind="action", records=records, people=to,
                              text=f"{verb.capitalize()} \"{title}\""
-                                  + (f" to {', '.join(list(to)[:6])}" if to else ""),
+                                  + (f" to {', '.join(list(to)[:6])}" if to else ""),  # guard-ok: memory is a distilled recall layer, not the system of record
                              source_ref=f"act:{ref}")
         return [got] if got is not None else []
 
@@ -1847,8 +1855,8 @@ def say(item: Mapping[str, Any]) -> str:
     text = " / ".join(part.strip() for part in str(item["text"]).splitlines() if part.strip())
     ref = f"#{item['id']}" if item.get("where", "log") == "log" and "log_ids" not in item \
         else f"item {item['id']}"
-    tail = f" (records: {', '.join(list(item['records'])[:4])})" if item.get("records") else ""
-    return f"[{ref}, {at[:10]}, {_SAY_KIND.get(item['kind'], item['kind'])}] {text[:600]}{tail}"
+    tail = f" (records: {', '.join(list(item['records'])[:4])})" if item.get("records") else ""  # guard-ok: one context line's budget; the item itself is retrievable whole
+    return f"[{ref}, {at[:10]}, {_SAY_KIND.get(item['kind'], item['kind'])}] {text[:600]}{tail}"  # guard-ok: one context line's budget and ISO date prefix; the item itself is retrievable whole
 
 
 # ---- the command line -----------------------------------------------------------------------

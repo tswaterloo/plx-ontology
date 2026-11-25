@@ -57,7 +57,6 @@ HOP_KEYS = {"label", "from_types", "link_types", "through", "depth", "gap", "unb
             "question", "who_can_answer"}
 MAX_DEPTH = 4
 MAX_VIA = 32
-MAX_STEP_CHARS = 400
 _LABEL = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -164,8 +163,8 @@ def _gap(code: str, state: str, subject: str, detail: str,
          hop: Mapping[str, Any]) -> dict[str, Any]:
     if hop.get("question"):
         detail += f"; ask: {hop['question']}"
-    gap = {"state": state, "reason": code, "subject": subject[:700],
-           "detail": f"{code}: {detail}"[:600]}
+    gap = {"state": state, "reason": code, "subject": subject,
+           "detail": f"{code}: {detail}"}
     if hop.get("who_can_answer"):
         gap["who_can_answer"] = [hop["who_can_answer"]]
     return gap
@@ -234,7 +233,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             for other, (path, passed) in sorted(found.items()):
                 lead = [e for e in path if e.get("tier") not in FIRM_TIERS]
                 numbered[label] = numbered.get(label, 0) + 1
-                entry_name = f"{name}_{label}_{numbered[label]}"[:64]
+                entry_name = f"{name}_{label}_{numbered[label]}"[:64]  # guard-ok: derived entry identifier, fixed shape, not content
                 steps = [f"{label}: {root} links to {other}"]
                 steps += [f"crossed {_crossed(e)}" for e in path]
                 if lead:
@@ -244,7 +243,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                         " below the firm tiers, so the link is a lead", hop, incomplete=False)
                 entries.append(_digest({
                     "name": entry_name, "kind": "computed", "value": other, "inputs": [],
-                    "steps": [s[:MAX_STEP_CHARS] for s in steps][:40],
+                    "steps": steps,
                     "basis": [root, *passed, other],
                     "check": "not_applicable"}))
             if not found:
@@ -261,7 +260,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                     + "; no link is inferred from shared customer, date or amount", hop)
     if entries:
         entries.append({"name": name, "kind": "computed", "value": len(entries),
-                        "inputs": [e["name"] for e in entries][:50],
+                        "inputs": [e["name"] for e in entries],
                         "steps": [f"{len(entries)} recorded link(s) listed"
                                   + ("" if complete else "; the run was cut, so others may "
                                      "exist")], "check": "not_applicable"})

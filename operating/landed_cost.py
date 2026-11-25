@@ -1671,7 +1671,6 @@ _PLAN_NAMES = frozenset({
     "HISTORY_LEVEL_TEXT",
     "HISTORY_METHOD_TEXT",
     "IN_QUOTE",
-    "MAX_STEP_CHARS",
     "PART_BASES",
     "PLAN_ENGINES",
     "PLAN_ROLES",

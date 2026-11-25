@@ -2,7 +2,7 @@
 
 import { PartyPulse } from "./record/party-pulse";
 import { DocumentsSection } from "@/components/record/documents";
-import { ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -13,7 +13,7 @@ import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
 import { custodyOf } from "@/lib/custody";
 import { ApiError, noticeKind, plainError } from "@/lib/errors";
 import { doorKey, formatDate, groupDigits, money, objectHref, plural, readable, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
-import { activityTitle, factMap, groupLinked, groupRelated, identifierLabel, linkSections, moneyText, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
+import { activityTitle, factMap, groupLinked, groupRelated, identifierLabel, isAccountingLinkGroup, linkSections, moneyText, plainLinkedHeading, productionSteps, receivedOf, recordHead, type RecordHead, type Thread } from "@/lib/record";
 import { rememberOpened, toggleSaved, useSaved } from "@/lib/saved";
 import { lateness, recordState, type Shown } from "@/lib/status";
 import type { ActionResult, BizPage, Conflict, CustomerAmount, CustomerSummary, LandedCost, LateLine, KnownRecord, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectSection, PersonKnows, ProductFormula, MaterialCost, ObjectRef, OrderRow, Person, ProactiveSuggestion, Profitability, SectionName, Source, TimelineEvent, Tone } from "@/lib/types";
@@ -73,18 +73,18 @@ function useElapsed(on: boolean, restart: unknown = 0): number {
   return s;
 }
 
-const INSPECTOR = "bg-[color-mix(in_srgb,var(--surface)_70%,var(--bg))]";
+const INSPECTOR = "bg-bg-subtle/60";
 
 /** The page's frame: the toolbar over a main column and the inspector beside it (under it below xl). */
 function Frame({ crumb, actions, main, inspector }: { crumb: ReactNode; actions?: ReactNode; main: ReactNode; inspector?: ReactNode }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="record-page">
       <Toolbar title={crumb} actions={actions} />
-      <div className={cn("grid flex-1", inspector && "xl:grid-cols-[minmax(0,1fr)_272px]")}>
-        <div className="min-w-0 space-y-9 px-5 pt-6 pb-12 sm:px-8 sm:pt-7">{main}</div>
+      <div className={cn("grid flex-1", inspector && "xl:grid-cols-[minmax(0,1fr)_304px]")}>
+        <div className="min-w-0 space-y-5 px-5 pt-5 pb-12 sm:px-8 sm:pt-6">{main}</div>
         {inspector && (
           <aside
-            className={cn("grid min-w-0 content-start gap-x-10 gap-y-7 border-t border-border px-5 py-6 sm:grid-cols-2 sm:px-8 xl:grid-cols-1 xl:border-t-0 xl:border-l xl:px-6 xl:pt-7", INSPECTOR)}
+            className={cn("grid min-w-0 content-start gap-4 border-t border-border px-5 py-5 sm:grid-cols-2 sm:px-6 xl:grid-cols-1 xl:border-t-0 xl:border-l xl:px-5 xl:pt-6", INSPECTOR)}
             aria-label="Details"
           >
             {inspector}
@@ -95,17 +95,70 @@ function Frame({ crumb, actions, main, inspector }: { crumb: ReactNode; actions?
   );
 }
 
-/** "Purchase order › PO 106001", in the toolbar's quiet size. */
+function listHrefForType(type: string): string {
+  switch (type) {
+    case "PurchaseOrder":
+      return "/orders";
+    case "SalesOrder":
+      return "/orders?list=sales_orders";
+    case "Customer":
+    case "Chain":
+      return "/customers";
+    case "Supplier":
+    case "Vendor":
+      return "/suppliers";
+    case "Product":
+    case "Item":
+    case "FgItem":
+    case "Lot":
+      return "/products";
+    case "Batch":
+      return "/more?kind=production";
+    case "SalesInvoice":
+    case "SupplierInvoice":
+    case "PurchaseInvoice":
+    case "Shipment":
+    case "Receipt":
+    case "SalesCreditMemo":
+      return "/more?kind=documents";
+    case "Person":
+      return "/team";
+    default:
+      return "/records";
+  }
+}
+
+/** "← Purchase order › PO 106001", in the toolbar's quiet size. */
 function Crumb({ type, title, typeName }: { type: string; title?: string | null; typeName?: string | null }) {
+  const listHref = listHrefForType(type);
+  const goBack = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      window.history.back();
+    } else if (typeof window !== "undefined") {
+      window.location.assign(listHref);
+    }
+  };
   return (
-    <span className="text-[13px] font-normal tracking-normal">
-      <span className={cn("text-muted", title && "max-sm:hidden")}>{typeName || typeLabel(type)}</span>
+    <span className="inline-flex min-w-0 items-center gap-1.5 text-[13px] font-normal tracking-normal">
+      <button
+        type="button"
+        onClick={goBack}
+        aria-label="Back"
+        title="Back"
+        data-testid="record-back"
+        className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+      >
+        <ArrowLeft className="size-3.5" strokeWidth={2} aria-hidden />
+      </button>
+      <Link href={listHref} className={cn("shrink-0 text-muted transition-colors hover:text-fg hover:underline", title && "max-sm:hidden")}>
+        {typeName || typeLabel(type)}
+      </Link>
       {title && (
         <>
-          <span className="px-1.5 text-faint max-sm:hidden" aria-hidden>
+          <span className="px-0.5 text-faint max-sm:hidden" aria-hidden>
             ›
           </span>
-          <span className="font-medium text-fg">{title}</span>
+          <span className="truncate font-medium text-fg" title={title}>{title}</span>
         </>
       )}
     </span>
@@ -258,9 +311,9 @@ function OrderTable({ title, rows, testId }: { title: string | null; rows: Order
       <ul className="-mx-3">
         {rows.map((r) => (
           <li key={`${r.object_id}-${r.label}`}>
-            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 rounded-[3px] px-3 text-[13px] hover:bg-hover sm:grid-cols-[132px_72px_minmax(0,1fr)_auto]">
+            <Link href={safeHref(r.open_url) ?? objectHref("SalesOrder", r.object_id)} className="grid h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 rounded-[3px] px-3 text-[13px] hover:bg-hover sm:grid-cols-[132px_96px_minmax(0,1fr)_auto]">
               <span className="min-w-0 truncate font-semibold">{r.label}</span>
-              <span className="tabular-nums text-muted max-sm:hidden">{r.date ? formatDate(r.date, { short: true }) : ""}</span>
+              <span className="whitespace-nowrap tabular-nums text-muted max-sm:hidden">{r.date ? formatDate(r.date, { short: true }) : ""}</span>
               <span className="flex min-w-0 items-center gap-4 max-sm:hidden">
                 {r.status && <StatusWord status={recordState(r.status)} label={r.status} />}
                 {r.amount && (
@@ -629,7 +682,7 @@ function RelatedGroup({ g }: { g: ReturnType<typeof groupRelated>[number] }) {
   return (
     <div>
       <p className="mb-0.5 text-[12px] text-muted">
-        {g.label}
+        {plainLinkedHeading(g.label)}
         {g.items.reduce((n, x) => n + x.times, 0) + g.unnamed > 1 && <span className="ml-1.5 tabular-nums text-faint">{g.items.reduce((n, x) => n + x.times, 0) + g.unnamed}</span>}
       </p>
       <ul className="-mx-2">
@@ -654,13 +707,28 @@ function RelatedCard({ refs }: { refs: ObjectRef[] }) {
   // a group of rows named only by their type ("PO line", "Receipt") says nothing: left out
   const groups = groupRelated(refs).filter((g) => g.items.length > 0);
   if (groups.length === 0) return null;
+  const primary = groups.filter((g) => !isAccountingLinkGroup({ type: g.type }, g.label));
+  const accounting = groups.filter((g) => isAccountingLinkGroup({ type: g.type }, g.label));
   return (
     <section data-testid="related">
       <SectionTitle>Linked</SectionTitle>
       <div className="space-y-3">
-        {groups.map((g) => (
+        {primary.map((g) => (
           <RelatedGroup key={g.type} g={g} />
         ))}
+        {accounting.length > 0 && (
+          <details className="rounded-md border border-border bg-surface/40 px-3 py-2" data-testid="accounting-records">
+            <summary className="cursor-pointer select-none text-[12px] font-medium text-muted hover:text-fg">
+              Accounting records
+              <span className="ml-1.5 tabular-nums text-faint">{accounting.length}</span>
+            </summary>
+            <div className="mt-2.5 space-y-3 border-t border-border pt-2.5">
+              {accounting.map((g) => (
+                <RelatedGroup key={g.type} g={g} />
+              ))}
+            </div>
+          </details>
+        )}
       </div>
     </section>
   );
@@ -696,7 +764,7 @@ function LinkGroupRows({ s: section, max, evidence, suggested = true }: { s: Lin
   return (
     <div data-testid={`link-group-${s.group.link_type}`}>
       <p className="mb-0.5 text-[12px] text-muted">
-        {s.heading}
+        {plainLinkedHeading(s.heading)}
         {count > 1 && <span className="ml-1.5 num text-faint">{count}</span>}
       </p>
       <ul className="-mx-2">
@@ -754,13 +822,28 @@ function LinkGroupsCard({ sections }: { sections: LinkSection[] }) {
   const shown = suggested ? sections : sections.filter((s) => confirmedIn(s) > 0);
   // nothing confirmed and nothing suggested: no heading over an empty box
   if (shown.length === 0 && hidden === 0) return null;
+  const primary = shown.filter((s) => !isAccountingLinkGroup(s.group, s.heading));
+  const accounting = shown.filter((s) => isAccountingLinkGroup(s.group, s.heading));
   return (
     <section data-testid="related">
       <SectionTitle>Linked</SectionTitle>
       <div className="space-y-3">
-        {shown.map((s) => (
+        {primary.map((s) => (
           <LinkGroupRows key={`${s.group.link_type}-${s.group.direction}`} s={s} max={6} evidence={false} suggested={suggested} />
         ))}
+        {accounting.length > 0 && (
+          <details className="rounded-md border border-border bg-surface/40 px-3 py-2" data-testid="accounting-records">
+            <summary className="cursor-pointer select-none text-[12px] font-medium text-muted hover:text-fg">
+              Accounting records
+              <span className="ml-1.5 tabular-nums text-faint">{accounting.length}</span>
+            </summary>
+            <div className="mt-2.5 space-y-3 border-t border-border pt-2.5">
+              {accounting.map((s) => (
+                <LinkGroupRows key={`${s.group.link_type}-${s.group.direction}`} s={s} max={6} evidence={false} suggested={suggested} />
+              ))}
+            </div>
+          </details>
+        )}
         {hidden > 0 && (
           <button type="button" onClick={() => setSuggested((v) => !v)} className="cursor-pointer text-[12px] text-muted underline decoration-border-strong underline-offset-2 hover:text-fg" data-testid="suggested-toggle" aria-expanded={suggested}>
             {suggested ? "Hide suggested links" : `Show ${plural(hidden, "suggested link")}`}
@@ -833,7 +916,7 @@ function ConflictsToggle({ conflicts, open, onToggle }: { conflicts: Conflict[];
 
 function ConflictRows({ conflicts }: { conflicts: Conflict[] }) {
   return (
-    <ul className="space-y-2 rounded-xl bg-surface px-4 py-3 text-[13px] leading-5" data-testid="conflict-rows">
+    <ul className="space-y-2 rounded-md border border-border bg-surface/60 px-3.5 py-2.5 text-[13px] leading-5" data-testid="conflict-rows">
       {conflicts.map((c, i) => (
         <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <StatusGlyph status="suspect" size={13} />
@@ -1124,11 +1207,11 @@ export function MissingActions({ className }: { className?: string }) {
       <button
         type="button"
         onClick={open}
-        className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 cursor-pointer"
+        className="inline-flex h-8 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:opacity-90 active:scale-[0.98] cursor-pointer"
       >
         Search for it
       </button>
-      <Link href="/" className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
+      <Link href="/" className="inline-flex h-8 items-center rounded-md border border-border bg-bg px-3 text-[13px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover active:scale-[0.98]">
         Open Home
       </Link>
     </div>
@@ -1186,20 +1269,77 @@ export function RecordChoices({ type, refText, page }: { type: string; refText: 
  * resolves to nothing for this reader (a friendly URL's chooser).
  */
 /**
- * An order's head over its business tables' page, when it is read: the total and the status
- * are the order's (its lines' sum, its one status), not one copy's own header fields (a Portal
- * copy holding "Total cost 0.00" and "Pending" for an order whose lines sum to 875.84). Without
- * a door total or status the record's own stand, as they are.
+ * A record's head over its business tables' page, when it is read: the total/value, status,
+ * counterparty link and headline metrics come from the unified business row, not one copy's
+ * own header fields (a Portal copy holding "Total cost 0.00" and "Pending" for an order whose
+ * lines sum to 875.84). Without a door fact the record's own stand, as they are.
  */
 export function withDoor(head: RecordHead, door: BizPage | null | undefined): RecordHead {
-  if (!door || (door.kind !== "purchase_order" && door.kind !== "sales_order")) return head;
-  const total = door.facts.find((f) => f.label.startsWith("Total") && f.value.money);
-  const status = door.facts.find((f) => f.label === "Status" && f.value.text)?.value.text;
-  const stats = total
-    ? [{ label: total.label, value: money(total.value.money).replace(/\s+[A-Z]{3}$/, ""), caption: total.value.money!.currency }, ...head.stats.filter((s) => !s.label.startsWith("Total"))]
-    : head.stats;
-  const keyFacts = status ? head.keyFacts.map((k) => (k.label === "Status" ? { ...k, value: status, source: undefined } : k)) : head.keyFacts;
-  return { ...head, stats, keyFacts };
+  if (!door) return head;
+  if (door.kind === "purchase_order" || door.kind === "sales_order") {
+    const total = door.facts.find((f) => (f.label.startsWith("Total") || f.label === "Value") && f.value.money);
+    const totalText = !total ? door.facts.find((f) => (f.label.startsWith("Total") || f.label === "Value") && f.value.text) : undefined;
+    const status = door.facts.find((f) => f.label === "Status" && f.value.text)?.value.text;
+    const partyFact = door.facts.find((f) => (f.label === "Supplier" || f.label === "Customer") && f.value.text);
+    const stats = total
+      ? [{ label: total.label, value: money(total.value.money).replace(/\s+[A-Z]{3}$/, ""), caption: total.value.money!.currency }, ...head.stats.filter((s) => !s.label.startsWith("Total") && s.label !== "Value")]
+      : totalText
+        ? [{ label: totalText.label, value: "Not recorded" }, ...head.stats.filter((s) => !s.label.startsWith("Total") && s.label !== "Value")]
+        : head.stats;
+    const keyFacts = status ? head.keyFacts.map((k) => (k.label === "Status" ? { ...k, value: status, source: undefined } : k)) : head.keyFacts;
+    const counterpart =
+      head.counterpart && ("object_id" in head.counterpart && head.counterpart.object_id)
+        ? head.counterpart
+        : partyFact?.value.text
+          ? { label: partyFact.value.text, open_url: partyFact.value.href ?? undefined }
+          : head.counterpart;
+    return { ...head, stats, keyFacts, counterpart };
+  }
+  if (door.kind === "supplier_invoice") {
+    const supplier = door.facts.find((f) => f.label === "Supplier" && f.value.text);
+    const amount = door.facts.find((f) => f.label === "Amount" && f.value.money);
+    const owed = door.facts.find((f) => f.label === "Still owed" && f.value.money);
+    const paid = door.facts.find((f) => f.label === "Paid" && f.value.text)?.value.text;
+    const stats = [...head.stats.filter((s) => s.label !== "Amount" && s.label !== "Still owed")];
+    if (owed?.value.money) stats.unshift({ label: "Still owed", value: money(owed.value.money).replace(/\s+[A-Z]{3}$/, ""), caption: owed.value.money.currency });
+    if (amount?.value.money) stats.unshift({ label: "Amount", value: money(amount.value.money).replace(/\s+[A-Z]{3}$/, ""), caption: amount.value.money.currency });
+    const badges = paid === "Yes" ? [{ status: "ok" as const, label: "Paid" }] : paid === "No" ? [{ status: "neutral" as const, label: "Open" }] : head.badges;
+    const counterpart =
+      head.counterpart && ("object_id" in head.counterpart && head.counterpart.object_id)
+        ? head.counterpart
+        : supplier?.value.text
+          ? { label: supplier.value.text, open_url: supplier.value.href ?? undefined }
+          : head.counterpart;
+    return { ...head, title: door.title || head.title, counterpart, stats: stats.slice(0, 4), badges };
+  }
+  if (door.kind === "product") {
+    const onHand = door.facts.find((f) => f.label === "On hand" && f.value.number);
+    const code = door.facts.find((f) => f.label === "Item code" && f.value.text)?.value.text;
+    const stats = onHand?.value.number
+      ? [{ label: "On hand", value: onHand.value.number }, ...head.stats.filter((s) => s.label !== "On hand")]
+      : head.stats;
+    return { ...head, subline: head.subline ?? code ?? null, stats: stats.slice(0, 4) };
+  }
+  if (door.kind === "batch") {
+    const prod = door.facts.find((f) => f.label === "Product" && f.value.text);
+    const lot = door.facts.find((f) => f.label === "Lot" && f.value.text)?.value.text;
+    const prodNote = door.facts.find((f) => f.label === "Production" && f.value.text)?.value.text;
+    const holdNote = door.facts.find((f) => f.label === "Hold" && f.value.text)?.value.text;
+    const status = door.facts.find((f) => f.label === "Status" && f.value.text)?.value.text;
+    const badges: Shown[] = prodNote
+      ? [{ status: "neutral", label: status || "Not made yet" }]
+      : holdNote && /QC holds/i.test(holdNote)
+        ? [{ status: "risk", label: "On hold" }]
+        : head.badges;
+    const counterpart =
+      head.counterpart && ("object_id" in head.counterpart && head.counterpart.object_id)
+        ? head.counterpart
+        : prod?.value.text
+          ? { label: prod.value.text, open_url: prod.value.href ?? undefined }
+          : head.counterpart;
+    return { ...head, counterpart, subline: head.subline ?? (lot ? `Lot ${lot}` : null), badges };
+  }
+  return head;
 }
 
 export function ObjectView({ type, id, missing, door: given }: { type: string; id: string; missing?: ReactNode; door?: BizPage | null }) {
@@ -1422,7 +1562,11 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   // every path to one record shows the same total, status and lines. A route that reads it
   // itself passes `door` (null while it reads): no second read.
   const [ownDoor, setOwnDoor] = useState<BizPage | null>(null);
-  const ownKey = given === undefined && objectId && objType ? doorKey(null, objType, objectId) : null;
+  const itemDoorKind = objType ? ({ Product: "product", Batch: "batch", SupplierInvoice: "supplier_invoice", PurchaseInvoice: "supplier_invoice", RelSageApOpenDocument: "supplier_invoice" } as const)[objType] : undefined;
+  const ownKey =
+    given === undefined && objectId && objType
+      ? (doorKey(null, objType, objectId) ?? (itemDoorKind && objectId.startsWith(`${objType}:`) && objectId.length <= 700 ? { kind: itemDoorKind, record: objectId } : null))
+      : null;
   useEffect(() => {
     setOwnDoor(null);
     if (!ownKey?.record) return;
@@ -1556,7 +1700,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       <FollowButton objectId={obj.object_id} />
       <Link
         href={`/ask?q=${encodeURIComponent(askQ)}&object=${encodeURIComponent(obj.object_id)}`}
-        className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
+        className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover active:scale-[0.98] [&_svg]:size-[14px]"
         title={isAo ? "Ask why it fell short" : `Ask about ${head.askLabel}`}
       >
         <MessageCircle strokeWidth={2} aria-hidden />
@@ -1565,7 +1709,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       {BRIEF_TYPES.includes(type) && (
         <Link
           href={`/meetings/brief/${encodeURIComponent(type)}/${encodeURIComponent(obj.object_id)}`}
-          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
+          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover active:scale-[0.98] [&_svg]:size-[14px]"
           title="Prepare a meeting brief"
           data-testid="prepare-brief"
         >
@@ -1576,7 +1720,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       {PACK_TYPES.includes(type) && (
         <Link
           href="#documents"
-          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] [&_svg]:size-[15px]"
+          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover active:scale-[0.98] [&_svg]:size-[14px]"
           title="Gather the documents a customer or supplier asks for, with a drafted reply"
           data-testid="record-pack"
         >
@@ -1584,21 +1728,39 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
           <span className="max-sm:sr-only">Documents</span>
         </Link>
       )}
+      {isPo && (
+        <span className="ml-1 inline-flex items-center" data-testid="po-close-bar">
+          <CloseControl order={{ object_id: obj.object_id }} popover />
+        </span>
+      )}
     </>
   );
+
+  const kindBadgeLabel = obj.type_label ?? (invoiceDoor ? "Supplier invoice" : typeLabel(obj.type));
+  const counterpartHref =
+    counterpart && "object_id" in counterpart && counterpart.object_id
+      ? refHref(counterpart as ObjectRef)
+      : counterpart && "open_url" in counterpart
+        ? safeHref(counterpart.open_url)
+        : null;
 
   const header = (
     <>
     <StaleNote since={staleSince} onReturn className="mb-3" />
     <header className="flex gap-4 sm:gap-5">
       <div className="min-w-0 flex-1">
+        <div className="mb-1.5 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded-md bg-bg-subtle px-2 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-border" data-testid="record-kind-badge">
+            {kindBadgeLabel}
+          </span>
+        </div>
         <h1 className="flex flex-wrap items-baseline gap-x-2.5 break-words" data-testid="object-title">
-          <span className={cn("font-semibold tracking-[-0.025em]", isParty ? "text-[26px] leading-[32px]" : "num text-[24px] leading-[30px]")}>{head.title}</span>
+          <span className={cn("font-semibold tracking-[-0.025em] tabular-nums", isParty ? "text-[26px] leading-[32px]" : "text-[24px] leading-[30px]")}>{head.title}</span>
           {counterpart && (
             <span className="text-[17px] leading-[22px] font-normal tracking-[-0.01em] text-muted">
               <span className="sr-only">· </span>
-              {"object_id" in counterpart && counterpart.object_id ? (
-                <Link href={refHref(counterpart as ObjectRef)} className="hover:text-fg">
+              {counterpartHref ? (
+                <Link href={counterpartHref} className="hover:text-fg hover:underline">
                   {counterpart.label}
                 </Link>
               ) : (
@@ -1664,12 +1826,14 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
     </>
   );
 
-  const hasFigures = factFigures.length > 0 || !!total || !!got || ordered != null || needed != null || !!so?.total || otherStats.length > 0 || revenue.length > 0;
+  const hasDoorValue = isSalesOrder && head.stats.some((s) => s.label === "Value" || s.label.startsWith("Total"));
+  const showSoTotal = !!so?.total && !hasDoorValue;
+  const hasFigures = factFigures.length > 0 || !!total || !!got || ordered != null || needed != null || showSoTotal || otherStats.length > 0 || revenue.length > 0;
   const figures = hasFigures && (
     <section className="space-y-6" data-testid="detail-stats">
       <div className="flex flex-wrap gap-x-12 gap-y-5 empty:hidden">
         {(isPo ? total : null) && <Figure label={total!.label} value={total!.value} unit={total!.caption} />}
-        {so?.total && <Figure label={so.totalLabel} value={so.total.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so.total)?.[0]} source={so.totalSource} />}
+        {showSoTotal && <Figure label={so!.totalLabel} value={so!.total!.replace(/\s+[A-Z]{3}$/, "")} unit={/[A-Z]{3}$/.exec(so!.total!)?.[0]} source={so!.totalSource} />}
         {so && so.needed == null && so.ordered != null && <Figure label="Ordered" value={formatDate(new Date(so.ordered).toISOString().slice(0, 10))} />}
         {got && (
           <Figure label="Received" value={got.lines ? got.got : `${got.got} of ${got.of}`} unit={got.lines ? `${got.lines} lines short` : got.uom}>
@@ -1731,7 +1895,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   const doorAccount = (door?.sections ?? []).filter((s) => ["owed", "invoices", "years", "same_name"].includes(s.key) && s.rows.length > 0);
 
   const tabs = (
-    <div role="tablist" aria-label="Record views" className="-mt-3 flex gap-1 border-b border-border text-[13px]" data-testid="record-tabs">
+    <div
+      role="tablist"
+      aria-label="Record views"
+      className="-mt-3 flex gap-1 border-b border-border text-[13px]"
+      data-testid="record-tabs"
+      onKeyDown={(e) => {
+        if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+          e.preventDefault();
+          setTab((cur) => (cur === "overview" ? "history" : "overview"));
+        }
+      }}
+    >
       {(["overview", "history"] as const).map((t) => (
         <button
           key={t}
@@ -1739,7 +1914,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
           role="tab"
           aria-selected={tab === t}
           onClick={() => setTab(t)}
-          className={cn("-mb-px cursor-pointer border-b-2 px-2.5 py-1.5", tab === t ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg")}
+          className={cn("-mb-px cursor-pointer border-b-2 px-2.5 py-1.5 transition-colors focus-visible:outline-none focus-visible:text-fg", tab === t ? "border-accent font-medium text-fg" : "border-transparent text-muted hover:text-fg")}
           data-testid={`tab-${t}`}
         >
           {t === "overview" ? "Overview" : "History"}
@@ -1755,43 +1930,67 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
         actions={actions}
         main={
           <>
-            {header}
-            {tabs}
-            <RecordHistory type={obj.type} id={obj.object_id} />
+            <div className="space-y-4 rounded-md border border-border bg-bg p-4 sm:p-5">
+              {header}
+              {tabs}
+            </div>
+            <div className="rounded-md border border-border bg-bg p-4 sm:p-5">
+              <RecordHistory type={obj.type} id={obj.object_id} />
+            </div>
           </>
         }
       />
     );
 
+  const mainCard = "rounded-md border border-border bg-bg p-4 empty:hidden";
   const main = (
     <>
-      {header}
-      {isPo && (
-        <div className="mb-3" data-testid="po-close-bar">
-          <CloseControl order={{ object_id: obj.object_id }} />
+      <div className="space-y-4 rounded-md border border-border bg-bg p-4 sm:p-5">
+        {header}
+        {tabs}
+        {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
+        <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} named={counterpart?.label ?? null} />
+        {figures}
+      </div>
+      {itemDoor && (
+        <div className={mainCard}>
+          <BizArticle page={itemDoor} skipLabels={counterpartHref ? new Set(["Supplier", "Product"]) : undefined} />
         </div>
       )}
-      {tabs}
-      {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
-      <Situation obj={obj} party={counterpart && "object_id" in counterpart && counterpart.object_id ? (counterpart as ObjectRef) : null} named={counterpart?.label ?? null} />
-      {figures}
-      {itemDoor && <BizArticle page={itemDoor} />}
-      {/* an order's lines are its main content: right under the total, before everything else */}
+      {/* an order's lines are its main content: right under the hero summary card */}
       {orderLines && doorLines ? (
-        <>
+        <div className="space-y-4 rounded-md border border-border bg-bg p-4">
           <DoorSection s={doorLines} />
           {/* the lines the order's own read calls late stay listed, with how late */}
           {!pending.has("late") && <LinesTable lines={lines.filter((l) => (l.days_late ?? 0) > 0)} title="Late lines" />}
-        </>
+        </div>
       ) : (
-        orderLines && (pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={3} /> : <LinesTable lines={lines} />)
+        orderLines && (
+          <div className={mainCard}>
+            {pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={3} /> : <LinesTable lines={lines} />}
+          </div>
+        )
       )}
-      <OnRecord obj={obj} />
-      {isParty && <PartyPulse obj={obj} />}
-      {isParty && doorAccount.map((s) => <DoorSection key={s.key} s={s} />)}
-      <KindSections obj={obj} />
+      <div className={mainCard}>
+        <OnRecord obj={obj} />
+      </div>
+      {isParty && (
+        <div className={mainCard}>
+          <PartyPulse obj={obj} />
+        </div>
+      )}
+      {isParty && doorAccount.map((s) => (
+        <div key={s.key} className={mainCard}>
+          <DoorSection s={s} />
+        </div>
+      ))}
+      <div className={mainCard}>
+        <KindSections obj={obj} />
+      </div>
       {(isPo || isAo || isSalesOrder || isCustomer || (obj.proposals ?? []).length > 0) && (
-        <NextStep obj={obj} head={head} card={card} cardState={cardState} onDone={setCardState} pending={trailPending && (isPo || isAo)} />
+        <div className={mainCard}>
+          <NextStep obj={obj} head={head} card={card} cardState={cardState} onDone={setCardState} pending={trailPending && (isPo || isAo)} />
+        </div>
       )}
       {!isCustomer && conflicts.length > 0 && (
         <div className="space-y-3">
@@ -1801,20 +2000,43 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
         </div>
       )}
       {isPo && (trailPending ? <SectionSkeleton name="trail" title="Supplier confirmation" lines={0} /> : <EtaCard eta={trail?.eta} />)}
-      {isAo && <AoSteps obj={obj} />}
+      {isAo && (
+        <div className={mainCard}>
+          <AoSteps obj={obj} />
+        </div>
+      )}
       {walking && isParty ? (
-        <WalkSkeleton part="orders" title="Orders" lines={3} />
+        <div className={mainCard}>
+          <WalkSkeleton part="orders" title="Orders" lines={3} />
+        </div>
       ) : (
         <>
-          {isSupplier && <SupplierOrders obj={obj} />}
-          {obj.customer && <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />}
+          {isSupplier && (
+            <div className={mainCard}>
+              <SupplierOrders obj={obj} />
+            </div>
+          )}
+          {obj.customer && (
+            <div className={mainCard}>
+              <CustomerOrders c={obj.customer} fallbackOrders={salesOrders} />
+            </div>
+          )}
         </>
       )}
-      {(isCustomer || isSalesOrder) &&
-        (pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />)}
-      {!orderLines && (isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />)}
+      {(isCustomer || isSalesOrder) && (
+        <div className={mainCard}>
+          {pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />}
+        </div>
+      )}
+      {!orderLines && (
+        <div className={mainCard}>
+          {isPo && pending.has("late") ? <SectionSkeleton name="late" title="Lines" lines={2} /> : <LinesTable lines={lines} />}
+        </div>
+      )}
       {(isPo || isSalesOrder || isCustomer) && trailPending ? (
-        <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />
+        <div className={mainCard}>
+          <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />
+        </div>
       ) : (
         <div>
           <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />
@@ -1828,15 +2050,41 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       {pending.has("landed_cost") ? (
         isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={0} />
       ) : (
-        obj.landed_cost && obj.landed_cost.status !== "not_established" && <LandedCostCard lc={obj.landed_cost} />
+        obj.landed_cost && obj.landed_cost.status !== "not_established" && (
+          <div className={mainCard}>
+            <LandedCostCard lc={obj.landed_cost} />
+          </div>
+        )
       )}
-      {FORMULA_TYPES.includes(obj.type) && (pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />)}
-      {!walking && <FulfilmentCard sections={links.fulfilment} />}
-      {(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="History" lines={4} /> : <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />)}
+      {FORMULA_TYPES.includes(obj.type) && (
+        <div className={mainCard}>
+          {pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />}
+        </div>
+      )}
+      {!walking && (
+        <div className={mainCard}>
+          <FulfilmentCard sections={links.fulfilment} />
+        </div>
+      )}
+      {(isCustomer || isSalesOrder) && (
+        <div className={mainCard}>
+          {walking ? <WalkSkeleton part="timeline" title="History" lines={4} /> : <History events={obj.timeline ?? []} linked={obj.linked ?? []} partial={hiddenSome(obj)} />}
+        </div>
+      )}
       {!walking && <ImpactCard type={obj.type} id={obj.object_id} />}
-      {DOCUMENT_LIST_TYPES.includes(obj.type) && (pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />)}
-      {PACK_TYPES.includes(obj.type) && <DocumentsSection type={obj.type} id={obj.object_id} />}
-      {walking ? <WalkSkeleton part="linked" title="Messages and documents" lines={3} /> : <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />}
+      {DOCUMENT_LIST_TYPES.includes(obj.type) && (
+        <div className={mainCard}>
+          {pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />}
+        </div>
+      )}
+      {PACK_TYPES.includes(obj.type) && (
+        <div className={mainCard}>
+          <DocumentsSection type={obj.type} id={obj.object_id} />
+        </div>
+      )}
+      <div className={mainCard}>
+        {walking ? <WalkSkeleton part="linked" title="Messages and documents" lines={3} /> : <Linked items={obj.linked ?? []} withheld={obj.linked_withheld ?? 0} unavailable={obj.linked_unavailable ?? 0} countedAll={obj.linked_counted_all ?? true} />}
+      </div>
       {obj.type === "Product" && <LabelChangesSection objectId={obj.object_id} />}
       {["Product", "Customer", "SalesOrder", "AssemblyOrder"].includes(obj.type) && (
         <LabelRevisionsSection objectId={obj.object_id} />
@@ -1855,10 +2103,36 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
     </>
   );
 
+  /** Resolve a clickable href for a detail fact (Supplier, Customer, Product, Order, Batch, Lot, etc.). */
+  const detailHrefOf = (label: string, value: string): string | null => {
+    const l = label.toLowerCase();
+    if ((l === "supplier" || l === "customer" || l === "product") && counterpartHref && counterpart?.label && value.toLowerCase().includes(counterpart.label.toLowerCase())) {
+      return counterpartHref;
+    }
+    const wantTypes: Record<string, RegExp> = {
+      supplier: /^(?:Supplier|Vendor)$/,
+      customer: /^Customer$/,
+      product: /^(?:Product|Item|FgItem)$/,
+      "purchase order": /^PurchaseOrder$/,
+      "customer order": /^SalesOrder$/,
+      order: /^(?:SalesOrder|PurchaseOrder|AssemblyOrder|ManufacturingOrder)$/,
+      batch: /^Batch$/,
+      lot: /^(?:Lot|InventoryLot)$/,
+      shipment: /^Shipment$/,
+      receipt: /^Receipt$/,
+    };
+    const re = wantTypes[l];
+    if (!re) return null;
+    const pool: ObjectRef[] = [...(obj.related ?? []), ...(obj.links ?? []).flatMap((g) => g.records ?? [])];
+    const hit = pool.find((r) => re.test(r.type) && (r.label.toLowerCase() === value.toLowerCase() || value.toLowerCase().includes(r.label.toLowerCase())));
+    return hit ? refHref(hit) : null;
+  };
+
+  const railCard = "rounded-md border border-border bg-bg p-3.5";
   const inspector = (
     <>
       {facts.length > 0 && !itemDoor && (
-      <section data-testid="summary">
+      <section className={railCard} data-testid="summary">
         {obj.type_label ? (
           // a raw source table (the schema gives it a business name): its fields are the source's own
           // column names, folded so they are never read as the record's described facts
@@ -1875,48 +2149,74 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
         ) : null}
         {!obj.type_label && <SectionTitle>Details</SectionTitle>}
           {!obj.type_label && <dl>
-            {facts.map((k) => (
-              <Property key={k.label} label={k.label}>
-                {k.status && k.status !== "neutral" ? (
-                  <span>
-                    <StatusGlyph status={k.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
-                    {k.value}
-                  </span>
-                ) : k.label === "Supplier" && counterpart && "object_id" in counterpart && counterpart.object_id ? (
-                  <Link href={refHref(counterpart as ObjectRef)} className="hover:underline">
-                    {k.value}
-                  </Link>
-                ) : (
-                  <SourcedValue source={k.source}>{k.value}</SourcedValue>
-                )}
-              </Property>
-            ))}
+            {facts.map((k) => {
+              const linkTo = detailHrefOf(k.label, k.value);
+              return (
+                <Property key={k.label} label={k.label}>
+                  {k.status && k.status !== "neutral" ? (
+                    <span>
+                      <StatusGlyph status={k.status} size={12} className="mr-1.5 inline-block align-[-1px]" />
+                      {k.value}
+                    </span>
+                  ) : linkTo ? (
+                    <Link href={linkTo} className="text-accent hover:underline">
+                      {k.value}
+                    </Link>
+                  ) : (
+                    <SourcedValue source={k.source}>{k.value}</SourcedValue>
+                  )}
+                </Property>
+              );
+            })}
           </dl>}
       </section>
       )}
-      {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}
-      {obj.type === "Person" && (pending.has("knows") ? <SectionSkeleton name="knows" title="Works on" lines={3} /> : <KnowsCard k={obj.knows ?? null} />)}
-      {walking ? <WalkSkeleton part="links" title="Linked records" lines={3} /> : byLink ? <LinkGroupsCard sections={links.linked} /> : <RelatedCard refs={otherRelated} />}
-      <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
-      {sources.length > 0 && (
-        <section>
-          <SectionTitle>Sources</SectionTitle>
-          <ul className="space-y-2">
-            <ShowAll items={sources} first={5} as="li" noun="sources">{(src, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-[13px]">
-                <SystemCode system={src.system} size={18} />
-                <span className="min-w-0 truncate">
-                  <SourceChip source={src} record={head.title} />
-                </span>
-              </li>
-            )}</ShowAll>
-          </ul>
-        </section>
+      {(pending.has("people") || (obj.people ?? []).length > 0) && (
+        <div className={railCard}>
+          {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}
+        </div>
       )}
-      {!(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="Activity" lines={3} /> : <Activity events={obj.timeline ?? []} />)}
+      {obj.type === "Person" && (pending.has("knows") || obj.knows) && (
+        <div className={railCard}>
+          {pending.has("knows") ? <SectionSkeleton name="knows" title="Works on" lines={3} /> : <KnowsCard k={obj.knows ?? null} />}
+        </div>
+      )}
+      {(walking || byLink || otherRelated.length > 0) && (
+        <div className={cn(railCard, "space-y-4 empty:hidden")}>
+          {walking ? <WalkSkeleton part="links" title="Linked records" lines={3} /> : byLink ? <LinkGroupsCard sections={links.linked} /> : <RelatedCard refs={otherRelated} />}
+          <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
+        </div>
+      )}
+      {!(walking || byLink || otherRelated.length > 0) && (
+        <div className={cn(railCard, "empty:hidden")}>
+          <LinkExplorer type={obj.type} id={obj.object_id} label={head.title} />
+        </div>
+      )}
+      {(sources.length > 0 || (!(isCustomer || isSalesOrder) && (walking || (obj.timeline ?? []).length > 0))) && (
+        <div className={cn(railCard, "space-y-5")}>
+          {sources.length > 0 && (
+            <section>
+              <SectionTitle>Sources</SectionTitle>
+              <ul className="space-y-2">
+                <ShowAll items={sources} first={5} as="li" noun="sources">{(src, i) => (
+                  <li key={i} className="flex items-center gap-2.5 text-[13px]">
+                    <SystemCode system={src.system} size={18} />
+                    <span className="min-w-0 truncate">
+                      <SourceChip source={src} record={head.title} />
+                    </span>
+                  </li>
+                )}</ShowAll>
+              </ul>
+            </section>
+          )}
+          {!(isCustomer || isSalesOrder) && (walking ? <WalkSkeleton part="timeline" title="Activity" lines={3} /> : <Activity events={obj.timeline ?? []} />)}
+        </div>
+      )}
       {/* a record whose header holds every fact: the questions asked next about its kind, not the header again */}
       {!walking && facts.length === 0 && sources.length === 0 && (obj.people ?? []).length === 0 && !byLink && otherRelated.length === 0 && (
-        <AskNext type={obj.type} objectId={obj.object_id} label={head.title || recordLabel(obj.type, obj.label)} party={counterpart?.label ?? null} />
+        <div className={railCard}>
+          <AskNext type={obj.type} objectId={obj.object_id} label={head.title || recordLabel(obj.type, obj.label)} party={counterpart?.label ?? null} />
+        </div>
       )}
     </>
   );

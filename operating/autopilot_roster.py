@@ -40,6 +40,7 @@ import sys
 from typing import Any, Mapping, Sequence
 
 from . import autopilot as ap
+from . import autopilot_events
 from . import autopilot_reading
 from . import autopilot_records
 
@@ -174,12 +175,19 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
             if a.startswith("Email:") and b.split(":", 1)[0] in kinds:
                 named[a].add(b)
         props = ("sender", "to_addresses", "internet_message_id") + (
-            ("subject", "body_preview") if wanted or unwanted else ())
+            ("subject", "body_text", "body_preview") if wanted or unwanted else ())
         rows = autopilot_records._read(st, sorted(named), props)
+        bodies = autopilot_records.body_texts(
+            st, [h for r in rows.values() for h in autopilot_events._handles_of(r)[:1]]
+        ) if wanted or unwanted else {}
         for oid, recs in named.items():
             r = rows.get(oid) or {}
             if wanted or unwanted:
-                flow = wf.classify(autopilot_records._v(r, "subject"), autopilot_records._v(r, "body_preview"), "customer")
+                flow = wf.classify(
+                    autopilot_records._v(r, "subject"),
+                    autopilot_records.message_body(r, bodies),
+                    "customer",
+                )
                 if (wanted and flow not in wanted) or flow in unwanted:
                     continue
             sender = (autopilot_records._addresses(autopilot_records._v(r, "sender")) or [""])[0]

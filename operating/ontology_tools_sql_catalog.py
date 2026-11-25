@@ -140,6 +140,27 @@ COMMS_DERIVED_ABOUT = {
                    "(the file in that person's OneDrive at that path)"}),
 }
 COMMS_DERIVED = tuple(COMMS_DERIVED_ABOUT)
+SNAPSHOT_ABOUT = {
+    "ar_daily_snapshots": (
+        "Daily snapshots of open Sage accounts receivable (from customer_balances): one row "
+        "per snapshot_date, currency, aging_bucket, document_type and access group (SUM over "
+        "the rows you read for a day's total). Enables AR trend over time (net, gross, and "
+        "overdue open balances). Business Central's aged receivables are not in this view.", {
+            "snapshot_date": "date: the business day (America/New_York) the AR snapshot was taken",
+            "currency": "text: currency code of the balances (e.g. CAD, USD)",
+            "aging_bucket": "text: days_overdue bucket on snapshot_date: current, 1-30, 31-60, "
+                            "61-90, over 90, or unknown",
+            "document_type": "text: Sage AR document kind: invoice, credit note, receipt, "
+                             "prepayment, unapplied cash, debit note, interest, other, or unknown",
+            "document_count": "integer: number of open AR documents in this group on snapshot_date",
+            "net_amount_due": "numeric: net remaining balance open on snapshot_date in currency "
+                              "(credits, receipts and prepayments negative)",
+            "gross_amount_due": "numeric: gross positive remaining balance open on snapshot_date "
+                                "in currency (amount_due > 0)",
+            "overdue_amount_due": "numeric: overdue positive remaining balance on snapshot_date "
+                                  "in currency (amount_due > 0 and days_overdue > 0)"}),
+}
+SNAPSHOT_TABLES = tuple(SNAPSHOT_ABOUT)
 GENERIC_TABLES = ("records", "record_links")
 TYPE_SAMPLE = 500
 
@@ -456,7 +477,7 @@ def _dictionary() -> dict[str, Any]:
         for cname, kind, cdoc in sql_views.SHOWN_COMMON:
             cols[cname] = f"{kind}: {cdoc}"
         out[name] = {"about": entry["about"], "columns": cols}
-    for name, (about, cols) in {**GENERIC_ABOUT, **COMMS_DERIVED_ABOUT}.items():
+    for name, (about, cols) in {**GENERIC_ABOUT, **COMMS_DERIVED_ABOUT, **SNAPSHOT_ABOUT}.items():
         cols = dict(cols)
         if name != "record_types":
             for cname, kind, cdoc in sql_views.SHOWN_COMMON:

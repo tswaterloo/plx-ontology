@@ -417,6 +417,23 @@ export function trailStepCount(trail: EvidenceTrail | null | undefined): number 
   return n + why + (trail.materials ?? []).length + (trail.gaps ?? []).length;
 }
 
+/** Human-readable gap text: replaces raw Portal/FileMaker internal schema paths with plain business language. */
+export function plainGapSuffix(g: { state?: string | null; where_it_would_live?: string | null }): string {
+  const raw = readable(g.where_it_would_live ?? "").trim();
+  if (g.state === "note") return raw ? `: ${raw}` : "";
+  if (/Portal manufacturing order|FileMaker order-entry assembly allocation/i.test(raw)) {
+    return ": No manufacturing or assembly order linked yet";
+  }
+  const cleaned = raw
+    .replace(/\bthe FileMaker order-entry batch allocations?\b/gi, "a batch allocation")
+    .replace(/\bthe FileMaker assembly or batch allocation\b/gi, "an assembly or batch allocation")
+    .replace(/\bthe FileMaker assembly allocation\b/gi, "an assembly allocation")
+    .replace(/\bthe FileMaker assembly order'?s components\b/gi, "assembly order components")
+    .replace(/\bthe FileMaker component\b/gi, "the assembly component");
+  const status = g.state === "absent_in_source" ? "not recorded" : "not found on record";
+  return cleaned ? `: ${status} (expected in ${cleaned})` : `: ${status}`;
+}
+
 /**
  * "Evidence": the verdict, then the steps behind it newest first (four, then "Show all"),
  * each opening its evidence in the drawer. `bare`: no card frame or title (inside an
@@ -455,9 +472,7 @@ export function EvidenceTrailCard({
               <OpenRing size={14} tone="neutral" className="mt-[3px]" />
               <span>
                 <span className="text-fg">{readable(g.what)}</span>
-                {g.state === "note"
-                  ? `: ${readable(g.where_it_would_live)}`
-                  : `: ${g.state === "absent_in_source" ? "not recorded" : "not found on record"} (would be in ${readable(g.where_it_would_live)})`}
+                {plainGapSuffix(g)}
               </span>
             </li>
           ))}

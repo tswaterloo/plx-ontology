@@ -11,9 +11,9 @@ import { CommandPaletteProvider, useCommandPalette } from "./command-palette";
 import { FeedbackButton, FeedbackProvider, useFeedbackDialog } from "./feedback-dialog";
 import { eastern, plainServerNote, SYSTEM_LABEL } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { stashPending } from "@/lib/pending";
 import { useShortcut } from "@/lib/platform";
 import { setSavedNotice, useSaved, useSavedNotice } from "@/lib/saved";
+import { useAskRunning } from "@/lib/thread";
 import { usePins, type PinnedPage, type PinReader } from "@/lib/pins";
 import { readAllLate } from "@/lib/late";
 import { aheadProps, warmStoredRoutes } from "@/lib/route-reads";
@@ -272,17 +272,23 @@ export function loadSidebar(fresh = false): Promise<SidebarResponse> {
   return sidebarOnce;
 }
 
-/** The sidebar's numbers, read as the page's own reads start (W4: nothing waits for the sign-in
- * check or for the page's reads; the sidebar's answer is small and kept per reader). */
+/** The sidebar's numbers, gated until auth has resolved an active session so ticket exchange
+ * and signed-out renders never fire an unauthenticated /api/sidebar request. */
 function useSidebar(): SidebarResponse | null {
+  const { state } = useAuth();
+  const signedIn = state.status === "signed-in";
   const [side, setSide] = useState<SidebarResponse | null>(null);
   useEffect(() => {
+    if (!signedIn) {
+      setSide(null);
+      return;
+    }
     let live = true;
     loadSidebar().then((s) => live && setSide(s), () => undefined);
     return () => {
       live = false;
     };
-  }, []);
+  }, [signedIn]);
   return side;
 }
 
@@ -362,7 +368,6 @@ export const NAV_SECTIONS: NavSection[] = [
     children: [
       { href: "/assist", label: "Prepared" },
       { href: "/assist?show=workflows", label: "Workflows" },
-      { href: "/assist?show=routines", label: "Routines" },
       { href: "/assist?show=log", label: "What it did" },
       { href: "/assist?show=switches", label: "Switches" },
     ],
@@ -559,7 +564,7 @@ export function DataAsOf({ home }: { home: { freshness?: HomeResponse["freshness
         </span>
       </Menu.Trigger>
       <Menu.Portal>
-        <Menu.Content side="top" align="start" sideOffset={6} className="z-50 w-72 rounded-xl bg-raised p-1.5 shadow-pop" data-testid="sync-detail">
+        <Menu.Content side="top" align="start" sideOffset={6} className="z-50 w-72 rounded-lg border border-border-strong bg-raised p-1.5 shadow-pop" data-testid="sync-detail">
           {sources.map((s) => (
             <div key={s.system} className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-row">
               <SystemCode system={s.system} size={18} />
@@ -832,13 +837,15 @@ export function OpsAlarmBanner({ every = 60_000, className }: { every?: number; 
       role={notice.calm ? "status" : "alert"}
       title="Details on the Admin page"
       className={cn(
-        "flex shrink-0 items-center gap-1.5 border-b px-5 py-1.5 text-[12px] leading-4 hover:underline",
-        notice.calm ? "border-border bg-subtle text-muted" : "border-late-line bg-late-soft text-late",
+        "flex shrink-0 items-center gap-2 border-b border-border px-5 py-1.5 text-[12px] leading-4 hover:underline",
+        notice.calm
+          ? "bg-bg-subtle text-muted"
+          : "border-l-2 border-l-late/75 bg-surface/60 text-fg",
         className,
       )}
       data-testid="ops-alarm-banner"
     >
-      {!notice.calm && <TriangleAlert className="size-3 shrink-0" strokeWidth={2} aria-hidden />}
+      {!notice.calm && <TriangleAlert className="size-3 shrink-0 text-late" strokeWidth={2} aria-hidden />}
       <span className="min-w-0 truncate">{notice.text}</span>
     </Link>
   );
@@ -849,7 +856,7 @@ export function AdminAlarm() {
   return useAdminScreen() ? <OpsAlarmBanner /> : null;
 }
 
-function NavItem({ href, label, place, count, countWords = "late", dot, on, onNavigate }: { href: string; label: string; place?: string; count?: number | null; countWords?: string; dot?: string; on?: boolean; onNavigate?: () => void }) {
+function NavItem({ href, label, place, count, countWords = "late", dot, pulsing, on, onNavigate }: { href: string; label: string; place?: string; count?: number | null; countWords?: string; dot?: string; pulsing?: string; on?: boolean; onNavigate?: () => void }) {
   const path = usePathname();
   const current = on ?? isOn(path, href);
   return (
@@ -858,20 +865,40 @@ function NavItem({ href, label, place, count, countWords = "late", dot, on, onNa
       onClick={onNavigate}
       {...aheadProps(href)}
       aria-current={current ? "page" : undefined}
-      title={label}
+      title={pulsing ? `${label} (${pulsing})` : label}
       className={cn(
-        "group flex h-7 items-center gap-2.5 rounded-r-[2px] border-l-2 px-2 text-[13px] leading-none max-xl:justify-center max-xl:px-0",
-        current ? "border-accent bg-nav-on font-medium text-fg" : "border-transparent text-fg/90 hover:bg-hover",
+        "group relative flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] leading-none transition-colors max-xl:justify-center max-xl:px-0",
+        current ? "bg-nav-on font-medium text-fg" : "text-fg/80 hover:bg-hover hover:text-fg",
       )}
     >
-      <PlaceIcon href={place ?? href} className={current ? undefined : "opacity-85 group-hover:opacity-100"} />
+      {current && <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent max-xl:hidden" aria-hidden />}
+      <PlaceIcon href={place ?? href} className={current ? "text-fg" : "text-muted group-hover:text-fg"} />
       <span className="flex-1 truncate max-xl:sr-only">{label}</span>
+      {pulsing && (
+        <span
+          className="size-2 shrink-0 rounded-full bg-accent skeleton-shimmer max-xl:absolute max-xl:right-1.5 max-xl:top-1.5"
+          role="status"
+          aria-label={pulsing}
+          title={pulsing}
+          data-testid="ask-running-dot"
+        />
+      )}
       {typeof count === "number" && count > 0 && (
-        <span className="num text-[12px] text-muted max-xl:hidden" aria-label={`${count} ${countWords}`}>
+        <span className={cn("num text-[11.5px] font-medium leading-none max-xl:hidden", current ? "text-fg" : "text-muted")} aria-label={`${count} ${countWords}`}>
           {count}
         </span>
       )}
-      {dot && <span className="size-1.5 shrink-0 rounded-full bg-dot-risk" role="img" aria-label={dot} title={dot} data-testid="admin-dot" />}
+      {dot && (
+        <span
+          className="shrink-0 text-[11px] font-medium leading-none text-muted max-xl:hidden"
+          role="img"
+          aria-label={dot}
+          title={dot}
+          data-testid="admin-dot"
+        >
+          Open
+        </span>
+      )}
     </Link>
   );
 }
@@ -897,9 +924,10 @@ function SectionNav({ me, late, group }: { me: NavReader; late: number | null; g
   const mine = sections.filter((s) => s.group === group);
   const needs = useNeedsCount();
   const problem = useOpsProblem(isOpsReader(me));
+  const { anyRunning: askRunning } = useAskRunning();
   if (!mine.length) return null;
   return (
-    <div className={cn("space-y-0.5", group === "last" && "mt-0.5")} data-testid={group === "main" ? "nav-sections" : "nav-last"}>
+    <div className={cn("space-y-0.5", group === "last" && "mt-2.5 border-t border-border pt-2.5")} data-testid={group === "main" ? "nav-sections" : "nav-last"}>
       {mine.map((s) => (
         <NavItem
           key={s.key}
@@ -910,6 +938,7 @@ function SectionNav({ me, late, group }: { me: NavReader; late: number | null; g
           count={s.key === "home" ? needs : s.children.some((c) => c.late) ? late : undefined}
           countWords={s.key === "home" ? "need you" : "late"}
           dot={s.key === "admin" && problem ? "A reliability problem is open: see Admin" : undefined}
+          pulsing={s.key === "ask" && askRunning ? "Working on an answer" : undefined}
         />
       ))}
     </div>
@@ -942,7 +971,7 @@ function SectionTabsAt({ section, className, search }: { section: string; classN
   if (!s || s.children.length < 2) return null;
   const current = search === null ? null : currentChild(s.children, path, hash, search);
   return (
-    <nav aria-label={s.label} className={cn("flex h-10 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden", className)} data-testid={`section-tabs-${s.key}`}>
+    <nav aria-label={s.label} className={cn("flex h-9 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border bg-bg px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden", className)} data-testid={`section-tabs-${s.key}`}>
       {s.children.map((c) => {
         const on = current === c.href;
         return (
@@ -951,7 +980,7 @@ function SectionTabsAt({ section, className, search }: { section: string; classN
             href={c.href}
             {...aheadProps(c.href)}
             aria-current={on ? "page" : undefined}
-            className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px]", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:bg-accent" : "text-muted hover:text-fg")}
+            className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
           >
             {c.label}
           </Link>
@@ -1059,7 +1088,7 @@ function SavedNotice() {
   const notice = useSavedNotice();
   if (!notice) return null;
   return (
-    <p role="status" data-testid="saved-notice" className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded border border-border bg-bg px-3 py-2 text-[13px] shadow-sm">
+    <p role="status" data-testid="saved-notice" className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border border-border-strong bg-raised px-3 py-2 text-[13px] text-fg shadow-pop">
       {notice}
       <button type="button" className="cursor-pointer text-muted hover:text-fg" onClick={() => setSavedNotice(null)}>
         Close
@@ -1072,52 +1101,45 @@ function Sidebar() {
   const home = useHomeRead();
   const side = useSidebar();
   const saved = useSaved();
-  const router = useRouter();
   const { open } = useCommandPalette();
   const { shortcut } = useShortcut();
   const late = lateOf(home, side);
   const { state } = useAuth();
   const signedIn = state.status === "signed-in" ? state.me : null;
   const savedOnly = saved.filter((s) => s.kind !== "page");
-  const recent = (side?.recent_questions ?? home?.recent_questions ?? []).filter(
-    (r, i, all) => all.findIndex((x) => x.question.trim().toLowerCase() === r.question.trim().toLowerCase()) === i,
-  );
   return (
-    <aside className="hidden w-[60px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex xl:w-[240px]" aria-label="Sidebar">
-      <div className="flex h-[52px] shrink-0 items-center justify-center xl:justify-start xl:px-5">
+    <aside className="hidden w-[60px] shrink-0 flex-col border-r border-border bg-sidebar lg:flex xl:w-[236px]" aria-label="Sidebar">
+      <div className="flex h-12 shrink-0 items-center justify-center xl:justify-start xl:px-4">
         <Link href="/" aria-label="PLX Workbench, Home">
           <Logo className="max-xl:[&>[data-wm=rest]]:hidden max-xl:text-[16px]" />
         </Link>
       </div>
-      <div className="px-3">
+      <div className="px-2.5 pb-1">
         <button
           type="button"
           onClick={open}
           title={`Search or ask (${shortcut("K")})`}
-          className="flex h-8 w-full items-center gap-2.5 rounded-md bg-[color-mix(in_srgb,var(--fg)_5%,transparent)] px-2 text-left text-[13px] text-faint hover:bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] hover:text-muted max-xl:justify-center max-xl:px-0 cursor-pointer"
+          className="flex h-8 w-full items-center gap-2 rounded-md border border-border bg-bg px-2.5 text-left text-[12.5px] text-faint hover:border-border-strong hover:text-muted dark:bg-surface max-xl:justify-center max-xl:px-0 cursor-pointer"
           data-testid="global-search"
           aria-label={`Search records or ask (${shortcut("K")})`}
         >
-          <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
-            <Search className="size-[15px]" strokeWidth={2} />
+          <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
+            <Search className="size-[14px]" strokeWidth={2} />
           </span>
           <span className="flex-1 truncate max-xl:hidden">Search or ask</span>
-          <kbd className="font-sans text-[11px] leading-4 text-faint max-xl:hidden" aria-hidden>
+          <kbd className="rounded-xs border border-border bg-surface px-1.5 py-0.5 font-sans text-[10px] font-medium leading-3 text-muted dark:bg-surface-2 max-xl:hidden" aria-hidden>
             {shortcut("K")}
           </kbd>
         </button>
       </div>
-      <nav aria-label="Main" className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
+      <nav aria-label="Main" className="mt-2 flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-3">
         <SidebarNav me={signedIn} late={late} />
-        <Suspense>
-          <LateBySupplier />
-        </Suspense>
         {savedOnly.length > 0 && (
           <SidebarSection title="Saved">
-            <div className="space-y-px">
+            <div className="space-y-0.5">
               <ShowAll items={savedOnly} first={6} noun="saved">{(s) => (
-                <Link key={s.key} href={s.href} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-fg/90 hover:bg-hover">
-                  <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
+                <Link key={s.key} href={s.href} className="flex h-7 items-center gap-2 rounded-md px-2.5 text-[12.5px] text-fg/85 hover:bg-hover hover:text-fg">
+                  <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden>
                     <Bookmark className="size-3.5 text-muted" strokeWidth={2} />
                   </span>
                   <span className="truncate">{s.label}</span>
@@ -1126,28 +1148,8 @@ function Sidebar() {
             </div>
           </SidebarSection>
         )}
-        {recent.length > 0 && (
-          <SidebarSection title="Recent questions">
-            <div className="space-y-px">
-              <ShowAll items={recent} first={4}>{(r) => (
-                <button
-                  key={r.answer_id ?? r.question}
-                  type="button"
-                  title={r.question}
-                  onClick={() => {
-                    stashPending(r.question, []);
-                    router.push(`/ask?q=${encodeURIComponent(r.question)}`);
-                  }}
-                  className="flex h-8 w-full items-center rounded-md px-2 text-left text-[13px] text-muted hover:bg-hover hover:text-fg cursor-pointer"
-                >
-                  <span className="truncate first-letter:uppercase">{r.question}</span>
-                </button>
-              )}</ShowAll>
-            </div>
-          </SidebarSection>
-        )}
       </nav>
-      <div className="shrink-0 space-y-0.5 border-t border-border px-3 py-2.5">
+      <div className="shrink-0 space-y-0.5 border-t border-border px-2.5 py-2">
         <FeedbackButton />
         <HelpLink />
         <DataAsOf home={side ?? home} />
@@ -1165,13 +1167,11 @@ function HelpLink() {
     <Link
       href={HELP.href}
       aria-current={on ? "page" : undefined}
-      className={cn("flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-[13px] max-xl:justify-center max-xl:px-0", on ? "bg-nav-on font-medium text-fg" : "text-fg/90 hover:bg-hover")}
+      className={cn("group flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-[13px] max-xl:justify-center max-xl:px-0", on ? "bg-nav-on font-medium text-fg" : "text-fg/80 hover:bg-hover hover:text-fg")}
       title="Help"
       data-testid="nav-help"
     >
-      <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
-        <CircleHelp className="size-[15px] text-muted" strokeWidth={2} />
-      </span>
+      <CircleHelp className={cn("size-4 shrink-0", on ? "text-fg" : "text-muted group-hover:text-fg")} strokeWidth={1.75} aria-hidden />
       <span className="flex-1 truncate max-xl:sr-only">Help</span>
     </Link>
   );
@@ -1190,7 +1190,7 @@ function initialsOf(name: string) {
 function Avatar({ name, className }: { name: string; className?: string }) {
   return (
     <span
-      className={cn("flex size-6 shrink-0 items-center justify-center rounded-[3px] bg-surface-2 text-[10px] font-semibold text-muted", className)}
+      className={cn("flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-[10px] font-semibold text-fg/80", className)}
       aria-hidden
     >
       {initialsOf(name) || "?"}
@@ -1202,48 +1202,62 @@ function AccountMenuContent({ name, email, onViewAs }: { name: string; email?: s
   const { signOut } = useAuth();
   const router = useRouter();
   const feedback = useFeedbackDialog();
+  const itemClass = "flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover";
+  const labelClass = "px-2 pt-1 pb-1 text-[11px] font-medium tracking-[0.02em] text-faint";
   return (
     <Menu.Portal>
-      <Menu.Content side="top" align="start" sideOffset={6} collisionPadding={8} className="z-50 w-64 rounded-xl bg-raised p-1.5 shadow-pop">
+      <Menu.Content side="top" align="start" sideOffset={6} collisionPadding={8} className="z-50 w-64 rounded-lg border border-border-strong bg-raised p-1.5 shadow-pop" data-testid="account-menu">
         <div className="px-2 py-1.5">
           <p className="truncate text-row font-medium">{name}</p>
           {email && <p className="truncate text-meta text-muted">{email}</p>}
         </div>
-        <AccessBanner className="px-2 py-1.5" />
-        <DevBanner className="px-2 py-1.5" />
-        <div className="flex items-center justify-between px-2 py-1.5">
-          <span className="text-meta text-muted">Appearance</span>
-          <ThemeToggle />
-        </div>
-        <Menu.Separator className="mx-2 my-1 h-px bg-border" />
-        <Menu.Item onSelect={feedback.open} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
-          Give feedback
-        </Menu.Item>
-        <Menu.Item onSelect={() => router.push("/memory")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="memory-open">
-          Memory
-        </Menu.Item>
-        <Menu.Item onSelect={() => router.push("/templates")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="templates-open">
-          Templates
-        </Menu.Item>
-        <Menu.Item onSelect={() => router.push("/work-log")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="work-log-open">
-          Work log
-        </Menu.Item>
-        <Menu.Item onSelect={() => router.push("/feedback")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
-          Feedback list
-        </Menu.Item>
-        <Menu.Item onSelect={() => router.push("/help")} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="help-open">
-          Help for your first week
-        </Menu.Item>
-        {onViewAs && (
-          <Menu.Item onSelect={onViewAs} className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover" data-testid="view-as-open">
-            View as someone
+        <AccessBanner className="px-2 py-1" />
+        <DevBanner className="px-2 py-1" />
+        <Menu.Separator className="my-1.5 h-px bg-border" />
+        <Menu.Group>
+          <Menu.Label className={labelClass}>Appearance</Menu.Label>
+          <div className="flex items-center justify-between px-2 py-1">
+            <span className="text-meta text-muted">Theme</span>
+            <ThemeToggle />
+          </div>
+        </Menu.Group>
+        <Menu.Separator className="my-1.5 h-px bg-border" />
+        <Menu.Group>
+          <Menu.Label className={labelClass}>Workspace</Menu.Label>
+          <Menu.Item onSelect={() => router.push("/memory")} className={itemClass} data-testid="memory-open">
+            Memory
           </Menu.Item>
-        )}
+          <Menu.Item onSelect={() => router.push("/templates")} className={itemClass} data-testid="templates-open">
+            Templates
+          </Menu.Item>
+          <Menu.Item onSelect={() => router.push("/work-log")} className={itemClass} data-testid="work-log-open">
+            Work log
+          </Menu.Item>
+        </Menu.Group>
+        <Menu.Separator className="my-1.5 h-px bg-border" />
+        <Menu.Group>
+          <Menu.Label className={labelClass}>Support &amp; Admin</Menu.Label>
+          <Menu.Item onSelect={feedback.open} className={itemClass}>
+            Give feedback
+          </Menu.Item>
+          <Menu.Item onSelect={() => router.push("/feedback")} className={itemClass}>
+            Feedback list
+          </Menu.Item>
+          <Menu.Item onSelect={() => router.push("/help")} className={itemClass} data-testid="help-open">
+            Help for your first week
+          </Menu.Item>
+          {onViewAs && (
+            <Menu.Item onSelect={onViewAs} className={itemClass} data-testid="view-as-open">
+              View as someone
+            </Menu.Item>
+          )}
+        </Menu.Group>
+        <Menu.Separator className="my-1.5 h-px bg-border" />
         <Menu.Item
           onSelect={async () => {
             if (await signOut()) router.replace("/signin");
           }}
-          className="flex cursor-pointer items-center rounded-sm px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover"
+          className={itemClass}
         >
           Sign out
         </Menu.Item>
@@ -1286,7 +1300,10 @@ export function TabBar() {
   const path = usePathname();
   const home = useHomeRead();
   const late = lateOf(home, useSidebar());
+  const { anyRunning: askRunning } = useAskRunning();
   const { state } = useAuth();
+  const desktop = useDesktopShell();
+  if (desktop === true) return null;
   const reader = state.status === "signed-in" ? state.me : null;
   const sections = navSectionsFor(reader);
   const open = sectionOf(path, sections);
@@ -1308,19 +1325,29 @@ export function TabBar() {
           const on = open?.key === key;
           return (
             <Link key={href} href={href} {...aheadProps(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
-              <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
+              <span className="relative">
+                <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
+                {key === "ask" && askRunning && (
+                  <span
+                    className="absolute -right-1 -top-0.5 size-2 rounded-full bg-accent skeleton-shimmer"
+                    role="status"
+                    aria-label="Working on an answer"
+                    data-testid="ask-running-dot-mobile"
+                  />
+                )}
+              </span>
               {label}
               {showLate && typeof late === "number" && late > 0 && <span className="sr-only">, {late} late</span>}
             </Link>
           );
         })}
         <Menu.Root>
-          <Menu.Trigger aria-label="More" className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium cursor-pointer", moreOn ? "text-accent" : "text-muted")} data-testid="tab-more">
+          <Menu.Trigger aria-label="More navigation" className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium cursor-pointer", moreOn ? "text-accent" : "text-muted")} data-testid="tab-more">
             <MoreHorizontal className="size-[22px]" strokeWidth={moreOn ? 2 : 1.7} aria-hidden />
             More
           </Menu.Trigger>
           <Menu.Portal>
-            <Menu.Content side="top" align="end" sideOffset={8} collisionPadding={8} className="z-50 max-h-[70dvh] w-56 overflow-y-auto rounded-xl bg-raised p-1.5 shadow-pop" data-testid="more-menu">
+            <Menu.Content side="top" align="end" sideOffset={8} collisionPadding={8} className="z-50 max-h-[70dvh] w-56 overflow-y-auto rounded-lg border border-border-strong bg-raised p-1.5 shadow-pop" data-testid="more-menu">
               {rest.map(({ href, label, icon: Icon, sub }) => (
                 <Menu.Item key={href} asChild>
                   <Link href={href} className={cn("flex items-center gap-2.5 rounded-md px-2 py-2 text-row outline-none data-[highlighted]:bg-hover", sub && "pl-8 text-muted")}>
@@ -1438,7 +1465,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <CommandPaletteProvider>
       <FeedbackProvider>
       <DesktopBridge />
-      <div className="flex h-dvh overflow-hidden bg-bg">
+      <div className="flex h-dvh overflow-hidden bg-canvas">
         <a
           href="#main"
           className="sr-only z-50 rounded-sm bg-accent px-3 py-2 text-accent-fg focus:not-sr-only focus:fixed focus:left-3 focus:top-3"
@@ -1452,7 +1479,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <ViewAsBar />
           <AdminAlarm />
           {signOutError && (
-            <div role="alert" className="border-b border-late-line bg-late-soft px-5 py-1.5 text-[13px] leading-5 text-late" data-testid="sign-out-failed">
+            <div role="alert" className="border-b border-border border-l-2 border-l-late/75 bg-surface/60 px-5 py-1.5 text-[12.5px] leading-5 text-fg" data-testid="sign-out-failed">
               {signOutError}{" "}
               <button type="button" className="font-medium underline cursor-pointer" onClick={() => void signOut().then((ok) => ok && router.replace("/signin"))}>
                 Try again

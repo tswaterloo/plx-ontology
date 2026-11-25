@@ -4,13 +4,13 @@
 // the HttpOnly session cookie that /api/auth/dev-login sets in dev/mock mode.
 
 import { ApiError, apiErrorFrom, incidentOf } from "./errors";
-import { quiet } from "./quiet";
+import { quiet, quietly } from "./quiet";
 import { writeEpoch } from "./use-read";
 import { DOOR_HEADER, forgetAnswer, isSettledAnswer, noteAnswerHeaders, noteOwnWrite, rememberAnswer } from "./read-store";
 import { onSessionReset } from "./session-cache";
 import { SseParser } from "./sse";
 import { ownPath, setViewingAs, VIEW_AS_HEADER, viewingAs } from "./view-as";
-import type { AskChatUpdate, AskChats, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, PoClosure, RecordAsOf, RecordHistory,
+import type { AskActiveRun, AskChatUpdate, AskChats, AskRunStop, DataHealth, RecordList, DocList, RecordViews, Explore, LabourPage, LateList, PoClosure, RecordAsOf, RecordHistory,
   AskObserved, EmailDraftPrepared, EmailDraftRequest, ExportXlsxRequest, FilterEdit, GapList, MeasureCandidate, MeasureCandidateApprove, MeasureCandidateDismiss, MeasureCandidateList, MeasureCandidatePropose, MeasureCandidateStatus, StatementRead, InsightInfo, InsightList, InsightNewsList, InsightResult, InsightSave, InsightSchedule, MemoryItem, MemoryItems, MemoryPeople, MemorySave, Template, TemplateDocType, TemplateFilled, TemplateList, TemplateProposal, TemplateSave, TemplateSuggestions,
   WriteApprove, WriteExecute, WriteIntentList, WriteIntentView, WritePreview,
   ActionConfirm,
@@ -251,6 +251,7 @@ async function call(path: string, init: RequestInit & { json?: unknown; ahead?: 
     writesSent += 1;
     paneKept.clear();
     insightsKept.clear();
+    askChatsKept.clear();
     recordAhead.clear();
     noteOwnWrite(path);
   }
@@ -516,6 +517,7 @@ export function getRead<T extends { reading?: boolean | null }>(path: string, si
 }
 
 async function pollRead<T extends { reading?: boolean | null }>(path: string, signal: AbortSignal, ahead = false): Promise<T> {
+  const background = ahead || quiet();
   const start = Date.now();
   const until = start + READING_MOST_MS;
   for (let attempt = 0; ; attempt++) {
@@ -525,7 +527,7 @@ async function pollRead<T extends { reading?: boolean | null }>(path: string, si
     // request is sent, and a re-read behind a drawn answer would count as the page's own read)
     const bundled = attempt === 0 && bundleMayAnswer(path) ? await bundlePart<T>(path, signal) : null;
     if (bundled && !bundled.reading) return bundled;
-    const got = await getJson<T>(path, signal, ahead);
+    const got = await (background && !ahead ? quietly(() => getJson<T>(path, signal, false)) : getJson<T>(path, signal, ahead));
     if (!got.reading) return got;
     const now = Date.now();
     if (now >= until) throw new ApiError(503, "busy");
@@ -1310,6 +1312,9 @@ export async function resumeAssistWorkflow(id: string): Promise<AssistWorkflow> 
 export async function stopAssistWorkflow(id: string): Promise<AssistWorkflow> {
   return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/stop`, { method: "POST" })).json()) as AssistWorkflow;
 }
+export async function deleteAssistWorkflow(id: string): Promise<AssistWorkflow> {
+  return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}`, { method: "DELETE" })).json()) as AssistWorkflow;
+}
 export async function runAssistWorkflow(id: string): Promise<AssistWorkflowRunResult> {
   return (await (await call(`/api/assist/workflows/${encodeURIComponent(id)}/run`, { method: "POST" })).json()) as AssistWorkflowRunResult;
 }
@@ -1796,7 +1801,7 @@ export async function setFeedbackStatus(id: string, status: FeedbackStatus): Pro
   return (await (await call(`/api/feedback/${encodeURIComponent(id)}/status`, { method: "POST", json: { status } })).json()) as FeedbackEntry;
 }
 
-const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "token", "answer", "error"]);
+const ASK_EVENTS = new Set(["understanding", "status", "sources", "verdict", "charts", "token", "answer", "error"]);
 
 /** How long the Ask's stream may say nothing at all before it counts as cut off: the server
  * sends a keep-alive every 15 s while an answer is still being worked on (operator_api.app
@@ -1839,23 +1844,8 @@ export async function removeAskFile(id: string): Promise<void> {
   if (!res.ok && res.status !== 404) throw await apiErrorFrom(res);
 }
 
-/**
- * POST /api/ask and yield typed events as they arrive. Unknown event names
- * are dropped; malformed data or a stream that ends without an answer
- * becomes an `error` event so the UI never shows half-parsed content.
- */
-export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerator<AskEvent> {
-  viewAsHeader("/api/ask", "POST");
-  const res = await fetch("/api/ask", {
-    method: "POST",
-    credentials: "same-origin",
-    headers: await headers({ "Content-Type": "application/json", Accept: "text/event-stream" }),
-    body: JSON.stringify(req),
-    signal,
-  });
-  if (!res.ok) throw await apiErrorFrom(res);
+async function* readAskStream(res: Response): AsyncGenerator<AskEvent> {
   if (!res.body) throw new ApiError(res.status, "stream_interrupted");
-
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   const parser = new SseParser();
   let finished = false;
@@ -1895,6 +1885,59 @@ export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerato
   }
   if (!finished) yield { event: "error", data: { code: "stream_interrupted", message: "" } };
 }
+
+/**
+ * POST /api/ask and yield typed events as they arrive. Unknown event names
+ * are dropped; malformed data or a stream that ends without an answer
+ * becomes an `error` event so the UI never shows half-parsed content.
+ */
+export async function* ask(req: AskRequest, signal?: AbortSignal): AsyncGenerator<AskEvent> {
+  viewAsHeader("/api/ask", "POST");
+  askChatsKept.clear();
+  const res = await fetch("/api/ask", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: await headers({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) throw await apiErrorFrom(res);
+  yield* readAskStream(res);
+}
+
+/**
+ * GET /api/ask/runs/{conversation_id}/stream: reattach to an in-flight (or just-finished)
+ * Ask run on the server and yield its snapshot plus live SSE events.
+ */
+export async function* attachAskRun(conversationId: string, signal?: AbortSignal): AsyncGenerator<AskEvent> {
+  const path = `/api/ask/runs/${encodeURIComponent(conversationId)}/stream`;
+  const as = viewAsHeader(path, "GET");
+  const res = await fetch(path, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: await headers({ Accept: "text/event-stream", ...as }),
+    signal,
+  });
+  if (!res.ok) throw await apiErrorFrom(res);
+  yield* readAskStream(res);
+}
+
+/**
+ * POST /api/ask/runs/{conversation_id}/stop: explicitly cancel an in-flight Ask run.
+ */
+export async function stopAskRun(conversationId: string): Promise<AskRunStop> {
+  const path = `/api/ask/runs/${encodeURIComponent(conversationId)}/stop`;
+  viewAsHeader(path, "POST");
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: await headers({ Accept: "application/json" }),
+  });
+  if (!res.ok) throw await apiErrorFrom(res);
+  return (await res.json()) as AskRunStop;
+}
+
+export type { AskActiveRun };
 
 // ---- the work log (operator_api.work_log): everything you did or received, in one place ----
 
@@ -1944,9 +1987,43 @@ export function getWorkThread(thread: string, signal?: AbortSignal): Promise<Wor
   return getJson<WorkLogThread>(threadPath(thread), signal);
 }
 
+// Hot-tier cache for the unfiltered Ask chats list (per session and view-as, dropped on sign-out,
+// door change, refused session, any write, or a new Ask question): 2nd-visit Ask paints the rail
+// at once and revalidates quietly in the background without blocking `ready`.
+const askChatsKept = new Map<string, AskChats>();
+const askChatsRefreshing = new Set<string>();
+onSessionReset(() => {
+  askChatsKept.clear();
+  askChatsRefreshing.clear();
+});
+
 /** Your Ask conversations, pinned first then the most recent; ``q`` searches their names and questions. */
-export function getAskChats(q?: string, signal?: AbortSignal): Promise<AskChats> {
-  return getJson<AskChats>(`/api/ask/chats${q && q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`, signal);
+export async function getAskChats(q?: string, signal?: AbortSignal): Promise<AskChats> {
+  const trimmed = q?.trim() ?? "";
+  if (trimmed) {
+    return getJson<AskChats>(`/api/ask/chats?q=${encodeURIComponent(trimmed)}`, signal);
+  }
+  const key = readKey("/api/ask/chats");
+  const hit = askChatsKept.get(key);
+  if (hit) {
+    if (!askChatsRefreshing.has(key)) {
+      askChatsRefreshing.add(key);
+      const before = writesSent;
+      void getJson<AskChats>("/api/ask/chats", undefined, true)
+        .then(
+          (fresh) => {
+            if (writesSent === before && key === readKey("/api/ask/chats")) askChatsKept.set(key, fresh);
+          },
+          () => undefined,
+        )
+        .finally(() => askChatsRefreshing.delete(key));
+    }
+    return hit;
+  }
+  const before = writesSent;
+  const got = await getJson<AskChats>("/api/ask/chats", signal);
+  if (writesSent === before && key === readKey("/api/ask/chats")) askChatsKept.set(key, got);
+  return got;
 }
 
 /** Start a warm Ask session when the person opens or focuses the Ask box (throttled per tab). */
@@ -1978,7 +2055,10 @@ export function warmAsk(): void {
 
 /** Rename, pin or delete one of your Ask conversations; your chats list after. */
 export async function updateAskChat(conversationId: string, body: AskChatUpdate): Promise<AskChats> {
-  return (await (await call(`/api/ask/chats/${encodeURIComponent(conversationId)}`, { method: "POST", json: body })).json()) as AskChats;
+  const key = readKey("/api/ask/chats");
+  const got = (await (await call(`/api/ask/chats/${encodeURIComponent(conversationId)}`, { method: "POST", json: body })).json()) as AskChats;
+  if (key === readKey("/api/ask/chats")) askChatsKept.set(key, got);
+  return got;
 }
 
 /** Name, pin, attach to a case or close one of your threads. */
@@ -2071,10 +2151,10 @@ onSessionReset(() => {
   insightsRun = null;
 });
 
-async function readInsightsStream(run: InsightsRun): Promise<void> {
+async function readInsightsStream(run: InsightsRun, background = false): Promise<void> {
   // the first INSIGHTS_EAGER tiles come with their stored value; every other tile reads its own
   // when it nears the view (the page was 484 KB for 40 charts drawn at once)
-  const res = await call(`/api/insights/all/stream?eager=${INSIGHTS_EAGER}`, { signal: run.ctl.signal });
+  const res = await call(`/api/insights/all/stream?eager=${INSIGHTS_EAGER}`, { signal: run.ctl.signal, ahead: background });
   if (!res.body) throw new ApiError(502, "invalid_response");
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -2103,8 +2183,9 @@ export function streamInsights(on: (line: InsightsLine) => void, signal?: AbortS
   if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("aborted", "AbortError"));
   let run = insightsRun;
   if (!run || run.over || run.as !== (viewingAs()?.key ?? "")) {
+    const background = keptInsights() !== undefined;
     const made: InsightsRun = { as: viewingAs()?.key ?? "", lines: [], listeners: new Set(), result: Promise.resolve(), ctl: new AbortController(), over: false };
-    made.result = readInsightsStream(made).finally(() => {
+    made.result = readInsightsStream(made, background).finally(() => {
       made.over = true;
       if (insightsRun === made) insightsRun = null;
     });
@@ -2179,11 +2260,13 @@ export async function getInsight(id: string, signal?: AbortSignal, again = false
   // in the background, and is asked for again until it is stored (no deadline: it is not cut).
   // A Refresh gets the stored value at once (`onStored`, so it stays drawn) and is asked for
   // again until a newer one is stored. Polling waits while the page is hidden.
+  const background = quiet();
   let refreshing = again;
   let old: string | undefined;
   for (;;) {
     try {
-      const got = await getJson<InsightResult>(`/api/insights/${encodeURIComponent(id)}${refreshing ? "?again=true" : ""}`, signal);
+      const path = `/api/insights/${encodeURIComponent(id)}${refreshing ? "?again=true" : ""}`;
+      const got = await (background ? quietly(() => getJson<InsightResult>(path, signal)) : getJson<InsightResult>(path, signal));
       if (!again || (old !== undefined && got.read_at !== old)) return got;
       if (old === undefined) { old = got.read_at; onStored?.(got); }
       refreshing = false;

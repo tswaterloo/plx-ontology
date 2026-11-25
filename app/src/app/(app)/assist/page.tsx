@@ -1,14 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { JobsView } from "@/components/autopilot/jobs";
-import { AssistWorkflowsView, MinedRoutinesSection } from "@/components/autopilot/assist-workflows";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect } from "react";
+import { AssistWorkflowsView } from "@/components/autopilot/assist-workflows";
 import { AuditView } from "@/components/autopilot/audit";
 import { AutopilotView } from "@/components/autopilot/area";
-import { PreparedView } from "@/components/autopilot/prepared";
-import { RecurringView } from "@/components/autopilot/recurring";
+import { AssistWorkbench } from "@/components/autopilot/workbench";
 import { StoredAge } from "@/components/ui/stored-age";
 import { FeedNote } from "@/components/feed-note";
 import { SectionTabs } from "@/components/shell";
@@ -16,7 +14,7 @@ import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { PageIntro } from "@/components/ui/page-intro";
 import { Pending } from "@/components/ui/skeleton";
 import { Toolbar } from "@/components/ui/toolbar";
-import { getAutopilot, getAutopilotDrafts, getRecurring, getTeamsConnection, type DraftList } from "@/lib/api";
+import { getAutopilot, getRecurring, getTeamsConnection } from "@/lib/api";
 import { NO_FILTERS } from "@/lib/autopilot";
 import { noticeKind, plainError } from "@/lib/errors";
 import { useStaleRefresh } from "@/lib/stale-refresh";
@@ -26,8 +24,8 @@ import { useRead } from "@/lib/use-read";
 // Assist: where a person sees and controls what the Workbench prepares for them. Prepared work
 // (each item with its plan) and the drafts waiting for their OK, their workflows, their routines,
 // what Assist did for them, and the switches. A send is still confirmed by the named sender in the app.
-type Show = "prepared" | "workflows" | "routines" | "log" | "switches";
-const SHOWS: Show[] = ["prepared", "workflows", "routines", "log", "switches"];
+type Show = "prepared" | "workflows" | "log" | "switches";
+const SHOWS: Show[] = ["prepared", "workflows", "log", "switches"];
 
 export default function AssistPage() {
   return (
@@ -39,56 +37,29 @@ export default function AssistPage() {
 
 function Assist() {
   const params = useSearchParams();
-  const asked = params.get("show") as Show | null;
-  const show: Show = asked && SHOWS.includes(asked) ? asked : "prepared";
+  const raw = params.get("show");
+  const normalized = raw === "routines" ? "workflows" : raw;
+  const show: Show = normalized && SHOWS.includes(normalized as Show) ? (normalized as Show) : "prepared";
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg" data-own-scroll={show === "prepared" ? "" : undefined}>
       <Toolbar heading title="Assist" />
       <SectionTabs section="assist" />
       <PageIntro path="/assist" />
-      <div className="w-full px-6 py-5" data-testid={`assist-${show}`}>
+      <div
+        className={
+          show === "prepared"
+            ? "flex min-h-0 w-full flex-1 flex-col overflow-hidden"
+            : "flex min-h-0 w-full flex-1 flex-col px-4 py-4 lg:px-6 lg:py-5"
+        }
+        data-testid={`assist-${show}`}
+      >
         {show === "prepared" ? (
-          <>
-            <JobsView />
-            <PreparedTab linked={params.get("item")} />
-          </>
+          <AssistWorkbench linked={params.get("item")} />
         ) : show === "workflows" ? (
           <AssistWorkflowsView />
-        ) : show === "routines" ? (
-          <>
-            <MinedRoutinesSection />
-            <RecurringView />
-          </>
         ) : show === "log" ? <LogTab /> : <SwitchesTab />}
       </div>
     </div>
-  );
-}
-
-/** What is prepared for this person and what waits on their OK: the one list Home reads too. */
-function PreparedTab({ linked }: { linked: string | null }) {
-  const [all, setAll] = useState(false);
-  const { data, error, retry } = useRead<DraftList>(all ? "assist-drafts-all" : "assist-drafts", (signal) => getAutopilotDrafts(signal, all));
-  useStaleRefresh(data?.stale_since, retry);
-  const router = useRouter();
-  const [gone, setGone] = useState<Set<string>>(new Set());
-  const onGone = useCallback((id: string) => setGone((s) => new Set(s).add(id)), []);
-  if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
-  if (!data) return <Pending page label="Reading what is prepared for you" />;
-  const items = data.items.filter((i) => !gone.has(i.item_id));
-  return (
-    <>
-      <FeedNote feed="autopilot" className="mb-2 text-[13px] text-risk" />
-      <StaleNote since={data.stale_since} className="mb-2" />
-      {data.status === "off" && <p className="mb-3 text-[13px] text-muted" data-testid="assist-off">{data.reason ?? "Assist is not switched on for you. Turn it on under Switches."}</p>}
-      <PreparedView items={items} linked={linked} onGone={onGone} onChanged={retry} empty="Nothing is prepared for you right now." />
-      {(data.older ?? 0) > 0 && !all && (
-        <button type="button" onClick={() => setAll(true)} className="mt-3 cursor-pointer text-[13px] text-muted underline underline-offset-2 hover:text-fg" data-testid="assist-older">
-          Show the {data.older} older {data.older === 1 ? "item" : "items"}
-        </button>
-      )}
-      <p className="mt-6 text-[12px] text-muted">Nothing goes out without the sender&apos;s confirmation here. <button type="button" className="underline underline-offset-2 cursor-pointer" onClick={() => router.push("/assist?show=switches")}>Change what is prepared</button>.</p>
-    </>
   );
 }
 

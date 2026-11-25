@@ -169,7 +169,7 @@ export function EntryHold({ entry, renderWrite }: { entry: Hold; renderWrite: (w
               <tr key={f.key} data-status={f.status} className="align-top">
                 <td className="pr-4">{f.label}</td>
                 <td className={f.status === "check" ? "pr-4 text-muted" : "pr-4 font-medium"}>
-                  {f.value ?? "—"}
+                  {f.value ?? "–"}
                   {f.value && f.currency ? ` ${f.currency}` : ""}
                 </td>
                 <td className="text-[12px]">

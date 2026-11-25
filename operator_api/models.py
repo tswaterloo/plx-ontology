@@ -684,6 +684,21 @@ class StatementRead(_Model):
     work: Optional[QueryWork] = None
 
 
+class CitedProfile(_Model):
+    """Structured result profile and coverage metadata for one cited source (GG2):
+    rows read, time range covered, views/sources consulted, and any partial or
+    uncaptured coverage note in plain English."""
+    rows_read: int = Field(ge=0, description="Total rows or matches read by this source.")
+    rows_shown: int = Field(ge=0, description="Rows or matches shown in the preview table.")
+    exact: bool = Field(True, description="Whether rows_read covers the full result.")
+    time_range: Optional[str] = Field(None, json_schema_extra=_optional,
+                                      description="Earliest to latest date covered by the result or search window.")
+    views: list[str] = Field(default_factory=list, json_schema_extra=_optional,
+                             description="Views or source systems consulted.")
+    coverage_note: Optional[str] = Field(None, json_schema_extra=_optional,
+                                         description="Plain-English note when coverage is partial, truncated, or uncaptured.")
+
+
 class CitedTable(_Model):
     """One result the simple Ask read (a query's rows, or the mail, Teams and document hits
     of a search), as the reader's own session got it: what the answer's Sources line opens."""
@@ -701,6 +716,8 @@ class CitedTable(_Model):
                                               "answer, when they come from one.")
     work: Optional[QueryWork] = Field(None, json_schema_extra=_optional,
                                       description="The views the query reads and the filters it applies.")
+    profile: Optional[CitedProfile] = Field(None, json_schema_extra=_optional,
+                                            description="Structured result profile and coverage metadata for the Sources panel.")
 
 
 
@@ -988,10 +1005,16 @@ class VerdictEvent(_Model):
     text: str = Field(max_length=400)
 
 
+class ChartsEvent(_Model):
+    """Validated charts drawn from the answer's read results, sent as soon as ready
+    (before the covering-read check finishes)."""
+    charts: list["AskChart"] = Field(default_factory=list)
+
+
 ASK_EVENTS: dict[str, type[_Model]] = {
     "understanding": UnderstandingEvent, "status": StatusEvent, "sources": SourcesEvent,
-    "verdict": VerdictEvent, "token": TokenEvent, "answer": AnswerPayload,
-    "error": ErrorBody}
+    "verdict": VerdictEvent, "charts": ChartsEvent, "token": TokenEvent,
+    "answer": AnswerPayload, "error": ErrorBody}
 
 
 # ---- events ------------------------------------------------------------------------------
@@ -1176,6 +1199,12 @@ class Home(_Model):
     reading: bool = _reading()
 
 
+class HomeNeedLink(_Model):
+    """A canonical record link surfaced on a Home Needs-you item."""
+    label: str
+    href: str
+
+
 class HomeNeedItem(_Model):
     """One thing that needs this person in Home's unified Needs-you list. Every field is typed
     data from its source: due date, last activity, quiet state, and cited amount."""
@@ -1210,6 +1239,26 @@ class HomeNeedItem(_Model):
     amount: Optional[Money] = Field(None, description="A cited amount this reader may open; "
                                                       "never a suspect total.")
     days_late: Optional[int] = Field(None, ge=0)
+    event_type: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Typed alert or trigger event type when known (e.g. price_below_cost, "
+                    "customer_price_drop, lot_on_hold, qc_hold).")
+    alert_kind: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Typed alert kind from operating/alert_kinds.json when known.")
+    section: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Compact Home section this item groups into (financials or holds), if any.")
+    badge: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Short typed badge for the item inside a grouped section (e.g. QC hold, "
+                    "Batch hold, Below cost, Verify unit cost).")
+    facts: list[str] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Concrete structured facts for this item (affected orders, customers, reasons).")
+    links: list[HomeNeedLink] = Field(
+        default_factory=list, json_schema_extra=_optional,
+        description="Canonical record links (/object/<Type>/<id>) associated with this item.")
     rank: int = Field(ge=1, description="Its place in the unified list, 1 first.")
     rank_reasons: list[str] = Field(default_factory=list, description="Why it is there, in words.")
 
@@ -5458,10 +5507,30 @@ class WorkLogTurn(_Model):
     at: str
 
 
+class AskActiveRun(_Model):
+    """An in-flight Ask run still executing on the server for this conversation."""
+    run_id: str
+    conversation_id: str
+    question: str
+    started_at: str
+    status: Optional[str] = None
+    steps: list[str] = Field(default_factory=list)
+    streamed: str = ""
+    simple: bool = False
+
+
+class AskRunStop(_Model):
+    """Result of explicitly stopping an in-flight Ask run."""
+    stopped: bool
+    conversation_id: str
+
+
 class WorkLogResume(_Model):
     href: str
     turns: list[WorkLogTurn] = Field(default_factory=list, description="An Ask session's "
                                      "turns, oldest first, as you saw them.")
+    active_run: Optional[AskActiveRun] = Field(
+        None, description="In-flight Ask run for this conversation, when still running.")
 
 
 class WorkLogThread(_Model):
@@ -5491,6 +5560,7 @@ class AskChat(_Model):
     pinned: bool = False
     questions: int
     last_at: str
+    running: bool = False
 
 
 class AskChats(_Model):
@@ -5731,6 +5801,10 @@ class AskChart(_Model):
     measure: Optional[AskChartMeasure] = Field(
         None, json_schema_extra=_optional,
         description="The agreed measure or report its rows are, with its definition.")
+    aggregation: Optional[str] = Field(
+        None, json_schema_extra=_optional,
+        description="Plain-English disclosure when a high-point time-series chart was "
+                    "aggregated into coarser buckets (e.g. '240 daily points shown as 35 weekly totals').")
 
 
 class ChartFile(_Model):
@@ -5784,6 +5858,12 @@ class InsightInfo(_Model):
                                             description="A catalogue measure's tile: the "
                                             "definition its figures are, with owner, "
                                             "version and the day it was set.")
+    page_id: Optional[str] = Field(None, json_schema_extra=_optional,
+                                   description="Saved answer page id when saved as part of "
+                                   "a whole Ask answer.")
+    page_title: Optional[str] = Field(None, json_schema_extra=_optional,
+                                      description="Saved answer page title when saved as part "
+                                      "of a whole Ask answer.")
 
 
 class MeasureInfo(_Model):
@@ -5797,6 +5877,8 @@ class MeasureInfo(_Model):
     source: str = Field(description="The business view it is read from.")
     dimensions: list[str] = Field(description="What it can be broken down by.")
     period: str = Field(description="The period it reads when none is named.")
+    denominator: Optional[str] = Field(None, json_schema_extra=_optional,
+                                       description="What a ratio measure divides by.")
     ask: Optional[str] = Field(None, json_schema_extra=_optional,
                                description="A question it answers, to try in Ask.")
     version: Optional[str] = Field(None, json_schema_extra=_optional,
@@ -5899,6 +5981,50 @@ class InsightSave(_Model):
 
 class InsightDeleted(_Model):
     deleted: bool
+
+
+class InsightAnswerItem(_Model):
+    """One chart, query, or catalogue measure from an Ask answer to save into an Insights page."""
+    title: str = Field(min_length=1, max_length=160)
+    question: str = Field("", max_length=2000)
+    sql: Optional[str] = Field(None, max_length=8000,
+                               description="Read-only SQL statement over the business views.")
+    measure: Optional[str] = Field(None, max_length=64,
+                                   description="Catalogue measure id (operating/measures.json), "
+                                   "used when sql is omitted.")
+    by: Optional[Any] = Field(None, description="Optional breakdown dimension (or pair) for measure.")
+    days: Optional[int] = Field(None, ge=1, le=3650, description="Optional rolling days for measure.")
+    compare: bool = False
+    period: Optional[str] = Field(None, max_length=64)
+    against: Optional[str] = Field(None, max_length=64)
+    filter: Optional[dict[str, Any]] = None
+    parameters: Optional[dict[str, bool]] = None
+    chart: Optional[ChartSpec] = None
+    schedule: Literal["", "hourly", "daily", "weekly"] = ""
+    notify: Literal["never", "rows", "new_rows", "every_run"] = "never"
+
+
+class InsightAnswerSave(_Model):
+    """One-step request to save a whole Ask answer (title, summary, charts, and queries/measures)
+    as a cohesive Insights page owned by the authenticated reader."""
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field("", max_length=4000)
+    question: str = Field("", max_length=2000)
+    items: list[InsightAnswerItem] = Field(min_length=1, max_length=20)
+
+
+class InsightAnswerPage(_Model):
+    """A cohesive saved Insights page created from one Ask answer, strictly scoped to its owner."""
+    id: str = Field(description="Saved page id ('p<12 hex chars>').")
+    title: str
+    summary: str = ""
+    question: str = ""
+    created_at: str = ""
+    items: list[InsightInfo]
+
+
+class InsightAnswerPageList(_Model):
+    pages: list[InsightAnswerPage]
 
 
 class InsightWatchWhere(_Model):
@@ -6221,6 +6347,7 @@ AskDraft.model_rebuild()
 AutopilotDraftChoice.model_rebuild()
 AutopilotCountdown.model_rebuild()
 AnswerPayload.model_rebuild()
+ChartsEvent.model_rebuild()
 AskRequest.model_rebuild()
 TemplateFillField.model_rebuild()
 TemplateFilled.model_rebuild()

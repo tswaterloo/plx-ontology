@@ -964,15 +964,20 @@ class CaptureTests(CaptureCase):
         (state,) = self.store.completeness(CAPTURE, capture_audience())["roots"]
         self.assertEqual((state["content_exceeds_cap"], state["content_unavailable"],
                           state["complete"]), (1, 1, False))
-        # A later run retries the unreadable bytes of the same version.
+        # A later run retries the unreadable bytes of the same version (with the same cap,
+        # only 01FILEA recovers; uncapped, the over-cap file recovers too).
         del self.drive.fail_download["01FILEA"]
-        run = self.capture().run(scope())
+        run = self.capture(max_content_bytes=20).run(scope())
         self.assertEqual(self.root(run)["counts"]["contents_recovered"], 1)
         self.assertTrue(self.root(run)["complete"])
         self.assertEqual(self.store.current(DRIVE, "01FILEA")["content_status"], "captured")
         events = [r[0] for r in self.store.db.execute(
             "SELECT event FROM item_events WHERE l1_handle=?", (self.handle("01FILEA"),))]
         self.assertIn("content_recovered", events)
+        # Uncapped run recovers the previously over-cap file in place (ASK-GENIE §20 #7).
+        uncapped = self.capture().run(scope())
+        self.assertEqual(self.root(uncapped)["counts"]["contents_recovered"], 1)
+        self.assertEqual(self.store.current(DRIVE, "01FILEB")["content_status"], "captured")
 
     def test_a_failed_read_is_retried_before_the_walk_spends_the_budget(self):
         # Live 2026-11-09: no failed read (http_429, content_mismatch) was ever recovered
@@ -1256,12 +1261,15 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                 CaptureScope(bad)
         with self.assertRaises(CaptureError):
             CaptureScope.from_json({"schema": "other", "targets": []})
-        # A scope may declare a content cap up to the guard's one-download bound, never
-        # beyond it (gap-e10f050d25a3).
+        # Scopes default to uncapped (None, bounded by disk_guard) and accept any positive
+        # explicit byte cap (ASK-GENIE §20 #7).
         target = [{"id": "a", "drive_id": DRIVE}]
+        self.assertIsNone(CaptureScope(target).max_content_bytes)
         self.assertEqual(CaptureScope(target, max_content_bytes=100_000_000)
                          .max_content_bytes, 100_000_000)
-        for bad in (0, 100_000_001, True, "20000000"):
+        self.assertEqual(CaptureScope(target, max_content_bytes=200_000_000)
+                         .max_content_bytes, 200_000_000)
+        for bad in (0, -5, True, "20000000"):
             with self.assertRaises(CaptureError) as raised:
                 CaptureScope(target, max_content_bytes=bad)
             self.assertEqual(raised.exception.code, "scope_max_content_bytes_invalid")
@@ -1274,7 +1282,7 @@ class ScopeStoreAndCliTests(unittest.TestCase):
                 CaptureScope.from_json({"schema": capture_sharepoint_scope.SCOPE_SCHEMA, "targets": target,
                                         "permission_reread_hours": bad})
         with self.assertRaises(CaptureError):
-            SharePointCapture(None, None, CAPTURE, max_content_bytes=100_000_001)
+            SharePointCapture(None, None, CAPTURE, max_content_bytes=0)
 
     def test_store_is_outside_git_and_registered_as_a_source_kind(self):
         with self.assertRaises(CaptureError) as raised:

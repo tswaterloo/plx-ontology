@@ -512,6 +512,65 @@ CONTENT_INCOMPLETE = "content_incomplete"
 INCOMPLETE_SOURCE = frozenset({CONTENT_INCOMPLETE})
 CAPTURED = "captured"
 EXCEEDS_CAP = "exceeds_cap"
+# Typed status for non-text binary files (video, installers, design/database/archive binaries):
+# stored without downloading bytes; never an over-cap cut (ASK-GENIE §20 #7).
+NOT_TEXT = "not_text"
+# File extensions that carry no extractable text (derived from text_formats.BINARY_SUFFIXES
+# plus non-text video, disk-image, installer and raw-photo formats; never PDF, Office, zip,
+# text or OCR-readable scan images).
+NOT_TEXT_SUFFIXES = frozenset(
+    (".mkv", ".wmv", ".webm", ".m4v", ".flv", ".dmg", ".pkg", ".apk", ".ipa", ".img",
+     ".vhd", ".vmdk", ".tar", ".bz2", ".xz", ".raw", ".cr2", ".nef", ".dng", ".eps",
+     ".indd"))
+
+
+class _DiskRefused(RuntimeError):
+    pass
+
+
+class _DiskHeadroom:
+    """Layer-safe disk floor guard for streaming SharePoint downloads (no upward import into
+    ``operating``). Checks free space every ``BLOCK`` bytes against the configured floor."""
+
+    BLOCK = 64 * 1024 * 1024
+    GB = 1024 ** 3
+
+    def __init__(self, path: str | Path, floor_gb: float | None = None) -> None:
+        p = Path(path)
+        while not p.exists() and p != p.parent:
+            p = p.parent
+        self.path = str(p)
+        if floor_gb is None:
+            raw = os.environ.get("PLX_DISK_FLOOR_GB_DATA", "").strip()
+            try:
+                floor_gb = float(raw) if raw else (40.0 if self.path.startswith("/data/") or self.path == "/data" else 1.0)
+            except ValueError:
+                floor_gb = 40.0
+        self.floor_bytes = int(max(0.0, floor_gb) * self.GB)
+        self._until = 0
+
+    def room(self, written: int) -> None:
+        if written < self._until:
+            return
+        import shutil
+        free = shutil.disk_usage(self.path).free
+        if free - self.floor_bytes < self.BLOCK:
+            raise _DiskRefused(f"disk below floor on {self.path}")
+        self._until = written + self.BLOCK // 2
+
+    def release(self) -> None:
+        pass
+
+
+def is_non_text_file(record: Mapping[str, Any]) -> bool:
+    """Whether ``record`` is a known non-text binary kind (video, executable, PSD/AI/PBIX,
+    installer, disk image, font, database) that holds no searchable text by nature."""
+    from .text_formats import BINARY_SUFFIXES, _suffix
+    name = record.get("name") or record.get("path") or ""
+    if not isinstance(name, str) or not name:
+        return False
+    suf = _suffix(name)
+    return bool(suf) and (suf in BINARY_SUFFIXES or suf in NOT_TEXT_SUFFIXES)
 # A file a metadata-only capture (``SharePointCapture(read_content=False)``) recorded
 # without reading its bytes: terminal for that capture, a gap a content capture fills.
 CONTENT_SKIPPED = "skipped_metadata_only"
@@ -755,6 +814,37 @@ class SharePointCaptureStore:
                 # Bytes held again (a dropped original captured anew): settled again later.
                 self.db.execute("UPDATE blobs SET dropped_at=NULL, stored_bytes=NULL WHERE "
                                 "sha256=?", (digest,))
+        return digest
+
+    def put_blob_file(self, src_path: str | Path, digest: str, size: int, *, kind: str) -> str:
+        """Move an already-streamed, already-hashed file at ``src_path`` into content-addressed
+        blob storage without reading its bytes into memory."""
+        src = Path(src_path)
+        known = self.db.execute("SELECT 1 FROM blobs WHERE sha256=?", (digest,)).fetchone()
+        folder = self.blobs / digest[:2]
+        target = folder / digest
+        if kind == "text" and known is not None and \
+                blob_path(self.blobs, digest, COMPRESSED_SUFFIX).exists():
+            src.unlink(missing_ok=True)
+            return digest
+        if known is None or not target.exists():
+            try:
+                if known is None and self.max_store_bytes is not None and \
+                        self.store_bytes() + size > self.max_store_bytes:
+                    raise CaptureError("store_full")
+                folder.mkdir(exist_ok=True, mode=0o700)
+                os.chmod(src, 0o600)
+                os.replace(src, target)
+            except BaseException:
+                src.unlink(missing_ok=True)
+                raise
+            with self.db:
+                self.db.execute("INSERT OR IGNORE INTO blobs (sha256, kind, bytes, stored_at) "
+                                "VALUES (?,?,?,?)", (digest, kind, size, self.now()))
+                self.db.execute("UPDATE blobs SET dropped_at=NULL, stored_bytes=NULL WHERE "
+                                "sha256=?", (digest,))
+        else:
+            src.unlink(missing_ok=True)
         return digest
 
     def blob(self, digest: Any) -> bytes:
@@ -1271,16 +1361,24 @@ class SharePointCaptureStore:
                             (row["l1_handle"], "columns_reread", now))
 
     def degraded(self, drive_id: str, root_path: str, limit: int, *,
-                 after: int = 0) -> list[dict[str, Any]]:
-        """Current versions under a root whose bytes failed to read or a metadata-only
-        capture skipped (read by a later content capture), in version order; ``after``:
-        only those past that version id (a keyset page)."""
-        rows = self.db.execute(
-            "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
-            "AND (content_status LIKE ? OR content_status=?) AND version_id > ? "
-            "ORDER BY version_id LIMIT ?",
-            (drive_id, root_path, _UNAVAILABLE + "%", CONTENT_SKIPPED, after,
-             limit)).fetchall()
+                 after: int = 0, include_exceeds_cap: bool = False) -> list[dict[str, Any]]:
+        """Current versions under a root whose bytes failed to read, a metadata-only
+        capture skipped, or (when ``include_exceeds_cap`` is true, i.e. uncapped mode)
+        previously hit ``exceeds_cap``, in version order; ``after``: keyset page."""
+        if include_exceeds_cap:
+            rows = self.db.execute(
+                "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
+                "AND (content_status LIKE ? OR content_status IN (?,?)) AND version_id > ? "
+                "ORDER BY version_id LIMIT ?",
+                (drive_id, root_path, _UNAVAILABLE + "%", CONTENT_SKIPPED, EXCEEDS_CAP,
+                 after, limit)).fetchall()
+        else:
+            rows = self.db.execute(
+                "SELECT * FROM items WHERE drive_id=? AND root_path=? AND superseded_at IS NULL "
+                "AND (content_status LIKE ? OR content_status=?) AND version_id > ? "
+                "ORDER BY version_id LIMIT ?",
+                (drive_id, root_path, _UNAVAILABLE + "%", CONTENT_SKIPPED, after,
+                 limit)).fetchall()
         return [dict(r) for r in rows]
 
     def content_skipped(self, drive_id: str, root_path: str) -> int:
@@ -1293,12 +1391,11 @@ class SharePointCaptureStore:
     def content_incomplete(self, drive_id: str, root_path: str, *,
                            read_content: bool = True) -> int:
         """Current versions under a root without a terminal content outcome: neither
-        captured nor recorded over the content cap (their bytes failed to read, or, for a
-        capture that reads content, a metadata-only capture skipped them)."""
+        captured, typed non-text, nor recorded over an explicit content cap."""
         return self.db.execute(
             "SELECT COUNT(*) FROM items WHERE drive_id=? AND root_path=? AND "
-            "superseded_at IS NULL AND content_status NOT IN (?,?,?)",
-            (drive_id, root_path, CAPTURED, EXCEEDS_CAP,
+            "superseded_at IS NULL AND content_status NOT IN (?,?,?,?)",
+            (drive_id, root_path, CAPTURED, NOT_TEXT, EXCEEDS_CAP,
              EXCEEDS_CAP if read_content else CONTENT_SKIPPED)).fetchone()[0]
 
     def reconcile_root(self, drive_id: str, root_path: str, started_at: str, *,
@@ -2129,6 +2226,7 @@ class SharePointCaptureStore:
                     "superseded_at IS NULL", (root["drive_id"], root["root_path"])).fetchall()
                 visible = [r for r in current if self._row_visible(r, actor, audience)]
                 exceeds = sum(1 for r in visible if r["content_status"] == EXCEEDS_CAP)
+                not_text = sum(1 for r in visible if r["content_status"] == NOT_TEXT)
                 unavailable = sum(1 for r in visible
                                   if r["content_status"].startswith(_UNAVAILABLE))
                 skipped = sum(1 for r in visible if r["content_status"] == CONTENT_SKIPPED)
@@ -2141,6 +2239,7 @@ class SharePointCaptureStore:
                     "rounds_complete": root["rounds_complete"],
                     **self.full_walk_age(root["drive_id"], root["root_path"]),
                     "current_files": len(visible), "content_exceeds_cap": exceeds,
+                    "content_not_text": not_text,
                     "content_unavailable": unavailable, "content_skipped": skipped,
                     "withheld_for_reader": withheld,
                     # Listed to the end, unread bytes only from a metadata-only capture.
@@ -2229,7 +2328,8 @@ DISCOVERY_COUNTS = ("sites_seen", "sites_other_host", "sites_personal", "sites_l
 FOLDER_COUNTS = ("folders_listed", "files_seen", "versions_new", "versions_superseded",
                  "unchanged", "moved", "reappeared", "absent_after_resync",
                  "moved_out_of_scope", "contents_captured", "content_bytes",
-                 "contents_exceeds_cap", "contents_unavailable", "contents_recovered",
+                 "contents_exceeds_cap", "contents_not_text", "contents_unavailable",
+                 "contents_recovered",
                  "texts_extracted", "texts_ocr", "texts_ocr_unavailable", "texts_reextracted",
                  "withheld", "provenance_dropped", "acl_reads", "feed_changes",
                  "permissions_reread", "list_items_read", "list_items_unavailable",
@@ -2356,7 +2456,7 @@ class SharePointCapture:
 
     def __init__(self, store: SharePointCaptureStore, readers: Callable[[str], Any],
                  actor: Actor, *, site_drive: Callable[[str], str] | None = None,
-                 estate: Any = None, max_content_bytes: int = MAX_CONTENT_BYTES,
+                 estate: Any = None, max_content_bytes: int | None = MAX_CONTENT_BYTES,
                  budget_seconds: float | None = None,
                  monotonic: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep,
@@ -2371,8 +2471,9 @@ class SharePointCapture:
         self._extractors: Any = None
         self._extractors_lock = threading.Lock()
         self.read_content = read_content
-        if isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int) \
-                or not 1 <= max_content_bytes <= MAX_DECLARED_CONTENT_BYTES:
+        if max_content_bytes is not None and (
+                isinstance(max_content_bytes, bool) or not isinstance(max_content_bytes, int)
+                or max_content_bytes < 1):
             raise CaptureError("max_content_bytes_invalid")
         if budget_seconds is not None and (isinstance(budget_seconds, bool) or not isinstance(
                 budget_seconds, (int, float)) or not budget_seconds >= 0):
@@ -2467,8 +2568,12 @@ class SharePointCapture:
             return call()
         except SourceUnavailable as exc:
             self._note_hold(exc)
+            status = getattr(exc, "http_status", None)
             wait = getattr(exc, "retry_after_seconds", None)
-            if (self.throttle_hold or getattr(exc, "http_status", None) not in (429, 503)
+            if status in (429, 503) and (isinstance(wait, bool)
+                                         or not isinstance(wait, (int, float))):
+                wait = DISCOVERY_DEFAULT_WAIT_SECONDS
+            if (self.throttle_hold or status not in (429, 503)
                     or isinstance(wait, bool) or not isinstance(wait, (int, float))
                     or not 0 <= wait <= self._wait_left()):
                 raise
@@ -2570,12 +2675,12 @@ class SharePointCapture:
                                                 defer_ocr=not self._ocr_now()), counts)
         return columns, source
 
-    def _read_text(self, content: bytes, record: Mapping[str, Any], *, defer_ocr: bool
+    def _read_text(self, content: bytes | Path, record: Mapping[str, Any], *, defer_ocr: bool
                    ) -> tuple[str, str | None]:
-        """(text status, text) of a file's bytes: ``capture_text`` here, or with
-        ``extraction_processes`` in an extraction process bounded by
-        ``EXTRACT_SECONDS`` (``OCR_EXTRACT_SECONDS`` when OCR runs now); one past it, or
-        whose process died, is ``extraction_timed_out`` / ``extraction_crashed``."""
+        """(text status, text) of a file's bytes or stored path: ``capture_text`` /
+        ``capture_text_file`` here, or with ``extraction_processes`` in an extraction process."""
+        if isinstance(content, Path):
+            content = content.read_bytes()
         if not self.extraction_processes:
             return capture_text(content, record, defer_ocr=defer_ocr, image_ocr=True)
         from .capture_mail import EXTRACT_SECONDS, OCR_EXTRACT_SECONDS
@@ -2608,39 +2713,84 @@ class SharePointCapture:
         _count_text(status, counts)
 
     def _bytes(self, reader: Any, record: Mapping[str, Any], counts: dict[str, int],
-               listed: bool = False) -> tuple[dict[str, Any], Mapping[str, Any], bytes | None]:
-        """(content columns but the text's, the record the bytes belong to, the bytes
-        captured or None). ``listed``: ``record`` is the child the reader's listing hands
-        over right now, whose metadata and permissions that listing just read: they are
-        not read again (``get_content(from_listing=True)``)."""
+               listed: bool = False) -> tuple[dict[str, Any], Mapping[str, Any], bytes | Path | None]:
+        """(content columns but the text's, the record the bytes belong to, the bytes or
+        streamed file path captured or None). When ``max_content_bytes`` is None (default),
+        non-text binary kinds get typed status ``not_text`` without downloading, and all
+        text-bearing files stream to disk under ``operating.disk_guard.Headroom`` with no
+        size cap."""
         if not self.read_content:
             counts["contents_skipped"] += 1
             return {"content_status": CONTENT_SKIPPED, "text_status": "not_read"}, record, None
         size = record.get("size")
-        if isinstance(size, int) and size > self.max_content_bytes:
+        if self.max_content_bytes is not None and isinstance(size, int) \
+                and size > self.max_content_bytes:
             counts["contents_exceeds_cap"] += 1
             return {"content_status": EXCEEDS_CAP, "text_status": "not_read"}, record, None
+        if self.max_content_bytes is None and is_non_text_file(record):
+            counts["contents_not_text"] += 1
+            return {"content_status": NOT_TEXT, "text_status": TEXT_BINARY}, record, None
+        import inspect
+        sig = inspect.signature(reader.get_content)
+        stream_to_disk = "dest_path" in sig.parameters
+        tmp_path: Path | None = None
+        headroom: _DiskHeadroom | None = None
+        if stream_to_disk:
+            self.store.blobs.mkdir(parents=True, exist_ok=True, mode=0o700)
+            tmp_path = self.store.blobs / f".stream.{os.getpid()}.{threading.get_ident()}.tmp"
+            headroom = _DiskHeadroom(self.store.blobs)
         try:
-            # A transient download failure is retried once while the budget lasts; a
-            # throttled read once after the source's own wait, if the budget holds it.
-            read = self._throttled(lambda: reader.get_content(
-                self.actor, record["id"], max_bytes=self.max_content_bytes,
-                may_retry=lambda: not self._run_spent(), from_listing=listed))
+            if stream_to_disk:
+                read = self._throttled(lambda: reader.get_content(
+                    self.actor, record["id"], max_bytes=self.max_content_bytes,
+                    may_retry=lambda: not self._run_spent(), from_listing=listed,
+                    dest_path=tmp_path, headroom=headroom))
+            else:
+                read = self._throttled(lambda: reader.get_content(
+                    self.actor, record["id"], max_bytes=self.max_content_bytes,
+                    may_retry=lambda: not self._run_spent(), from_listing=listed))
         except NotVisible:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             counts["contents_unavailable"] += 1
             return {"content_status": _UNAVAILABLE + "not_visible",
                     "text_status": "not_read"}, record, None
         except SourceUnavailable as exc:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             self._note_hold(exc)
             counts["contents_unavailable"] += 1
             self.failed_reads.add(str(record.get("id")))
             return {"content_status": _UNAVAILABLE + (unavailable_detail(exc) or "unclassified"),
                     "text_status": "not_read"}, record, None
-        if read.get("content_status") != "read" or not isinstance(read.get("content"), bytes):
+        except BaseException:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+            raise
+        finally:
+            if headroom is not None:
+                headroom.release()
+        if read.get("content_status") != "read":
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             counts["contents_exceeds_cap"] += 1
             return ({"content_status": EXCEEDS_CAP, "text_status": "not_read"},
                     read["record"], None)
-        content = read["content"]
+        if stream_to_disk and read.get("content_path") is not None:
+            digest = str(read["content_sha256"])
+            written = int(read.get("content_bytes") or 0)
+            self._downloaded()
+            self.store.put_blob_file(read["content_path"], digest, written, kind="content")
+            counts["contents_captured"] += 1
+            counts["content_bytes"] += written
+            stored = blob_path(self.store.blobs, digest)
+            return ({"content_status": CAPTURED, "content_sha256": digest}, read["record"],
+                    stored if stored.exists() else None)
+        content = read.get("content")
+        if not isinstance(content, bytes):
+            counts["contents_exceeds_cap"] += 1
+            return ({"content_status": EXCEEDS_CAP, "text_status": "not_read"},
+                    read["record"], None)
         self._downloaded()
         digest = self.store.put_blob(content, kind="content")
         counts["contents_captured"] += 1
@@ -2684,8 +2834,9 @@ class SharePointCapture:
             counts["versions_new"] += 1
             if content is not None and columns.get("content_sha256"):
                 # Compact storage: an original over 256 KiB goes once its text is kept.
-                outcome = self.store.settle_original(columns["content_sha256"],
-                                                     content=content)
+                outcome = self.store.settle_original(
+                    columns["content_sha256"],
+                    content=content if isinstance(content, bytes) else None)
                 counts["originals_dropped"] += outcome == "dropped"
 
         if content is None:
@@ -3000,7 +3151,9 @@ class SharePointCapture:
         # A slice's opening repair (``share``) never re-reads what this run's earlier slice
         # just failed on, so the walk advances; the end-of-walk repair retries it once.
         failed = self.failed_reads if share is not None else frozenset()
-        rows = self.store.degraded(drive_id, root, left + len(self.first_tried) + len(failed))
+        rows = self.store.degraded(
+            drive_id, root, left + len(self.first_tried) + len(failed),
+            include_exceeds_cap=self.max_content_bytes is None)
         rows = [r for r in rows if r["l1_handle"] not in self.first_tried
                 and r["item_id"] not in failed]
         for row in rows[:left]:
@@ -3028,7 +3181,7 @@ class SharePointCapture:
         self.store.fill_content(row["l1_handle"], columns)
         counts["contents_recovered"] += 1
         for key in ("contents_captured", "content_bytes", "texts_extracted", "texts_ocr",
-                    "texts_ocr_unavailable", "contents_exceeds_cap"):
+                    "texts_ocr_unavailable", "contents_exceeds_cap", "contents_not_text"):
             counts[key] += scratch[key]
 
     def _named_pass(self, plans: Sequence[tuple]) -> dict[str, Any] | None:

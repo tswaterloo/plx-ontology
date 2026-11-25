@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { UpcomingMeeting } from "@/lib/types";
-import { hourSpan, layoutDay, weekBounds } from "./calendar";
+import { cleanMeetingAgenda, hourSpan, layoutDay, weekBounds } from "./calendar";
 import { Week } from "./upcoming";
 
 // local-time fixtures: Wednesday 2026-11-11 is "now"
@@ -55,5 +55,23 @@ describe("week view (WEB-020): every event stays discoverable", () => {
     fireEvent.click(later);
     expect(screen.getByTestId("week-block")).toHaveTextContent("Far");
     expect(later).toBeDisabled();
+    // "This week" returns straight to offset 0
+    fireEvent.click(screen.getByRole("button", { name: "This week" }));
+    expect(screen.queryByRole("button", { name: "This week" })).toBeNull();
+  });
+
+  it("strips Teams/Zoom invite link soup while preserving real agenda text", () => {
+    const raw = [
+      "Review Q4 bottle lead times with Croda.",
+      "________________________________________________________________________________",
+      "Microsoft Teams Need help?",
+      "Join the meeting now <https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc>",
+      "Meeting ID: 281 945 123 456",
+      "Passcode: xYz123",
+      "Dial in by phone +1 416-555-0199",
+    ].join("\n");
+    expect(cleanMeetingAgenda(raw)).toEqual(["Review Q4 bottle lead times with Croda."]);
+    const onlySoup = "Microsoft Teams meeting\nJoin on your computer\nhttps://teams.microsoft.com/l/meetup-join/abc\nMeeting ID: 123 456";
+    expect(cleanMeetingAgenda(onlySoup)).toEqual([]);
   });
 });

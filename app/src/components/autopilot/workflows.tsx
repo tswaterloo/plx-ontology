@@ -14,7 +14,7 @@ import { noticeKind, plainError } from "@/lib/errors";
 import { ago, formatDateTime, plural } from "@/lib/format";
 import type { AutopilotArea as Area, AutopilotWorkflowDetail, AutopilotWorkflowRow } from "@/lib/types";
 
-const pctText = (p: number | null | undefined) => (p == null ? "—" : `${p.toFixed(1)}%`);
+const pctText = (p: number | null | undefined) => (p == null ? "–" : `${p.toFixed(1)}%`);
 
 /** The mode switch: five modes in one segmented control; a mode the row may not take is
  * drawn but disabled with why. Watch asks once more before it is set. */
@@ -263,16 +263,16 @@ function WorkflowSheet({ workflow, area, builder, onClose, onChanged }: { workfl
               </div>
               <div>
                 <dt className="text-[11px] text-muted">Caught</dt>
-                <dd className="num text-[17px]">{d.caught ?? "—"}</dd>
+                <dd className="num text-[17px]">{d.caught ?? "–"}</dd>
               </div>
               <div>
                 <dt className="text-[11px] text-muted">Missed</dt>
-                <dd className={cn("num text-[17px]", (d.missed ?? 0) > 0 && "text-risk")}>{d.missed ?? "—"}</dd>
+                <dd className={cn("num text-[17px]", (d.missed ?? 0) > 0 && "text-risk")}>{d.missed ?? "–"}</dd>
                 {d.false_alarms == null && <dd className="text-[11px] text-faint">false alarms not counted</dd>}
               </div>
               <div>
                 <dt className="text-[11px] text-muted">Hours saved</dt>
-                <dd className="num text-[17px]">{d.hours_saved ?? "—"}</dd>
+                <dd className="num text-[17px]">{d.hours_saved ?? "–"}</dd>
                 {d.hours_basis && <dd className="text-[11px] leading-4 text-faint">{d.hours_basis}</dd>}
               </div>
             </dl>

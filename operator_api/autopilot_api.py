@@ -106,6 +106,47 @@ class AutopilotMixin:
         finally:
             queue.close()
 
+    def _ap_visible_one(self, reader: Reader, item_id: str, everyone: bool = False,
+                        states: tuple[str, ...] = ("open",), also: tuple[str, ...] = (),
+                        pools: tuple[str, ...] = ()) -> Optional[dict[str, Any]]:
+        """Single-item equivalent of ``_ap_visible``: reads only ``item_id`` and decides only
+        its own handles under the exact same audience, marking and grant checks."""
+        path = self._ap_queue_path()
+        if path is None or not path.exists():
+            return None
+        queue = ap.Queue(path)
+        grants = self._ap_grants
+        if everyone:
+            from operating.proactive_commitments import owner_ids
+            mine = owner_ids(_principals(reader))
+            owners = {r[0] for r in queue.conn.execute(
+                "SELECT DISTINCT owner FROM items WHERE item_id = ?", (str(item_id),))}
+
+            def grants() -> dict[str, Any]:
+                return {"teams": {o: "\x00all" for o in owners},
+                        "managers": {o: ["\x00all"] for o in mine}}
+        try:
+            if self.autopilot_grant is not None:
+                may_read, held, decide = self.autopilot_grant
+                return autopilot_reading.visible_one(
+                    queue, item_id, reader=_principals(reader), may_read=may_read,
+                    held=held, decide=decide, grants=grants(),
+                    states=states, also=also, pools=pools)
+
+            def job(view: Any) -> Any:
+                access = getattr(view, "access", None)
+                if access is None or not hasattr(access, "grant"):
+                    return None
+                with view._request():
+                    may_read, held = access.grant()
+                    return autopilot_reading.visible_one(
+                        queue, item_id, reader=_principals(reader), may_read=may_read,
+                        held=held, decide=access.decide, grants=grants(),
+                        states=states, also=also, pools=pools)
+            return self.reads.run(reader, job, timeout=60)  # type: ignore[attr-defined]
+        finally:
+            queue.close()
+
     def my_work(self, reader: Reader) -> m.MyWork:
         from operating import autopilot_work as aw
         now = datetime.now(timezone.utc)

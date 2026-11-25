@@ -188,13 +188,14 @@ _REPLY_RE = r"^\s*((\[[^\]]{1,30}\]|[A-Za-z]{2,4}(\[[0-9]+\])?\s*:\s*)*)?(RE|AW|
 # (operating/tests/test_po_pilot.py holds the two together).
 COST_WRONG_TIMES = 5
 COST_LOOKS_WRONG_SQL = f"(l.revenue > 0 AND l.margin < -{COST_WRONG_TIMES - 1} * l.revenue)"
+COST_VERIFY_SHARE = "0.50"
 MARGIN_BASES = ("same_currency", "cost_converted_at_invoice_rate")   # a decided line margin
 
 
 # --------------------------------------------------------------------------- the rules
 # The single-record parts every rule shares: one row's own class, and AI use.
-ONE = ("r.access_class, ARRAY[r.access_class]::smallint[], r.ai_ok, "
-       "ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[]")
+ONE = ("r.access_class, ARRAY[r.access_class]::integer[], r.ai_ok, "
+       "ARRAY[r.col_class]::integer[], ARRAY[r.handle]::text[]")
 
 LATE_PO = Rule(
     "po_late", "late_po",
@@ -361,9 +362,9 @@ ETA_SLIPPED = Rule(
     "'has its', CASE WHEN max(s.property) = 'expected_date' THEN 'requested-by date' "
     "ELSE 'expected receipt date' END, 'moved later by', max(s.now - s.was)::text, 'days, from', "
     "to_char(min(s.was), 'Mon DD, YYYY'), 'to', to_char(max(s.now), 'Mon DD, YYYY') || '.'), "
-    "NULL::timestamptz, r.access_class, ARRAY[r.access_class]::smallint[], r.ai_ok, "
-    "ARRAY[r.col_class]::smallint[] || coalesce(array_agg(DISTINCT s.lcc::smallint) "
-    "FILTER (WHERE s.lcc IS NOT NULL), '{{}}'::smallint[]), ARRAY[r.handle]::text[] "
+    "NULL::timestamptz, r.access_class, ARRAY[r.access_class]::integer[], r.ai_ok, "
+    "ARRAY[r.col_class]::integer[] || coalesce(array_agg(DISTINCT s.lcc::integer) "
+    "FILTER (WHERE s.lcc IS NOT NULL), '{{}}'::integer[]), ARRAY[r.handle]::text[] "
     "FROM s JOIN {s}.purchase_orders r ON r.handle = s.po "
     "WHERE r.status = 'open' AND (r.order_date IS NULL OR (r.order_date <> s.was "
     "AND r.order_date <> s.now)) GROUP BY r.handle, s.property, r.po_number, r.supplier, "
@@ -427,8 +428,8 @@ VENDOR_NO_REPLY = Rule(
     "concat_ws(' ', 'Our last request about PO', p.po_number, 'to', coalesce(p.supplier, "
     "'its vendor'), 'was sent', to_char(b.t AT TIME ZONE '" + bv.BUSINESS_TZ + "', "
     "'Mon DD, YYYY'), 'and has had no reply for', b.waited::text, 'days.'), b.t, "
-    "p.access_class, ARRAY[p.access_class]::smallint[], p.ai_ok AND u.ai_ok, "
-    "ARRAY[p.col_class]::smallint[], ARRAY[p.handle]::text[], u.units "
+    "p.access_class, ARRAY[p.access_class]::integer[], p.ai_ok AND u.ai_ok, "
+    "ARRAY[p.col_class]::integer[], ARRAY[p.handle]::text[], u.units "
     "FROM best b JOIN {s}.purchase_orders p ON p.handle = b.po JOIN u ON u.po = b.po",
     "a message from the outside arrives in the thread, or the PO closes, or the request "
     "leaves the 90-day window",
@@ -497,7 +498,7 @@ AT_RISK = Rule(
     "CASE WHEN x.pos > 1 THEN ' and others' ELSE '' END || ') against its required date of', "
     "to_char(x.required_date, 'Mon DD, YYYY') || '.'), x.required_date::timestamptz, "
     "x.access_class, ARRAY(SELECT DISTINCT c FROM unnest(x.pcs || x.access_class) c), "
-    "x.ai_ok AND x.pai, ARRAY[x.col_class]::smallint[], ARRAY[x.handle] FROM risk x",
+    "x.ai_ok AND x.pai, ARRAY[x.col_class]::integer[], ARRAY[x.handle] FROM risk x",
     "the late PO is received or no longer late, or the order ships or its required date moves",
     "impact_chain (customer_order_at_risk, firm chains)",
     shows=("order_number", "customer", "required_date"), params={"firm": list(FIRM_TIERS)},
@@ -629,7 +630,7 @@ SLOWER_ORDER = Rule(
     "'over the last two years).'), "
     "(r.required_date + r.allowed + 1)::timestamptz, r.access_class, "
     "ARRAY(SELECT DISTINCT c FROM unnest(r.all_needs) c), r.all_ai, "
-    "ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[] FROM k r WHERE r.slack IS NOT NULL AND r.days_late > r.allowed",
+    "ARRAY[r.col_class]::integer[], ARRAY[r.handle]::text[] FROM k r WHERE r.slack IS NOT NULL AND r.days_late > r.allowed",
     "the order ships, closes or is cancelled, its required date moves, or it goes 180 days "
     "with no date or invoice",
     "late_customer_order (customer_order_late) with active_population.inactive_reason, judged against this customer's usual slack",
@@ -654,7 +655,7 @@ LATE_ORDER = Rule(
     "to_char(r.required_date, 'Mon DD, YYYY') || '.'), "
     "(r.required_date + 1)::timestamptz, r.access_class, "
     "ARRAY(SELECT DISTINCT c FROM unnest(ARRAY[r.access_class]) c WHERE c IS NOT NULL), "
-    "r.ai_ok, ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[] "
+    "r.ai_ok, ARRAY[r.col_class]::integer[], ARRAY[r.handle]::text[] "
     "FROM {s}.sales_orders r WHERE " + measure_where("late_orders").replace(
         "to_jsonb(sales_orders)", "to_jsonb(r)"),
     "the order ships, closes or is cancelled, its required date moves, or it stops being live "
@@ -706,7 +707,7 @@ OPEN_LONG = Rule(
     "'over the last two years).'), "
     "(r.order_date + r.usual + 1)::timestamptz, r.access_class, "
     "ARRAY(SELECT DISTINCT c FROM unnest(r.all_needs) c), r.all_ai, "
-    "ARRAY[r.col_class]::smallint[], ARRAY[r.handle]::text[] FROM k r WHERE r.usual IS NOT NULL AND r.age > r.usual",
+    "ARRAY[r.col_class]::integer[], ARRAY[r.handle]::text[] FROM k r WHERE r.usual IS NOT NULL AND r.age > r.usual",
     "the order ships, closes or is cancelled, gets a promised date, or goes 180 days with no "
     "date or invoice",
     "none (new; the late-order rule's live tests, decision 2026-11-18)",
@@ -801,14 +802,16 @@ PRICE_BELOW_COST = Rule(
     "WITH " + _LINES + " " + _PRICE_OUT.format(
         why="concat_ws(' ', x.customer, 'paid', round(x.f_amt / nullif(x.f_cost, 0) * 100) "
             "|| '% of cost for', x.item_name, '(' || x.cur || ' per ' || x.unit || ') over the "
-            "last {p[days]} days.')") +
+            "last {p[days]} days.' || CASE WHEN x.f_amt < x.f_cost * {p[verify]}::numeric THEN "
+            "' Check unit cost before treating as margin loss.' ELSE '' END)") +
     "FROM paid x JOIN {s}.customers c ON c.handle = x.cust "
     "WHERE x.f_cost > 0 AND x.f_amt < x.f_cost * {p[tolerance]}::numeric",
     "the customer's price over the window comes back to cost, or the lines leave the window",
     "price_consistency (price_below_cost)",
     shows=("revenue", "cost", "margin", "unit_price", "unit_cost") + _PRICE_SHOWS,
     cols_of="sales_invoice_lines",
-    params={"days": PRICE_DAYS, "tolerance": COST_TOLERANCE}, impact="below")
+    params={"days": PRICE_DAYS, "tolerance": COST_TOLERANCE, "verify": COST_VERIFY_SHARE},
+    impact="below")
 
 # far below typical: the other customers' lines of the series, weighted by quantity, give a
 # median and 10th percentile; with MIN_CUSTOMERS others, a price under that percentile AND
@@ -935,14 +938,19 @@ DEMAND_DROP = Rule(
     "GROUP BY 1, 2), "
     "med AS (SELECT cur, percentile_cont(0.5) WITHIN GROUP (ORDER BY base) AS m FROM allb "
     "GROUP BY cur) "
-    "SELECT c.handle, x.cur, '', false, NULL::text, concat_ws(' ', c.name, 'ordered', "
-    "x.cur, to_char(coalesce(x.recent, 0), 'FM999,999,999,990.00'), 'in the last {p[recent]} "
+    "SELECT c.handle, x.cur, '', false, NULL::text, "
+    "CASE WHEN coalesce(x.recent, 0) <= 0 "
+    "THEN concat_ws(' ', c.name, 'has no orders in the last {p[recent]} days (down from a usual', "
+    "x.cur, to_char(x.base * {p[recent]} / {p[base]}, 'FM999,999,999,990.00') || ').') "
+    "ELSE concat_ws(' ', c.name, 'ordered', "
+    "x.cur, to_char(x.recent, 'FM999,999,999,990.00'), 'in the last {p[recent]} "
     "days against a usual', x.cur, to_char(x.base * {p[recent]} / {p[base]}, "
-    "'FM999,999,999,990.00'), 'for that time.'), NULL::timestamptz, c.access_class, "
+    "'FM999,999,999,990.00'), 'for that time.') END, "
+    "NULL::timestamptz, c.access_class, "
     "ARRAY(SELECT DISTINCT unnest(x.classes || c.access_class)), x.ai_ok AND c.ai_ok, x.cols, "
     "x.srcs FROM per x JOIN med USING (cur) JOIN {s}.customers c ON c.handle = x.cust, src "
     "WHERE src.newest > {p[day]}::date - {p[current]} AND x.base_orders >= {p[min_orders]} "
-    "AND x.base >= med.m AND coalesce(x.recent, 0) < x.base * {p[recent]} / {p[base]} "
+    "AND x.base > 0 AND x.base >= med.m AND coalesce(x.recent, 0) < x.base * {p[recent]} / {p[base]} "
     "* {p[share]}::numeric",
     "the customer's recent orders come back above half its run-rate",
     "customer_demand_drop (proactive_ceo)",
@@ -1033,8 +1041,8 @@ NEEDS_MY_REPLY = Rule(
     "'(no subject)'), 90) || '\"', 'on', to_char(x.received_at AT TIME ZONE '"
     + bv.BUSINESS_TZ + "', 'Mon DD') || CASE WHEN x.waiting > 1 THEN ', and ' || "
     "(x.waiting - 1) || ' more since,' ELSE '' END, 'with no reply from you in the "
-    "thread yet.'), x.received_at, NULL::smallint, '{{}}'::smallint[], x.all_ai, "
-    "'{{}}'::smallint[], '{{}}'::text[], x.units FROM (" + _WAITING + ") x WHERE x.nth = 1",
+    "thread yet.'), x.received_at, NULL::integer, '{{}}'::integer[], x.all_ai, "
+    "'{{}}'::integer[], '{{}}'::text[], x.units FROM (" + _WAITING + ") x WHERE x.nth = 1",
     "the mailbox owner writes in the thread, or the message leaves the 60-day window",
     "inbox_triage needs_my_reply (proactive_commitments reply_owed)",
     params={"days": REPLY_DAYS}, comms=True)
@@ -1082,6 +1090,21 @@ def _ddl(s: str) -> list[str]:
         f"ALTER TABLE {s}.alerts ADD COLUMN IF NOT EXISTS sources text[]",
         f"ALTER TABLE {s}.alerts ADD COLUMN IF NOT EXISTS objects text[]",
         f"ALTER TABLE {s}.alert_runs ADD COLUMN IF NOT EXISTS ok_at timestamptz",
+        f"DO $$ DECLARE v text; BEGIN "
+        f"IF EXISTS (SELECT 1 FROM information_schema.columns "
+        f"WHERE table_schema = '{s}' AND table_name = 'alerts' "
+        f"AND ((column_name = 'access_class' AND udt_name <> 'int4') "
+        f"OR (column_name = 'needs' AND udt_name <> '_int4'))) THEN "
+        f"IF to_regclass('{s}_page.alerts') IS NOT NULL THEN "
+        f"SELECT pg_get_viewdef('{s}_page.alerts'::regclass) INTO v; "
+        f"DROP VIEW {s}_page.alerts; END IF; "
+        f"ALTER TABLE {s}.alerts ALTER COLUMN access_class TYPE integer; "
+        f"ALTER TABLE {s}.alerts ALTER COLUMN needs TYPE integer[]; "
+        f"IF v IS NOT NULL THEN "
+        f"EXECUTE 'CREATE VIEW {s}_page.alerts WITH (security_barrier = true) AS ' || v; "
+        f"IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'plx_page_reader') THEN "
+        f"GRANT SELECT ON {s}_page.alerts TO plx_page_reader; END IF; END IF; "
+        f"END IF; END $$",
     ]
 
 
@@ -1474,10 +1497,10 @@ def read_sql(schema: str | None = None) -> str:
     s = _schema(schema)
     return (f"SELECT rule, kind, record_table, handle, topic, concerns, why, since, state, "
             f"resolved_at FROM {s}.alerts a WHERE a.state = %(state)s "
-            "AND (a.access_class IS NULL OR a.access_class = ANY(%(classes)s::smallint[])) "
+            "AND (a.access_class IS NULL OR a.access_class = ANY(%(classes)s::integer[])) "
             "AND (a.access_class IS NOT NULL OR cardinality(a.units) > 0) "
             "AND a.units <@ %(units)s::integer[] "
-            "AND a.needs <@ %(classes)s::smallint[] "
+            "AND a.needs <@ %(classes)s::integer[] "
             "AND a.col_needs <@ %(col_classes)s::integer[] "
             "AND (a.mailbox IS NULL OR a.mailbox = ANY(%(mailboxes)s::text[])) "
             "AND (NOT a.private OR a.concerns = ANY(%(me)s::text[])) "

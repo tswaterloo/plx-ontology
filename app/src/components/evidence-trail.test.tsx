@@ -253,4 +253,24 @@ describe("EvidenceTrailCard", () => {
     expect(action).toHaveTextContent("Nothing is sent or changed from here.");
     expect(card).not.toHaveTextContent("Dana Reyes <");
   });
+
+  it("rewrites internal Portal/FileMaker schema paths in gaps into plain business language", () => {
+    const rawGap: EvidenceTrail = {
+      kind: "materials",
+      title: "Materials",
+      hidden_steps: 0,
+      gaps: [
+        {
+          reason: "assembly_order_not_linked_to_order_line",
+          state: "unknown",
+          what: "Customer order line for AO 11231",
+          where_it_would_live: "the Portal manufacturing order's customer order line or the FileMaker order-entry assembly allocation",
+        },
+      ],
+    };
+    render(<EvidenceTrailCard trail={rawGap} />);
+    const gaps = screen.getByTestId("trail-gaps");
+    expect(gaps).toHaveTextContent("No manufacturing or assembly order linked yet");
+    expect(gaps).not.toHaveTextContent(/Portal manufacturing order|FileMaker order-entry/i);
+  });
 });

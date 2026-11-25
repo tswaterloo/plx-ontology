@@ -80,25 +80,55 @@ VERBS: dict[str, frozenset[str]] = {
 }
 KINDS = tuple(VERBS)
 REPLY_HOURS = 72          # operating.autopilot.REPLY_HOURS: the window a reply counts in
-MAX_DETAIL = 200_000      # an Ask answer as JSON
+MAX_DETAIL = 2_000_000    # an Ask answer as JSON (2 MB)
 EVENT_BATCH = 500         # matching rows read (and exclusion-checked) at a time (API-008)
-# What an answer too large to keep whole keeps (API-010): enough to continue an
-# instruction and to approve its drafts; ``_kept`` says it is partial.
-_KEPT_CORE = ("question", "conversation_id", "answer_id", "direct_answer", "instruction",
-              "drafts")
+# What an answer too large to keep whole keeps (API-010): the rendered answer, charts,
+# instruction and drafts; ``_kept`` says it is partial.
+_KEPT_CORE = ("question", "conversation_id", "answer_id", "outcome", "direct_answer",
+              "charts", "documents", "work_items", "instruction", "drafts", "answer",
+              "markdown", "summary")
 PARTIAL_TURN = ("This answer was too large to keep in full: its drafts and the question "
                 "are kept. Ask again to see the whole answer.")
 
 
+def _trimmed_full_detail(detail: Mapping[str, Any]) -> Optional[str]:
+    """Try keeping the complete AnswerPayload by stripping internal ``_review`` traces and
+    capping oversized ``cited`` tables before falling back to partial truncation."""
+    slim = {k: v for k, v in detail.items() if k != "_review"}
+    text = json.dumps(slim, ensure_ascii=False, default=str)
+    if len(text) <= MAX_DETAIL:
+        return text
+    if isinstance(slim.get("cited"), list) and slim["cited"]:
+        trimmed_cited = []
+        for tbl in slim["cited"][:10]:
+            if isinstance(tbl, Mapping):
+                rows = tbl.get("rows")
+                trimmed_cited.append({
+                    **tbl,
+                    "rows": list(rows)[:15] if isinstance(rows, list) else rows,
+                })
+            else:
+                trimmed_cited.append(tbl)
+        slim = {**slim, "cited": trimmed_cited}
+        text = json.dumps(slim, ensure_ascii=False, default=str)
+        if len(text) <= MAX_DETAIL:
+            return text
+    return None
+
+
 def _kept_detail(detail: Any) -> str:
-    """``detail`` as JSON within ``MAX_DETAIL``: whole, else its core (API-010) with every
-    handle the whole one cites (so a re-check of its sources stays complete; drafts go
-    when those cannot be decided), else only that it was not kept."""
+    """``detail`` as JSON within ``MAX_DETAIL``: whole, else trimmed of bulky review/cited
+    tails while keeping the full payload, else its core (API-010) with every handle the whole
+    one cites (so a re-check of its sources stays complete; drafts go when those cannot be
+    decided), else only that it was not kept."""
     whole = json.dumps(detail, ensure_ascii=False, default=str)
     if len(whole) <= MAX_DETAIL:
         return whole
     if not isinstance(detail, dict):
         return json.dumps({"_kept": "none"})
+    trimmed = _trimmed_full_detail(detail)
+    if trimmed is not None:
+        return trimmed
     from .ask_drafts import cited_handles
     core = {k: detail[k] for k in _KEPT_CORE if k in detail}
     try:
@@ -107,7 +137,8 @@ def _kept_detail(detail: Any) -> str:
         core.pop("drafts", None)
         core["_cited"] = {"system": "undecided", "quote": "a source without a handle"}
     core["_kept"] = "partial"
-    for extra in ("facts",):   # what a draft's typed values are checked against
+    for extra in ("facts", "subjects", "follow_ups", "not_found", "hidden", "freshness",
+                  "coverage", "latency_ms", "cited_more", "definitions"):   # what a draft's typed values are checked against & answer metadata
         if extra in detail:
             wider = {**core, extra: detail[extra]}
             if len(json.dumps(wider, ensure_ascii=False, default=str)) <= MAX_DETAIL:
@@ -688,7 +719,11 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if scheme == "record" and ref.startswith("page/"):
         href = "/" + ref[len("page/"):]
     elif scheme == "record":
-        href = "/object/" + ref
+        if ":" in ref and "/" not in ref:
+            from .serving import object_url
+            href = object_url(ref.split(":", 1)[0], ref)
+        else:
+            href = "/object/" + ref
     elif href is None:
         href = "/work-log"
     turns = []
@@ -701,9 +736,46 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             except ValueError:
                 answer = None
             if isinstance(answer, dict) and answer.get("_kept") in ("partial", "none"):
-                # API-010: kept only in part (or not at all): said, never shown as whole
-                turns.append({"question": answer.get("question") or event["title"],
-                              "answer": None, "withheld": PARTIAL_TURN, "at": event["at"]})
+                # API-010: when partial keeps a valid direct_answer with decidable cited
+                # handles, render it with safe defaults for omitted fields (and preserve
+                # _cited so kept_turns still re-verifies every source handle). Undecidable
+                # or empty-body partial rows stay withheld (fail closed).
+                cited_meta = answer.get("_cited")
+                undecided = isinstance(cited_meta, dict) and cited_meta.get("system") == "undecided"
+                body = str(answer.get("direct_answer") or "").strip()
+                if answer.get("_kept") == "partial" and body and not undecided:
+                    restored = {
+                        "outcome": "answered",
+                        "facts": [],
+                        "not_found": [],
+                        "work_items": [],
+                        "hidden": {"count": 0, "by_owner": [], "message": None},
+                        "conflicts": [],
+                        "freshness": {},
+                        "subjects": [],
+                        "did_you_mean": [],
+                        "follow_ups": [],
+                        "proposals": [],
+                        "attachments": [],
+                        "prepared": [],
+                        "drafts": [],
+                        "charts": [],
+                        "documents": [],
+                        "coverage": [],
+                        "untraced": [],
+                        "working": [],
+                        "cited": [],
+                        "cited_more": 0,
+                        "definitions": [],
+                        "latency_ms": 0,
+                        **answer,
+                    }
+                    restored.pop("_review", None)
+                    turns.append({"question": restored.get("question") or event["title"],
+                                  "answer": restored, "at": event["at"]})
+                else:
+                    turns.append({"question": answer.get("question") or event["title"],
+                                  "answer": None, "withheld": PARTIAL_TURN, "at": event["at"]})
             elif isinstance(answer, dict):
                 answer.pop("_review", None)    # the usage review's, not the person's view
                 turns.append({"question": answer.get("question") or event["title"],

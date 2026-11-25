@@ -496,7 +496,8 @@ class PageDoor(unittest.TestCase):
                     na = home.needs_attention
                     self.assertEqual((na.status, na.late_total), ("read", total))
                     self.assertEqual([p.label for p in na.late_pos],
-                                     [f"PO {n}" for n in self.late_list(actor, LATE_LIST_LIMIT)])
+                                     [ps._numbered("PO", n)
+                                      for n in self.late_list(actor, LATE_LIST_LIMIT)])
                     # each opens its PO page through the door (not the old record page)
                     self.assertTrue(all(p.object_id.startswith("PurchaseOrder:")
                                         and p.open_url == ps.account_url(

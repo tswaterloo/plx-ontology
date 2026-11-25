@@ -75,7 +75,7 @@ export function ShowWork({ work, read, onReset, testId }: { work: QueryWork; rea
                 >
                   <input
                     aria-label={`Filter ${f.index + 1}`}
-                    className="h-7 min-w-[16rem] rounded border border-border px-1.5 font-mono text-[12px]"
+                    className="h-7 min-w-[16rem] rounded-md border border-border-strong bg-bg px-2 font-mono text-[12px] text-fg dark:bg-surface"
                     value={draft}
                     autoFocus
                     disabled={busy}
@@ -117,7 +117,7 @@ export function ShowWork({ work, read, onReset, testId }: { work: QueryWork; rea
         </div>
       )}
       {busy && <p className="text-muted">Reading again</p>}
-      {error && <p className="text-red-700" role="alert">{error}</p>}
+      {error && <p className="text-late" role="alert">{error}</p>}
     </div>
   );
 }
@@ -130,7 +130,7 @@ export function QueryToggle({ sql, testId }: { sql: string; testId: string }) {
       <button type="button" className={link} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
         {open ? "Hide query" : "Show query"}
       </button>
-      {open && <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded border border-border p-2 font-mono">{sql}</pre>}
+      {open && <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-surface p-2.5 font-mono text-fg">{sql}</pre>}
     </div>
   );
 }

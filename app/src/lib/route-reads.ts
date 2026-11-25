@@ -9,7 +9,7 @@ import { readAhead } from "./use-read";
 // test holds each to its table entry. Reads are looked up when called, not when this module loads.
 
 /** Routes whose page draws its main read from the kept reads (`useRead`, keyed by that URL). */
-export const STORED_ROUTES: readonly string[] = ["/assist", "/ops", "/data-health", "/activity", "/templates", "/meetings", "/team", "/orders", "/customers", "/suppliers", "/products", "/more"];
+export const STORED_ROUTES: readonly string[] = ["/", "/assist", "/ops", "/data-health", "/activity", "/templates", "/meetings", "/team", "/orders", "/customers", "/suppliers", "/products", "/more"];
 
 /** The path of `href` without its query or fragment. */
 const routeOf = (href: string): string => href.split(/[?#]/)[0];
@@ -18,7 +18,7 @@ const routeOf = (href: string): string => href.split(/[?#]/)[0];
 export function readAheadRoute(href: string): void {
   const route = routeOf(href);
   const url = EARLY_ROUTE_READS[route];
-  if (url && STORED_ROUTES.includes(route)) readAhead(url, (s) => readPath(url, s));
+  if (url && STORED_ROUTES.includes(route)) readAhead(url, (s) => readPath(url, s, true));
 }
 
 /** How long a pointer rests on a link before its page is read ahead (a pass-over costs nothing). */

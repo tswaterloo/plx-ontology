@@ -858,7 +858,7 @@ class NotIssuedTests(Base):
                                    ("draft", "missing", ("absent_in_source", "status_not_reached")),
                                    ("Pending", "present", None),
                                    ("Complete", "present", None),
-                                   ("Revised", "missing", ("unknown", "status_unreadable"))):
+                                   ("Revised", "present", None)):
             for process in (PROCESS, "purchase_to_invoice"):
                 s = tp.Store()
                 fm = s.obj("PurchaseOrder:portal.fm_generated_purchase_order:fm-1",
@@ -965,7 +965,7 @@ class UnnamedCallTests(Base):
                 ("closed", ("10", "0"), other),              # closed is cancelled (upstream)
                 ("Complete", ("10", "10"), other), ("Pending", ("10", "10"), other),
                 ("DRAFT", ("10", "0"), other), ("Cancel", ("10", "0"), other),
-                ("Revised", ("10", "0"), other), ("Generated", ("10", "0"), other),
+                ("Revised", ("10", "0"), PROCESS), ("Generated", ("10", "0"), other),
                 ("SOMETHING_NEW", ("10", "0"), other), (None, ("10", "0"), other),
                 ("Pending", None, other)):                   # no lines: quantities unknown
             s = tp.Store()
@@ -1006,8 +1006,9 @@ class UnnamedCallTests(Base):
                                          "api:public.app_purchase_order_line": frozenset()})
         refused(s, po, STAFF, no_lines)
         # a status every reader reads that decides alone needs no lines: closed, not
-        # issued, or unknown by the word itself (unmapped, missing) whatever the lines say
-        for status in ("Cancel", "DRAFT", "Revised", None):
+        # issued, or unknown by the word itself (unmapped, missing) whatever the lines say;
+        # Revised is issued, so without its lines it decides nothing
+        for status in ("Cancel", "DRAFT", None):
             s = tp.Store()
             po = portal_po(s, status=status)
             base = ot.OntologyTools(ot.StoreReader(s.conn), no_lines, schema=tp.SCHEMA,

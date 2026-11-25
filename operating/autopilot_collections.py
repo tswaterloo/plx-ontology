@@ -226,12 +226,12 @@ def _says(text: str, pattern: re.Pattern) -> str | None:
     return None
 
 
-def _own_text(entry: Mapping[str, Any]) -> str:
+def _own_text(entry: Mapping[str, Any], full_body: str = "") -> str:
     from ontology.mentions import QuotedRanges
     from .mail_text import unquoted
     from .proactive_chasers import _FORWARD, _REPLY, _words
-    preview = _words(entry, "body_preview") or ""
-    own = unquoted(QuotedRanges(preview), preview) if preview else ""
+    body = full_body or _words(entry, "body_text") or _words(entry, "body_preview") or ""
+    own = unquoted(QuotedRanges(body), body) if body else ""
     subject = _words(entry, "subject") or ""
     if subject and not _REPLY.match(subject) and not _FORWARD.match(subject):
         own = subject + "\n" + own
@@ -351,6 +351,8 @@ def _read_mail(st: Any, people: Any, as_of: date, days: int,
         inside = inside[-MAX_MESSAGES:]
     values = st.values(["Email"], EMAIL_PROPS, objects=[o for _w, o in inside]) \
         if inside else {}
+    from . import autopilot_records
+    bodies = autopilot_records.body_texts_by_oid(st, [o for _w, o in inside]) if inside else {}
     index = _ar_index(st)
     out: dict[tuple[str, str], list[dict]] = defaultdict(list)
     seen: set[str] = set()
@@ -360,7 +362,7 @@ def _read_mail(st: Any, people: Any, as_of: date, days: int,
         if message is None or message["dedupe"] in seen:
             continue
         seen.add(message["dedupe"])
-        text = _own_text(entry)
+        text = _own_text(entry, full_body=bodies.get(oid, ""))
         named = _named(text, index)
         base = {**message, "at": when, "day": when.date(), "audience": audience.get(oid),
                 **_classify(text, when.date(), message["ours"])}

@@ -195,3 +195,31 @@ export function layoutDay(meetings: UpcomingMeeting[]): Placed[] {
   flush();
   return out;
 }
+
+const INVITE_CUTOFF =
+  /^(?:_{6,}|-{6,}|={6,}|microsoft teams(?:\s+meeting|\s+need help|\s+join)?|join (?:the meeting now|on your computer|zoom meeting|microsoft teams|with google meet)|need help\?|meeting id\s*:|passcode\s*:|dial[- ]in by phone|find a local number|for organizers\s*:|meeting options\b|reset dial-in pin|org help\b|privacy and security\b|tap to join from a mobile device|one tap mobile|join by sip|learn more about teams)/i;
+const ANGLE_URL = /<https?:\/\/[^>]+>/gi;
+const BARE_INVITE_URL = /\bhttps?:\/\/(?:[^\s<>]*(?:teams\.microsoft\.com|safelinks\.protection\.outlook\.com|aka\.ms\/JoinTeamsMeeting|dialin\.teams\.microsoft\.com|zoom\.us|meet\.google\.com|webex\.com)[^\s<>]*)/gi;
+const ANY_LONG_URL = /\bhttps?:\/\/\S{40,}/gi;
+
+/** Strip raw Microsoft Teams / Zoom / Outlook invite link soup from a calendar event body,
+ * leaving only the human-written agenda lines (or an empty array when nothing real remains). */
+export function cleanMeetingAgenda(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const line of raw.replace(/\r\n?/g, "\n").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (INVITE_CUTOFF.test(trimmed)) break;
+    const cleaned = trimmed
+      .replace(ANGLE_URL, "")
+      .replace(BARE_INVITE_URL, "")
+      .replace(ANY_LONG_URL, "")
+      .replace(/^[|·•\-–]+\s*$/, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (!cleaned || /^https?:\/\/\S+$/i.test(cleaned)) continue;
+    out.push(cleaned);
+  }
+  return out;
+}

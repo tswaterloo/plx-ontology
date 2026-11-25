@@ -88,6 +88,23 @@ class Workbooks(unittest.TestCase):
         self.assertEqual(doc_read.excel_date(61, "date"), "1900-03-01")
         self.assertIsNone(doc_read.excel_date(-1, "date"))
 
+    def test_custom_date_formats_and_plain_numbers_stay_distinct(self):
+        # Custom formats mm/dd/yyyy, dd-mmm-yy, datetime, escaped time, and plain numeric formats
+        self.assertEqual(doc_read._date_format_kind("mm/dd/yyyy"), "date")
+        self.assertEqual(doc_read._date_format_kind("dd-mmm-yy"), "date")
+        self.assertEqual(doc_read._date_format_kind("[$-409]mm/dd/yyyy hh:mm;@"), "date")
+        self.assertEqual(doc_read._date_format_kind(r'\d h:mm'), "time")
+        self.assertIsNone(doc_read._date_format_kind("General"))
+        self.assertIsNone(doc_read._date_format_kind("#,##0.00"))
+        self.assertIsNone(doc_read._date_format_kind('$#,##0.00;($#,##0.00);"-"'))
+        self.assertIsNone(doc_read._date_format_kind('0.00 "days"'))
+        # 46025 is 2026-01-03 when date-formatted, but stays 46025 when plain numeric
+        got = doc_read.read("mix.xlsx", workbook([
+            ["Date", "Qty", "DateTime"],
+            [("date", 46025), 46025, ("custom", 46025.25)],
+        ]))
+        self.assertIn("r2 | 2026-01-03 | 46025 | 2026-01-03 06:00", got.text)
+
     def test_a_sheet_is_counted_filtered_and_totalled_over_every_row(self):
         rows = [["Item", "List price (CAD)", "Due"]] + [
             [f"IT-{i}", f"{i * 10:,}.00", ("date", serial(dt.date(2026, 11, 1)) + i)]

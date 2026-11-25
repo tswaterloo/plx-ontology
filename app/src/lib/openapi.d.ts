@@ -230,6 +230,9 @@ export type paths = {
         /**
          * Ask
          * @description Ask a question; the answer streams as server-sent events.
+         *
+         *     User runs execute decoupled from the HTTP connection so a page reload or tab close
+         *     never drops an in-flight answer; only an explicit Stop request cancels it.
          */
         post: operations["ask_api_ask_post"];
         delete?: never;
@@ -317,6 +320,46 @@ export type paths = {
          * @description Take a file off a question: remove what ``POST /api/ask/files`` kept.
          */
         delete: operations["ask_upload_remove_api_ask_files__upload_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ask/runs/{conversation_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask Run Stop
+         * @description Explicitly stop an in-flight Ask run for one of your conversations.
+         */
+        post: operations["ask_run_stop_api_ask_runs__conversation_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ask/runs/{conversation_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ask Run Stream
+         * @description Reattach to an in-flight (or just-finished) Ask run for one of your conversations.
+         */
+        get: operations["ask_run_stream_api_ask_runs__conversation_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -482,7 +525,11 @@ export type paths = {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Workflow Delete
+         * @description Delete a workflow from your list and stop any run currently in progress.
+         */
+        delete: operations["workflow_delete_api_assist_workflows__workflow_id__delete"];
         options?: never;
         head?: never;
         /**
@@ -1416,7 +1463,8 @@ export type paths = {
          * @description Every data-health check: the findings you may see, and how many more it found on
          *     records you may not open (counted, never named). An Admin page: the owner and the
          *     Team readers only, as its menu entry (403 for every other reader). ``check``: one
-         *     check's findings from ``offset`` (a page of them), cut from the page's one read.
+         *     check's findings from ``offset`` (a page of them), cut from the page's one read;
+         *     optional ``q`` and ``object_type`` filter across all rows before slicing.
          */
         get: operations["data_health_api_data_health_get"];
         put?: never;
@@ -1942,6 +1990,71 @@ export type paths = {
          */
         put: operations["insight_layout_api_insights_layout_put"];
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insight Pages List
+         * @description List saved Ask answer pages owned by the signed-in reader.
+         */
+        get: operations["insight_pages_list_api_insights_pages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/pages/{page_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Insight Page Get
+         * @description Read one saved Ask answer page owned by the signed-in reader.
+         */
+        get: operations["insight_page_get_api_insights_pages__page_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Insight Page Delete
+         * @description Remove one of your saved Ask answer pages and all of its tiles.
+         */
+        delete: operations["insight_page_delete_api_insights_pages__page_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/insights/save-answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Insight Save Answer
+         * @description Save a whole Ask answer (title, summary, charts, and queries or catalogue measures)
+         *     as one cohesive Insights page strictly scoped to the signed-in reader.
+         */
+        post: operations["insight_save_answer_api_insights_save_answer_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4479,6 +4592,34 @@ export type components = {
             values?: string[];
         };
         /**
+         * AskActiveRun
+         * @description An in-flight Ask run still executing on the server for this conversation.
+         */
+        AskActiveRun: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Question */
+            question: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Simple
+             * @default false
+             */
+            simple: boolean;
+            /** Started At */
+            started_at: string;
+            /** Status */
+            status?: string | null;
+            /** Steps */
+            steps?: string[];
+            /**
+             * Streamed
+             * @default
+             */
+            streamed: string;
+        };
+        /**
          * AskAttachment
          * @description A file or image attached to one question (``operating.ask_attachments``): read for that
          *     answer only; a Word, Excel or PowerPoint file is also kept as your own file (yours only),
@@ -4532,6 +4673,11 @@ export type components = {
          *     column (or one split value) of the same rows.
          */
         AskChart: {
+            /**
+             * Aggregation
+             * @description Plain-English disclosure when a high-point time-series chart was aggregated into coarser buckets (e.g. '240 daily points shown as 35 weekly totals').
+             */
+            aggregation?: string | null;
             /** As Of */
             as_of?: string | null;
             /**
@@ -4706,6 +4852,11 @@ export type components = {
             pinned: boolean;
             /** Questions */
             questions: number;
+            /**
+             * Running
+             * @default false
+             */
+            running: boolean;
             /**
              * Title
              * @description The name you gave it, else its first question.
@@ -4949,6 +5100,16 @@ export type components = {
              * @description Ask about this document: the citation of a mail, attachment or file the person has open or picked; read for them as they may read it.
              */
             source?: string | null;
+        };
+        /**
+         * AskRunStop
+         * @description Result of explicitly stopping an in-flight Ask run.
+         */
+        AskRunStop: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Stopped */
+            stopped: boolean;
         };
         /**
          * AskUpload
@@ -7912,6 +8073,54 @@ export type components = {
             y2?: string[];
         };
         /**
+         * ChartsEvent
+         * @description Validated charts drawn from the answer's read results, sent as soon as ready
+         *     (before the covering-read check finishes).
+         */
+        ChartsEvent: {
+            /** Charts */
+            charts?: components["schemas"]["AskChart"][];
+        };
+        /**
+         * CitedProfile
+         * @description Structured result profile and coverage metadata for one cited source (GG2):
+         *     rows read, time range covered, views/sources consulted, and any partial or
+         *     uncaptured coverage note in plain English.
+         */
+        CitedProfile: {
+            /**
+             * Coverage Note
+             * @description Plain-English note when coverage is partial, truncated, or uncaptured.
+             */
+            coverage_note?: string | null;
+            /**
+             * Exact
+             * @description Whether rows_read covers the full result.
+             * @default true
+             */
+            exact: boolean;
+            /**
+             * Rows Read
+             * @description Total rows or matches read by this source.
+             */
+            rows_read: number;
+            /**
+             * Rows Shown
+             * @description Rows or matches shown in the preview table.
+             */
+            rows_shown: number;
+            /**
+             * Time Range
+             * @description Earliest to latest date covered by the result or search window.
+             */
+            time_range?: string | null;
+            /**
+             * Views
+             * @description Views or source systems consulted.
+             */
+            views?: string[];
+        };
+        /**
          * CitedTable
          * @description One result the simple Ask read (a query's rows, or the mail, Teams and document hits
          *     of a search), as the reader's own session got it: what the answer's Sources line opens.
@@ -7931,6 +8140,8 @@ export type components = {
             columns: string[];
             /** @description The named measure the rows answer, when they come from one. */
             measure?: components["schemas"]["MeasureCited"] | null;
+            /** @description Structured result profile and coverage metadata for the Sources panel. */
+            profile?: components["schemas"]["CitedProfile"] | null;
             /**
              * Query
              * @description The statement the session ran for these rows (a named measure's: the one the catalogue made).
@@ -9638,6 +9849,11 @@ export type components = {
             action: "reply" | "approve" | "answer" | "do" | "decide" | "check" | "close";
             /** Action Label */
             action_label: string;
+            /**
+             * Alert Kind
+             * @description Typed alert kind from operating/alert_kinds.json when known.
+             */
+            alert_kind?: string | null;
             /** @description A cited amount this reader may open; never a suspect total. */
             amount?: components["schemas"]["Money"] | null;
             /**
@@ -9645,6 +9861,11 @@ export type components = {
              * @description The question only this person can answer, when one is prepared.
              */
             ask?: string | null;
+            /**
+             * Badge
+             * @description Short typed badge for the item inside a grouped section (e.g. QC hold, Batch hold, Below cost, Verify unit cost).
+             */
+            badge?: string | null;
             /**
              * Basis At
              * @description When the fact it rests on last moved (ISO).
@@ -9665,6 +9886,16 @@ export type components = {
             /** Due At */
             due_at?: string | null;
             /**
+             * Event Type
+             * @description Typed alert or trigger event type when known (e.g. price_below_cost, customer_price_drop, lot_on_hold, qc_hold).
+             */
+            event_type?: string | null;
+            /**
+             * Facts
+             * @description Concrete structured facts for this item (affected orders, customers, reasons).
+             */
+            facts?: string[];
+            /**
              * Href
              * @description Where the item opens in the app.
              */
@@ -9681,6 +9912,11 @@ export type components = {
              * @description What needs doing next, in plain words.
              */
             line: string;
+            /**
+             * Links
+             * @description Canonical record links (/object/<Type>/<id>) associated with this item.
+             */
+            links?: components["schemas"]["HomeNeedLink"][];
             /**
              * Matter Id
              * @description Its Assist matter id when it is one.
@@ -9718,6 +9954,11 @@ export type components = {
              */
             rank_reasons?: string[];
             /**
+             * Section
+             * @description Compact Home section this item groups into (financials or holds), if any.
+             */
+            section?: string | null;
+            /**
              * Source
              * @enum {string}
              */
@@ -9745,6 +9986,16 @@ export type components = {
             to?: string[];
             /** Verified At */
             verified_at?: string | null;
+        };
+        /**
+         * HomeNeedLink
+         * @description A canonical record link surfaced on a Home Needs-you item.
+         */
+        HomeNeedLink: {
+            /** Href */
+            href: string;
+            /** Label */
+            label: string;
         };
         /**
          * HomeNeedPart
@@ -9944,6 +10195,125 @@ export type components = {
             unknown?: string[];
         };
         /**
+         * InsightAnswerItem
+         * @description One chart, query, or catalogue measure from an Ask answer to save into an Insights page.
+         */
+        InsightAnswerItem: {
+            /** Against */
+            against?: string | null;
+            /**
+             * By
+             * @description Optional breakdown dimension (or pair) for measure.
+             */
+            by?: unknown | null;
+            chart?: components["schemas"]["ChartSpec"] | null;
+            /**
+             * Compare
+             * @default false
+             */
+            compare: boolean;
+            /**
+             * Days
+             * @description Optional rolling days for measure.
+             */
+            days?: number | null;
+            /** Filter */
+            filter?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Measure
+             * @description Catalogue measure id (operating/measures.json), used when sql is omitted.
+             */
+            measure?: string | null;
+            /**
+             * Notify
+             * @default never
+             * @enum {string}
+             */
+            notify: "never" | "rows" | "new_rows" | "every_run";
+            /** Parameters */
+            parameters?: {
+                [key: string]: boolean;
+            } | null;
+            /** Period */
+            period?: string | null;
+            /**
+             * Question
+             * @default
+             */
+            question: string;
+            /**
+             * Schedule
+             * @default
+             * @enum {string}
+             */
+            schedule: "" | "hourly" | "daily" | "weekly";
+            /**
+             * Sql
+             * @description Read-only SQL statement over the business views.
+             */
+            sql?: string | null;
+            /** Title */
+            title: string;
+        };
+        /**
+         * InsightAnswerPage
+         * @description A cohesive saved Insights page created from one Ask answer, strictly scoped to its owner.
+         */
+        InsightAnswerPage: {
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            /**
+             * Id
+             * @description Saved page id ('p<12 hex chars>').
+             */
+            id: string;
+            /** Items */
+            items: components["schemas"]["InsightInfo"][];
+            /**
+             * Question
+             * @default
+             */
+            question: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Title */
+            title: string;
+        };
+        /** InsightAnswerPageList */
+        InsightAnswerPageList: {
+            /** Pages */
+            pages: components["schemas"]["InsightAnswerPage"][];
+        };
+        /**
+         * InsightAnswerSave
+         * @description One-step request to save a whole Ask answer (title, summary, charts, and queries/measures)
+         *     as a cohesive Insights page owned by the authenticated reader.
+         */
+        InsightAnswerSave: {
+            /** Items */
+            items: components["schemas"]["InsightAnswerItem"][];
+            /**
+             * Question
+             * @default
+             */
+            question: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Title */
+            title: string;
+        };
+        /**
          * InsightChecked
          * @description Whether a measure tile's rows add up to the measure's own figure for the same window,
          *     read through the same door when the tile was stored (``status``: reconciles, differs or
@@ -9996,6 +10366,16 @@ export type components = {
              * @enum {string}
              */
             notify: "never" | "rows" | "new_rows" | "every_run" | "crosses";
+            /**
+             * Page Id
+             * @description Saved answer page id when saved as part of a whole Ask answer.
+             */
+            page_id?: string | null;
+            /**
+             * Page Title
+             * @description Saved answer page title when saved as part of a whole Ask answer.
+             */
+            page_title?: string | null;
             /** Question */
             question?: string | null;
             /** Saved */
@@ -10157,6 +10537,16 @@ export type components = {
              * @enum {string}
              */
             notify: "never" | "rows" | "new_rows" | "every_run" | "crosses";
+            /**
+             * Page Id
+             * @description Saved answer page id when saved as part of a whole Ask answer.
+             */
+            page_id?: string | null;
+            /**
+             * Page Title
+             * @description Saved answer page title when saved as part of a whole Ask answer.
+             */
+            page_title?: string | null;
             /**
              * People
              * @description Per row: the Team key of the person it is about (open /team), or null.
@@ -11438,6 +11828,11 @@ export type components = {
             defined_on?: string | null;
             /** Definition */
             definition: string;
+            /**
+             * Denominator
+             * @description What a ratio measure divides by.
+             */
+            denominator?: string | null;
             /**
              * Dimensions
              * @description What it can be broken down by.
@@ -15618,6 +16013,8 @@ export type components = {
         };
         /** WorkLogResume */
         WorkLogResume: {
+            /** @description In-flight Ask run for this conversation, when still running. */
+            active_run?: components["schemas"]["AskActiveRun"] | null;
             /** Href */
             href: string;
             /**
@@ -16656,6 +17053,95 @@ export interface operations {
             };
         };
     };
+    ask_run_stop_api_ask_runs__conversation_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AskRunStop"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ask_run_stream_api_ask_runs__conversation_id__stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent: a plain-words progress step), sources (SourcesEvent), verdict (VerdictEvent: the answer's first line once the answer gate accepts it), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     ask_warm_api_ask_warm_post: {
         parameters: {
             query?: never;
@@ -17064,6 +17550,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AssistWorkflowParsed"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    workflow_delete_api_assist_workflows__workflow_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssistWorkflow"];
                 };
             };
             /** @description Unauthorized */
@@ -19485,6 +20029,8 @@ export interface operations {
                 check?: string | null;
                 offset?: number;
                 limit?: number;
+                q?: string | null;
+                object_type?: string | null;
             };
             header?: never;
             path?: never;
@@ -19534,6 +20080,8 @@ export interface operations {
         parameters: {
             query?: {
                 check?: string | null;
+                q?: string | null;
+                object_type?: string | null;
             };
             header?: never;
             path?: never;
@@ -20776,6 +21324,265 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InsightList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_pages_list_api_insights_pages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightAnswerPageList"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_page_get_api_insights_pages__page_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                page_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightAnswerPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_page_delete_api_insights_pages__page_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                page_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightDeleted"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    insight_save_answer_api_insights_save_answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InsightAnswerSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InsightAnswerPage"];
                 };
             };
             /** @description Unauthorized */

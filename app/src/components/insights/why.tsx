@@ -63,9 +63,9 @@ export function WhyDidItChange({ id, testId }: { id: string; testId: string }) {
               return (
                 <Fragment key={`${key}-${i}`}>
                   <tr>
-                    <td>{r.dimension}</td><td>{r.top_part ?? "none readable"}</td><td>{r.top_change ?? ""}</td>
-                    <td>{r.top_share_of_change_pct == null ? "" : `${r.top_share_of_change_pct}%`}</td>
-                    <td>{r.parts_for_half == null ? "" : `${r.parts_for_half} of ${r.parts}`}</td>
+                    <td>{r.dimension}</td><td>{r.top_part ?? "none readable"}</td><td className="tabular-nums">{r.top_change ?? ""}</td>
+                    <td className="tabular-nums">{r.top_share_of_change_pct == null ? "" : `${r.top_share_of_change_pct}%`}</td>
+                    <td className="tabular-nums">{r.parts_for_half == null ? "" : `${r.parts_for_half} of ${r.parts}`}</td>
                     <td><button type="button" className={link} onClick={() => drill(key)}>Show every part</button></td>
                   </tr>
                   {got && (
@@ -89,7 +89,7 @@ export function WhyDidItChange({ id, testId }: { id: string; testId: string }) {
         </p>
       )}
       {failed && last?.answer ? <p className="text-muted">It stopped at step {failed.step}; the answer above is what was read before it.</p> : null}
-      {error && <p className="text-red-700" role="alert">{error}</p>}
+      {error && <p className="text-late" role="alert">{error}</p>}
     </div>
   );
 }

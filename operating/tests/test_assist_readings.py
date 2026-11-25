@@ -464,6 +464,13 @@ class Parse(unittest.TestCase):
         self.assertEqual(ar.own_text("Please ship order 552 on Monday", mail=False),
                          ("Please ship order 552 on Monday", 0))
 
+    def test_system_alert_mail_is_screened_as_bulk_not_business_work(self):
+        self.assertTrue(ar.is_system_alert_mail("cos@petrasoap.com", "Workbench API health 2026-11-16: ALERT"))
+        self.assertTrue(ar.is_system_alert_mail("cos@petrasoap.com", "UAT BC scheduled sync has not refreshed"))
+        self.assertTrue(ar.is_system_alert_mail("alerts@example.com", "ALERT: disk space low"))
+        self.assertFalse(ar.is_system_alert_mail("buyer@customer.example", "PO 90412 delivery date"))
+        self.assertFalse(ar.is_system_alert_mail("cos@petrasoap.com", "[ACTION REQUIRED] New Sourcing Request: Bluzen"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -259,6 +259,87 @@ class RenewerTest(unittest.TestCase):
         got = {c["name"]: c for c in ops_alarms.graph_subscription_checks(self.state, NOW)}
         self.assertNotIn("graph_subscriptions_config", got)
 
+    def test_teams_get_all_messages_webhook_short_lived_and_microsoft_graph_creds(self) -> None:
+        webhook = "https://workbench.plx.example/graph/notify"
+        teams_cfg = {
+            "subscriptions": [
+                {
+                    "name": "teams-chats-all",
+                    "source": "teams",
+                    "resource": "/chats/getAllMessages",
+                    "notification_url": webhook,
+                    "lifecycle_url": webhook,
+                    "change_type": "created,updated",
+                    "lifetime_minutes": 60,
+                },
+                {
+                    "name": "teams-channels-all",
+                    "source": "teams",
+                    "resource": "/teams/getAllMessages",
+                    "notification_url": webhook,
+                    "lifecycle_url": webhook,
+                    "change_type": "created,updated",
+                    "lifetime_minutes": 55,
+                },
+            ]
+        }
+        (self.dir / "subs.json").write_text(json.dumps(teams_cfg))
+        mg_env = {
+            gs.ENV_CONFIG: str(self.dir / "subs.json"),
+            gs.ENV_CLIENT_STATE: STATE,
+            gs.ENV_CREDENTIAL_PREFIX: "MICROSOFT_GRAPH",
+            "MICROSOFT_GRAPH_TENANT_ID": TENANT,
+            "MICROSOFT_GRAPH_CLIENT_ID": "8ea4aa90-4223-4327-b004-cd7658f9be63",
+            "MICROSOFT_GRAPH_CLIENT_SECRET": SECRET,
+        }
+        settings = gs.Settings.from_env(mg_env)
+        self.assertEqual(settings.client_id, "8ea4aa90-4223-4327-b004-cd7658f9be63")
+        self.assertEqual(settings.tenant, TENANT)
+
+        # Create both short-lived Teams subscriptions
+        graph = FakeGraph()
+        done = gs.Renewer(settings, self.state, graph, lambda: NOW).run()
+        self.assertEqual(
+            {n: e["state"] for n, e in done["entries"].items()},
+            {"teams-chats-all": "created", "teams-channels-all": "created"},
+        )
+        created = [b for b in graph.bodies if "clientState" in b]
+        self.assertEqual(len(created), 2)
+        self.assertEqual({b["resource"] for b in created},
+                         {"/chats/getAllMessages", "/teams/getAllMessages"})
+        self.assertEqual({b["changeType"] for b in created}, {"created,updated"})
+        self.assertEqual({b["notificationUrl"] for b in created}, {webhook})
+        self.assertEqual({b["lifecycleNotificationUrl"] for b in created}, {webhook})
+        self.assertEqual({b["clientState"] for b in created}, {STATE})
+
+        # 20 min later: 40 min left on 60-min sub (> 30) and 35 min left on 55-min sub (> 27.5) -> ok
+        graph.calls.clear()
+        mid = gs.Renewer(settings, self.state, graph, lambda: NOW + timedelta(minutes=20)).run()
+        self.assertEqual({e["state"] for e in mid["entries"].values()}, {"ok"})
+        self.assertEqual([c for c in graph.calls if c[0] == "PATCH"], [])
+
+        # 31 min later: <= half-life for both -> renewed cleanly well before expiry
+        graph.calls.clear()
+        renewed = gs.Renewer(settings, self.state, graph,
+                             lambda: NOW + timedelta(minutes=31)).run()
+        self.assertEqual(
+            {n: e["state"] for n, e in renewed["entries"].items()},
+            {"teams-chats-all": "renewed", "teams-channels-all": "renewed"},
+        )
+        self.assertEqual(len([c for c in graph.calls if c[0] == "PATCH"]), 2)
+
+        # Invalid credential prefix fails closed
+        with self.assertRaises(gs.SettingsInvalid):
+            gs.Settings.from_env({**mg_env, gs.ENV_CREDENTIAL_PREFIX: "INVALID"})
+
+        # Config JSON credential_prefix works when env var is omitted
+        (self.dir / "subs.json").write_text(
+            json.dumps({**teams_cfg, "credential_prefix": "MICROSOFT_GRAPH"})
+        )
+        env_no_flag = {k: v for k, v in mg_env.items() if k != gs.ENV_CREDENTIAL_PREFIX}
+        self.assertEqual(gs.Settings.from_env(env_no_flag).client_id,
+                         "8ea4aa90-4223-4327-b004-cd7658f9be63")
+
 
 class AlarmTest(unittest.TestCase):
     def setUp(self) -> None:

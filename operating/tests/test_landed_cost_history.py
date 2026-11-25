@@ -258,7 +258,6 @@ class EstimateFromHistoryTest(unittest.TestCase):
         out = run(self.LINES, landed_actuals=provider(default=long))
         for part in ("freight", "duty"):
             step = _part(out, part)
-            self.assertLess(len(step), lc.MAX_STEP_CHARS, step)
             self.assertTrue(step.endswith("built 2099-01-01T00:00:00+00:00)"), step)
 
     def test_recorded_sources_win_over_history_and_history_over_the_default(self):

@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { beginAuthCheck, getAuthConfig, getMe, logout, setBundlePrincipal, setTokenProvider, settleAuth } from "@/lib/api";
+import { beginAuthCheck, devLogin, getAuthConfig, getMe, logout, setBundlePrincipal, setTokenProvider, settleAuth } from "@/lib/api";
 import { ApiError, plainError } from "@/lib/errors";
 import { safeNext } from "@/lib/format";
 import { clearPending } from "@/lib/pending";
@@ -10,11 +10,11 @@ import { startEvents } from "@/lib/events";
 import { clearSavedFor, setSavedUser } from "@/lib/saved";
 import { startReadStore, storeMayDraw, wipeStoreNow } from "@/lib/read-store";
 import { resetSessionCaches } from "@/lib/session-cache";
-import { captureTicket, ticketComing } from "@/lib/ticket";
+import { captureTicket, takeTicket, ticketComing } from "@/lib/ticket";
 import type { AuthConfig, Me } from "@/lib/types";
 
 export type AuthState =
-  | { status: "loading"; config: AuthConfig | null }
+  | { status: "loading"; config: AuthConfig | null; exchanging?: boolean }
   | { status: "signed-in"; config: AuthConfig; me: Me }
   | { status: "signed-out"; config: AuthConfig; message?: string }
   | { status: "error"; config: AuthConfig | null; message: string };
@@ -83,6 +83,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setTokenProvider(msal.entraToken);
         } else {
           setTokenProvider(null);
+          captureTicket();
+          if (config.dev_login && ticketComing() && !c.signal.aborted) {
+            const pendingTicket = takeTicket();
+            if (pendingTicket) {
+              setState({ status: "loading", config, exchanging: true });
+              try {
+                await devLogin(pendingTicket);
+              } catch (e) {
+                settleAuth();
+                if (c.signal.aborted) return;
+                setBundlePrincipal(null);
+                setState({ status: "signed-out", config, message: plainError(e) });
+                return;
+              }
+            }
+          }
         }
         settleAuth();
         const me = await getMe(c.signal);
@@ -171,6 +187,10 @@ export function RequireAuth({ children, fallback }: { children: React.ReactNode;
   const { state } = useAuth();
   const router = useRouter();
   const path = usePathname();
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
   useEffect(() => {
     if (state.status === "signed-out") {
       const next = typeof window !== "undefined" ? window.location.pathname + window.location.search : path;
@@ -179,6 +199,7 @@ export function RequireAuth({ children, fallback }: { children: React.ReactNode;
   }, [state.status, router, path]);
   // Loading renders the page at once so its reads start with the sign-in check, not after it;
   // a refused check (signed-out) replaces it with the fallback and goes to sign-in.
-  if (state.status === "signed-in" || (state.status === "loading" && !ticketComing())) return <>{children}</>;
+  // Defer the window-only ticketComing() branch until after hydration so SSR and client match.
+  if (state.status === "signed-in" || (state.status === "loading" && !state.exchanging && (!hydrated || !ticketComing()))) return <>{children}</>;
   return <>{fallback}</>;
 }

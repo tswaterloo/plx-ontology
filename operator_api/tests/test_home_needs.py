@@ -14,6 +14,7 @@ from unittest.mock import patch
 from operator_api import home_needs as hn
 from operator_api import models as m
 from operator_api.mock import MockBackend
+from operator_api.backend_common import PREWARM_SCREENS, SCREENS_AHEAD
 from operator_api.tests.test_app_api import mock_client, signed_in
 
 NOW = datetime(2026, 11, 25, 15, 0, tzinfo=timezone.utc)
@@ -259,8 +260,15 @@ class Build(unittest.TestCase):
             [r.id for r in got],
             ["old-overdue", "newer-overdue", "due-today", "quiet-old", "quiet-new", "newest", "older"],
         )
-        self.assertIn("overdue", got[0].rank_reasons)
-        self.assertIn("waiting and gone quiet", got[3].rank_reasons)
+        self.assertTrue(any(r.startswith("overdue") for r in got[0].rank_reasons))
+        self.assertIn("waiting on a follow-up", got[3].rank_reasons)
+        self.assertEqual(got[5].rank_reasons, [])
+        # Never emit robotic filler phrases or em dashes.
+        for r in got:
+            joined = " ".join(r.rank_reasons)
+            self.assertNotIn("newest open work", joined)
+            self.assertNotIn("waiting and gone quiet", joined)
+            self.assertNotIn("\u2014", joined)
 
     def test_gap_alerts_reach_owners_needs_you_list_and_never_other_readers(self):
         from operating import gap_list
@@ -333,6 +341,231 @@ class Build(unittest.TestCase):
         self.assertNotIn(", '% below the usual price for'", pg_alerts.PRICE_BELOW_TYPICAL.select)
         self.assertIn("|| '% ('", pg_alerts.CUSTOMER_PRICE_DROP.select)
         self.assertNotIn(", '% ('", pg_alerts.CUSTOMER_PRICE_DROP.select)
+        self.assertIn("Check unit cost before treating as margin loss.", pg_alerts.PRICE_BELOW_COST.select)
+        self.assertIn(pg_alerts.COST_LOOKS_WRONG_SQL, pg_alerts._LINES)
+
+    def test_financials_and_holds_tag_section_and_preserve_specific_badges(self):
+        def brief(eid, event_type, alert_kind, label, summary, *, section=None, amount=None):
+            return m.BriefingItem(
+                id=eid,
+                rank=1,
+                new_since_visit=False,
+                new_this_generation=False,
+                event_type=event_type,
+                alert_kind=alert_kind,
+                section=section,
+                label=label,
+                subject_label=label,
+                summary=summary,
+                amount=amount,
+                object_id=f"Customer:bc:{eid}",
+                object_type="Customer",
+                open_url=f"/object/Customer/{eid}",
+                next_action=m.NextAction(rule=event_type, text="Review this alert."),
+            )
+
+        drop = hn._alert_item(
+            brief("pd-1", "customer_price_drop", "price_exception", "Acme", "Acme's price dropped 18%.", section="financials")
+        )
+        below_ok = hn._alert_item(
+            brief(
+                "bc-1", "price_below_cost", "margin_loss", "Beta",
+                "Beta paid 85% of cost for Soap 100g (CAD per EA) over the last 180 days.",
+                section="financials",
+                amount=m.Money(amount="1200.00", currency="CAD"),
+            )
+        )
+        lot_hold = hn._alert_item(
+            brief("h-1", "lot_on_hold", "quality_hold", "Batch L-100", "Batch L-100 is on quality hold.")
+        )
+        aging_hold = hn._alert_item(
+            brief("h-2", "quality_hold_aging", "quality_hold", "Lot L-200", "Quality hold open too long.")
+        )
+        qc_matter = hn._matter_item(
+            matter(
+                50,
+                kind="alert",
+                channel="system",
+                act="decide",
+                detail={"alert": "qc-1", "autopilot": "qc_hold", "records": ["Batch:bc:B-50"]},
+            )
+        )
+        order_hold_matter = hn._matter_item(
+            matter(
+                51,
+                kind="alert",
+                channel="system",
+                act="decide",
+                detail={"alert": "oh-1", "event_type": "order_hold", "records": ["SalesOrder:bc:SO-51"]},
+            )
+        )
+
+        self.assertEqual((drop.section, drop.event_type, drop.badge), ("financials", "customer_price_drop", "Price drop"))
+        self.assertEqual((below_ok.section, below_ok.event_type, below_ok.badge), ("financials", "price_below_cost", "Below cost"))
+        self.assertEqual(below_ok.amount.amount, "1200.00")
+        self.assertEqual((lot_hold.section, lot_hold.badge), ("holds", "Batch hold"))
+        self.assertEqual((aging_hold.section, aging_hold.badge), ("holds", "Quality hold"))
+        self.assertEqual((qc_matter.section, qc_matter.alert_kind, qc_matter.badge), ("holds", "quality_hold", "QC hold"))
+        self.assertEqual((order_hold_matter.section, order_hold_matter.badge), ("holds", "Order hold"))
+
+    def test_cost_sanity_guard_flags_extreme_below_cost_without_misleading_margin_loss(self):
+        def below(eid, pct, amount_val="4500.00"):
+            return hn._alert_item(
+                m.BriefingItem(
+                    id=eid,
+                    rank=1,
+                    new_since_visit=False,
+                    new_this_generation=False,
+                    event_type="price_below_cost",
+                    alert_kind="margin_loss",
+                    section="financials",
+                    label="Customer price below cost",
+                    subject_label="BE FIT NOW",
+                    summary=f"BE FIT NOW paid {pct}% of cost for Serum 30ml (CAD per EA) over the last 180 days.",
+                    amount=m.Money(amount=amount_val, currency="CAD"),
+                    object_id=f"Customer:bc:{eid}",
+                    object_type="Customer",
+                    open_url="/account?kind=customer&h=C1",
+                    next_action=m.NextAction(rule="price_below_cost", text="Check unit cost and selling price."),
+                )
+            )
+
+        # 23% of cost (>2x cost-to-revenue): flagged to verify unit cost before treating as margin loss
+        low = below("bc-23", 23)
+        self.assertEqual(low.section, "financials")
+        self.assertEqual(low.badge, "Verify unit cost")
+        self.assertIn("unit cost", (low.ask or "").lower())
+        self.assertEqual(low.state, "open")
+
+        # 12% of cost (>5x cost-to-revenue, exceeds COST_WRONG_TIMES): suspect amount suppressed + uncertain state
+        extreme = below("bc-12", 12)
+        self.assertEqual(extreme.badge, "Verify unit cost")
+        self.assertIsNone(extreme.amount)
+        self.assertEqual(extreme.state, "uncertain")
+        self.assertIn("5x revenue", extreme.ask or "")
+        self.assertNotIn("—", (extreme.line or "") + (extreme.ask or ""))
+
+        # 82% of cost: genuine below-cost margin loss, keeps amount and Below cost badge
+        normal = below("bc-82", 82)
+        self.assertEqual(normal.badge, "Below cost")
+        self.assertIsNotNone(normal.amount)
+        self.assertEqual(normal.state, "open")
+
+
+    def test_home_needs_is_the_home_screen_read_ahead_and_its_kept_check_prewarmed(self):
+        self.assertIn("home_needs", SCREENS_AHEAD)
+        self.assertIn(("home_needs",), PREWARM_SCREENS)
+
+    def test_customer_demand_drop_folds_into_financials_section_without_dropping(self):
+        demand = hn._alert_item(
+            m.BriefingItem(
+                id="cd-1",
+                rank=1,
+                new_since_visit=False,
+                new_this_generation=False,
+                event_type="customer_demand_drop",
+                alert_kind="demand_drop",
+                label="Customer demand drop",
+                subject_label="THE KANAWAKI GOLF CLUB",
+                summary="THE KANAWAKI GOLF CLUB has no orders in the last 90 days.",
+                object_id="Customer:bc:KAN-1",
+                object_type="Customer",
+                open_url="/account?kind=customer&h=KAN-1",
+                next_action=m.NextAction(rule="customer_demand_drop", text="Check in with the account owner."),
+            )
+        )
+        self.assertEqual(demand.section, "financials")
+        self.assertEqual(demand.badge, "Demand drop")
+        self.assertEqual(demand.object_id, "Customer:bc:KAN-1")
+        self.assertEqual(demand.href, "/account?kind=customer&h=KAN-1")
+        self.assertTrue(any(l.href == "/account?kind=customer&h=KAN-1" for l in demand.links))
+
+    def test_qc_hold_matter_enriches_from_queue_with_record_links_and_affected_orders(self):
+        qitem = {
+            "item_id": "ap_qc_1",
+            "autopilot": "qc_hold",
+            "body": {
+                "label": "QC hold or fail",
+                "happened": {
+                    "object_id": "Batch:bc:BC-26313C",
+                    "object_type": "Batch",
+                    "sender": "QC",
+                    "fields": {"lot": "BC-26313C", "product": "G-LS-15-206"},
+                },
+                "prepared": {
+                    "summary": "Lot BC-26313C (G-LS-15-206) is on-hold; it holds up 1 open order(s).",
+                    "evidence": [{"object_id": "Batch:bc:BC-26313C"}],
+                    "affected": [
+                        {
+                            "object_id": "SalesOrder:bc:SO-10042",
+                            "order_number": "SO-10042",
+                            "customer": "Acme Cosmetics",
+                        }
+                    ],
+                    "note": "Review QC hold and release or substitute lot.",
+                },
+            },
+        }
+        raw_matter = matter(
+            77,
+            kind="record",
+            channel="system",
+            act="ask_person",
+            due=NOW,
+            detail={
+                "queue_item": "ap_qc_1",
+                "autopilot": "qc_hold",
+                "records": ["bc://prod/lots/BC-26313C"],
+            },
+        )
+        raw_matter.update(
+            subject="QC hold or fail: Lot BC-26313C (G-LS-15-206) is on-hold; it holds up 1 open order.",
+            summary="QC hold or fail: Lot BC-26313C (G-LS-15-206) is on-hold; it holds up 1 open order.",
+            note="Still open? Nothing has happened on it since it was due 2026-11-05. QC hold or fail.",
+            sender="",
+            message="",
+            still_open=True,
+        )
+        got = hn._matter_item(raw_matter, queue_item=qitem)
+        # Canonical /object/Batch/... link and object_id instead of bare /assist fallback.
+        self.assertEqual(got.object_id, "Batch:bc:BC-26313C")
+        self.assertEqual(got.object_type, "Batch")
+        self.assertTrue(got.href.startswith("/object/Batch/"))
+        self.assertEqual((got.section, got.badge), ("holds", "QC hold"))
+        # Rich line replaces the empty "QC hold or fail." stub with concrete summary + affected order.
+        self.assertIn("Lot BC-26313C (G-LS-15-206) is on-hold", got.line)
+        self.assertIn("SO-10042", got.line)
+        self.assertIn("Acme Cosmetics", got.line)
+        self.assertNotIn("(s)", got.line)
+        self.assertNotIn("\u2014", got.line)
+        self.assertEqual(got.person, "Acme Cosmetics")
+        self.assertEqual(got.ask, "Review QC hold and release or substitute lot.")
+        # Both Lot and SalesOrder links are populated, plus structured facts.
+        hrefs = [l.href for l in got.links]
+        self.assertTrue(any(h.startswith("/object/Batch/") for h in hrefs))
+        self.assertTrue(any(h.startswith("/object/SalesOrder/") for h in hrefs))
+        self.assertTrue(any("SO-10042" in f for f in got.facts))
+
+        # Ranking a due-today + still_open item never produces "due today, waiting and gone quiet".
+        ranked = hn.rank([got], now=NOW)[0]
+        self.assertEqual(ranked.rank_reasons, ["due today"])
+        self.assertNotIn("waiting and gone quiet", " ".join(ranked.rank_reasons))
+
+    def test_record_ref_accepts_short_and_canonical_ids_and_object_hrefs(self):
+        oid, otype, url = hn._record_ref(["bc://prod/item/1", "Batch:BC-26313C"])
+        self.assertEqual((oid, otype), ("Batch:BC-26313C", "Batch"))
+        self.assertTrue(url.startswith("/object/Batch/"))
+
+        oid2, otype2, url2 = hn._record_ref(["/object/SalesOrder/SalesOrder%3Abc%3ASO-9"])
+        self.assertEqual((oid2, otype2), ("SalesOrder:bc:SO-9", "SalesOrder"))
+        self.assertTrue(url2.startswith("/object/SalesOrder/"))
+
+        # URI schemes and lowercase tokens are rejected.
+        self.assertEqual(hn._record_ref(["https://example.com", "graph-mail://m/1@1", "mail:a@b.com"]), (None, None, None))
+
+    def test_price_below_typical_folds_into_financials_with_badge(self):
+        self.assertIn("price_below_typical", hn.FINANCIALS_EVENTS)
+        self.assertEqual(hn.FINANCIALS_BADGES["price_below_typical"], "Below typical price")
 
 
 class Route(unittest.TestCase):

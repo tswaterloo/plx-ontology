@@ -377,7 +377,7 @@ class _CallWork:
             steps = (_PLAN_STEP.match(row[-1]) for row in plan)
             names = (":".join([step[1].lower(), *filter(None, step.groups()[1:])])
                      for step in steps if step)
-            entry["plan"] = list(dict.fromkeys(names))[:MAX_PLAN_STEPS]
+            entry["plan"] = list(dict.fromkeys(names))
         self.statements.clear()
         return entry
 
@@ -680,8 +680,8 @@ class TraverseTools:
         problems = validate(result, self.contracts["tools"][name]["output"],
                             root=self.contracts, limit=5)
         if problems:
-            return _error("contract_violation", ("output failed the contract: "
-                                                 + "; ".join(problems))[:600])
+            return _error("contract_violation", "output failed the contract: "
+                                                 + "; ".join(problems))
         if _envelope_bytes(result) > self.limits["max_result_bytes"]:
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the request (path, filters, limit)")
@@ -969,7 +969,7 @@ class TraverseTools:
         read) carries nothing: the facts are read again as before."""
         before = old[1].get(_LAYER_MARK)
         kept = {key: value for key, value in old[1].items()
-                if isinstance(key, tuple) and key[:1] in (("slice_of",), ("slices",))}
+                if isinstance(key, tuple) and key[:1] in (("slice_of",), ("slices",))}  # guard-ok: tuple-prefix shape test, not content
         # Also carried, each patched by adding the replaced objects' own rows: the
         # audience keys per object type and the links with an odd slot text (both
         # whole-table reads, half a minute each under load, 2026-11-11). Only adding
@@ -1116,7 +1116,7 @@ class TraverseTools:
             later = self._captured_after(scope, unseen)
             hidden = bool(unseen - later)
             if missing:
-                gaps.append(_gap("unknown", "not_in_projection", root[:700],
+                gaps.append(_gap("unknown", "not_in_projection", root,
                                  f"{missing} object(s) of this set are not in the projection "
                                  "store and were not traversed"))
             if hidden:
@@ -1124,18 +1124,18 @@ class TraverseTools:
                 # markings now hide some of them (a revocation since the handle was made).
                 # They are not traversed, the answer is never complete, and how many is
                 # not said.
-                gaps.append(_gap("inaccessible", "policy_changed_since_handle", root[:700],
+                gaps.append(_gap("inaccessible", "policy_changed_since_handle", root,
                                  "some objects of this set are no longer readable for this "
                                  "reader and were not traversed"))
             if getattr(self.sets, "is_withheld", None) and self.sets.is_withheld(
                     root, scope.actor):
-                gaps.append(_gap("inaccessible", WITHHELD, root[:700],
+                gaps.append(_gap("inaccessible", WITHHELD, root,
                                  "this set came from an answer this reader's grants trimmed: "
                                  "it holds only what the reader may read, not the whole set"))
             whole, matched = (self.sets.completeness(root, scope.actor)
                               if getattr(self.sets, "completeness", None) else (False, None))
             if not whole:
-                gaps.append(_gap("unknown", SET_INCOMPLETE, root[:700],
+                gaps.append(_gap("unknown", SET_INCOMPLETE, root,
                                  "this set came from an answer that did not hold every "
                                  "match (a capped scan, a cut, an unbuilt projection or a "
                                  "walk from such a set)"
@@ -1144,13 +1144,13 @@ class TraverseTools:
                                  + "; whatever is counted or walked from it is at least "
                                  "that many, never all there is"))
             if getattr(self.sets, "is_lead", None) and self.sets.is_lead(root, scope.actor):
-                gaps.append(_gap("unknown", LEAD_BASIS, root[:700],
+                gaps.append(_gap("unknown", LEAD_BASIS, root,
                                  "this set holds records reached only through lead-tier "
                                  "links: whatever is walked, counted, totalled or listed "
                                  "from it is a likely match, never a confirmed one; say it "
                                  "as a lead (claims with lead true)"))
             if later:
-                gaps.append(_gap("not_ingested", CAPTURED_AFTER, root[:700],
+                gaps.append(_gap("not_ingested", CAPTURED_AFTER, root,
                                  f"{len(later)} object(s) of this set were first captured "
                                  "after as_known_at: nothing was known of them then, so they "
                                  "are not counted; that is not evidence they did not exist"))
@@ -1415,7 +1415,7 @@ class TraverseTools:
         if len(found) > 1:
             raise ToolError("ambiguous_link",
                             f"hop {index + 1}: {name} on {where} names "
-                            + ", ".join(f"{lt} {d}" for lt, d in found[:4]),
+                            + ", ".join(f"{lt} {d}" for lt, d in found),
                             "give the hop's link_type and direction")
         return found[0]
 
@@ -1775,7 +1775,7 @@ class TraverseTools:
         gaps[len(root_gaps):len(root_gaps)] = unkinded
         gaps.extend(g for g in edge_gaps if g["reason"] != "process_graphs_unavailable")
         sources = {_source_of(row["l1_handle"], row["lineage"])
-                   for row in self._versions_at(scope, page + list(roots[:1])).values()}
+                   for row in self._versions_at(scope, page + list(roots[:1])).values()}  # guard-ok: the traversal origin is one root by design, not a cap
         if related is not None:
             # the first few lead records, with the links' reasons, shown apart
             shown = min(arguments.get("limit", DEFAULT_LIMIT), RELATED_OBJECTS)
@@ -1785,7 +1785,7 @@ class TraverseTools:
             while True:
                 related.update(objects=[lead_refs[o] for o in lead_page if o in lead_refs],
                                edges=_edges_for(lead_edges, set(lead_page), parents,
-                                                detailed)[:2 * len(lead_page)])
+                                                detailed)[:2 * len(lead_page)])  # guard-ok: the byte-fitting loop shrinks edges to the envelope; reasons drop only when the page cannot fit them
                 if _envelope_bytes(related) <= self.limits["max_result_bytes"] // 2:
                     break
                 if related["edges"]:
@@ -1819,7 +1819,7 @@ class TraverseTools:
         # Nothing readable was reached, but some of the path may be hidden from this
         # reader: the answer is no count of zero. Something readable was reached: it is
         # what this reader may see, never the whole (or exact) total.
-        path_subject = " / ".join(f"{h[0]} {h[1]}" for h in hops)[:700]
+        path_subject = " / ".join(f"{h[0]} {h[1]}" for h in hops)
         if trimmed and not ranked:
             gaps.append(_gap("unknown", "marking_withheld", path_subject,
                              "this path carries what this reader may not read (a marking, "
@@ -1830,7 +1830,7 @@ class TraverseTools:
                              "this path carries what this reader may not read (a marking, "
                              "an audience or an item it lacks): the objects shown are those "
                              "it may read, not necessarily all there are"))
-        gaps.extend(self.base._dropped_version_gaps(list(roots[:5]) + page[:20]))
+        gaps.extend(self.base._dropped_version_gaps(list(roots) + list(page)))
         gaps.extend(fresh_gaps)
         # a reached record its source no longer holds at T is labelled, as plx.object
         # labels it (a soft-deleted card, a record missing from its source): reached
@@ -1840,7 +1840,7 @@ class TraverseTools:
             [o for o in lead_page if o in lead_refs] if related is not None else [])
         removed = self.store.removals(sorted(set(listed)), scope.t)
         gaps.extend(removal_gap(basis, since, oid) for oid, (basis, since)
-                    in sorted(removed.items())[:REMOVED_GAPS])
+                    in sorted(removed.items())[:REMOVED_GAPS])  # guard-ok: the overflow is stated in the follow-on gap with its count
         if len(removed) > REMOVED_GAPS:
             gaps.append(_gap("absent_in_source", "missing_from_source",
                              f"{len(removed)} of the {len(set(listed))} objects listed",
@@ -1850,7 +1850,10 @@ class TraverseTools:
         lap("gaps")
         result: dict[str, Any] = {
             "set": handle, "hops": hop_out, "edges": [], "objects": [],
-            "gaps": gaps[:MAX_GAPS],
+            "gaps": gaps if len(gaps) <= MAX_GAPS else gaps[:MAX_GAPS - 1] + [
+                _gap("unknown", "further_gaps_not_listed", path_subject,
+                     f"{len(gaps) - MAX_GAPS + 1} further gap(s) arose on this page; "
+                     f"the first {MAX_GAPS - 1} are listed")],
             # Constant by design: plx.around never reveals what the reader's grants removed.
             "withheld": {"properties": None, "objects": None, "reason": "marking_and_audience"},
             "freshness_coverage": coverage, "meta": meta}
@@ -1868,7 +1871,7 @@ class TraverseTools:
                 # Honest cap: which object, how many shown of how many (best first).
                 out["gaps"] = result["gaps"][:MAX_GAPS - 1] + [_gap(
                     "unknown", "edge_cap", (shown[0] if count == 1 else
-                                            f"{len(shown)} objects of this page")[:700],
+                                            f"{len(shown)} objects of this page"),
                     f"{edge_limit} of {len(reaching)} reaching edges are shown (by hop, "
                     "tier, link id); traverse from a smaller root set to see the rest")]
             more = offset + count < total
@@ -2272,8 +2275,8 @@ class TraverseTools:
         ``earlier`` hop (link type, target type) on the path: a hop this reader saw
         only in part may have left out the objects this one would reach from."""
         subject = f"{link_type} {direction}"
-        searched = {"sources": list(scope.sources)[:8] or ["projection"],
-                    "queries": [f"{link_type} {direction} tier>={floor}"[:200]]}
+        searched = {"sources": list(scope.sources) or ["projection"],
+                    "queries": [f"{link_type} {direction} tier>={floor}"]}
         anchor_key = "from_binding" if direction == "forward" else "to_binding"
         declared = list(enumerate(self.schema.link_types[link_type].get("bindings", ())))
         bindings = sorted({oid.split(":", 2)[1] for oid in frontier})
@@ -2327,7 +2330,7 @@ class TraverseTools:
                     wheres += (f"{link_type}#{index}@{binding}.{path}",)
                 if not wheres:
                     return "unknown", (f"the projector does not report unreadable values of "
-                                       f"{binding} {path}")[:300]
+                                       f"{binding} {path}")
                 for where in wheres:
                     problem = _report_problem(report, where, _UNREAD_CODES,
                                               anchor_handles if role == "anchor" else set())
@@ -2337,7 +2340,7 @@ class TraverseTools:
                             g["where"] == where and g["code"].startswith(_UNREAD_CODES)
                             for g in report):
                         return "unknown", (f"some {binding} {path} values could not be "
-                                           "read by the projector")[:300]
+                                           "read by the projector")
         return None, None
 
     def _build_gaps(self) -> list[dict[str, Any]] | None:
@@ -2455,9 +2458,9 @@ class TraverseTools:
                 shown, reason, why_not = reader_view(
                     edge["tier"], edge["reason"], edge["why_not"],
                     self._corroboration_readable(scope, row))
-                edge.update(tier=shown, reason=reason, why_not=why_not[:16])
+                edge.update(tier=shown, reason=reason, why_not=why_not)
             if edge is None:
-                gaps.append(_gap("unknown", "malformed_link", link_id[:700],
+                gaps.append(_gap("unknown", "malformed_link", link_id,
                                  "a stored link could not be shown in the contract shape"))
                 continue
             kind = self._link_kind(row, pegging)
@@ -2468,7 +2471,7 @@ class TraverseTools:
             if row["binding_kind"] == "mention" and self._mention_ambiguous(
                     scope, row, ambiguous):
                 edge["why_not"] = (edge["why_not"]
-                                   + [{"feature": "ambiguous", "agrees": False}])[:16]
+                                   + [{"feature": "ambiguous", "agrees": False}])
             # L8's citation rule (plx.object): a citation is kept only when it names
             # a value of one of the two ends that this reader may read at T.
             edge = citations.trim(edge)
@@ -2480,13 +2483,13 @@ class TraverseTools:
                 edge["review"] = dict(reviews[key])
                 if "withheld" in edge["review"]:   # its id carries the review id and time
                     edge["link_id"] = "rvw-withheld-" + hashlib.sha256(
-                        row["link_id"].encode("utf-8")).hexdigest()[:32]
+                        row["link_id"].encode("utf-8")).hexdigest()[:32]  # guard-ok: fixed-length derived identifier, not content
             out[link_id] = dict(edge, _hop=index)
             sources |= {_source_of(h) for h in _json_list(row["evidence_handles"])
                         if isinstance(h, str)}
         if unkinded:
             gaps.append(_gap("unknown", "process_graphs_unavailable",
-                             ", ".join(sorted(unkinded))[:700],
+                             ", ".join(sorted(unkinded)),
                              "the process graphs do not load, so whether these links peg a "
                              "prerequisite (dependency) or are references is not known; "
                              "their edges carry no kind"))
@@ -2747,7 +2750,7 @@ class TraverseTools:
         sources = {_source_of(e["citation"]["l1_handle"], e["citation"]["lineage"])
                    for _, e, _ in events}
         sources |= {_source_of(r["l1_handle"], r["lineage"])
-                    for r in self._versions_at(scope, roots[:1]).values()}
+                    for r in self._versions_at(scope, roots[:1]).values()}  # guard-ok: the traversal origin is one root by design, not a cap
         meta, fresh_gaps, coverage = self._listed_meta(scope, sources)
         lap("page")
         if since is None and until is None:
@@ -2756,20 +2759,23 @@ class TraverseTools:
         if trimmed:
             gaps.append(_gap("unknown" if not events else "inaccessible",
                              "marking_withheld" if not events else WITHHELD,
-                             arguments["from"][:700],
+                             arguments["from"],
                              "events of these types can carry what this reader may not "
                              "read (a marking, an audience or an item it lacks): the events "
                              "shown are those it may read, not necessarily all there are"))
         if not events and not gaps:
-            gaps.append(_gap("unknown", "no_match", arguments["from"][:700],
+            gaps.append(_gap("unknown", "no_match", arguments["from"],
                              "no event visible to this reader relates to this root",
-                             {"sources": list(scope.sources)[:8] or ["projection"]}))
-        gaps.extend(self.base._dropped_version_gaps(list(roots[:5])))
+                             {"sources": list(scope.sources) or ["projection"]}))
+        gaps.extend(self.base._dropped_version_gaps(list(roots)))
         gaps.extend(fresh_gaps)
         lap("gaps")
         limit = arguments.get("limit", DEFAULT_LIMIT)
         page = [event for _, event, _ in events[offset:offset + limit]]
-        base_result = {"conflicts": conflicts[:50], "gaps": gaps[:MAX_GAPS],
+        base_result = {"conflicts": conflicts, "gaps": gaps if len(gaps) <= MAX_GAPS else gaps[:MAX_GAPS - 1] + [
+            {"state": "unknown", "reason": "further_gaps_not_listed", "subject": "events",
+             "detail": f"{len(gaps) - MAX_GAPS + 1} further gap(s) arose; the first "
+                       f"{MAX_GAPS - 1} are listed"}],
                        "withheld": {"properties": None, "objects": None,
                                     "reason": "marking_and_audience"},
                        "freshness_coverage": coverage, "meta": meta}
@@ -2831,7 +2837,7 @@ class TraverseTools:
         out: list[dict] = []
         elsewhere_out: list[dict] = []
         for oid in roots:
-            object_type, binding = oid.split(":", 2)[:2]
+            object_type, binding = oid.split(":", 2)[:2]  # guard-ok: object_id shape (type:binding), not content
             elsewhere: dict[str, list[str]] = {}
             for eid, spec in sorted(self.schema.event_types.items()):
                 if spec.get("object_type") != object_type or spec.get("time_basis") == \
@@ -2841,7 +2847,7 @@ class TraverseTools:
                     continue
                 if (eid, oid) in seen:
                     continue
-                subject = f"{oid} {eid}"[:700]
+                subject = f"{oid} {eid}"
                 source = (spec.get("time") or {}).get("binding")
                 if isinstance(source, str) and source != binding:
                     elsewhere.setdefault(source, []).append(eid)
@@ -2864,11 +2870,11 @@ class TraverseTools:
             if elsewhere:
                 names = sorted(e for group in elsewhere.values() for e in group)
                 elsewhere_out.append(_gap(
-                    "unknown", "not_applicable_to_source", f"{oid} {' '.join(names)}"[:700],
-                    (f"these declared event types are read from {', '.join(sorted(elsewhere))}"
+                    "unknown", "not_applicable_to_source", f"{oid} {' '.join(names)}",
+                    f"these declared event types are read from {', '.join(sorted(elsewhere))}"
                      f", not from {binding}: this record cannot carry them (follow a "
-                     "same-record link to the record that does)")[:600]))
-        return (out + elsewhere_out)[:MAX_GAPS]
+                     "same-record link to the record that does)"))
+        return out + elsewhere_out
 
 
 # --------------------------------------------------------------------------- pure helpers
@@ -2909,9 +2915,9 @@ def _walkable_hint(schema: Any, types: set[str] | None, asked: str = "",
         link_type, _direction, name = entry
         return max(difflib.SequenceMatcher(None, words, text.lower()).ratio()
                    for text in (name, link_type.split(".", 1)[-1], link_type))
-    closest = sorted(found, key=near, reverse=True)[:5] if words else []
+    closest = sorted(found, key=near, reverse=True) if words else []
     ordered = closest + [entry for entry in found if entry not in closest]
-    head = f"links from {', '.join(sorted(types))[:120]}: "
+    head = f"links from {', '.join(sorted(types))}: "
     shown: list[str] = []
     for n, (link_type, direction, _name) in enumerate(ordered):
         more = f"; and {len(ordered) - n} more (plx.schema section links)"
@@ -3133,7 +3139,7 @@ def _pg_identity(cur: Any, version: Any = None) -> tuple[str, dict[str, Any]] | 
         return None
     cur.execute(_PG_IDENTITY_SQL)
     system, database, now, digest = cur.fetchone()
-    name = hashlib.sha256(f"{system}/{database}".encode()).hexdigest()[:24]
+    name = hashlib.sha256(f"{system}/{database}".encode()).hexdigest()[:24]  # guard-ok: fixed-length derived identifier, not content
     folder = Path(os.environ.get("PLX_PG_FACTS_DIR")
                   or Path.home() / ".cache" / "plx" / "pg-facts")
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3447,7 +3453,7 @@ _STALE_SLICE_KEYS = (("slices",), ("slice_of",))
 
 def _slice_facts(facts: Mapping[Any, Any]) -> dict[Any, Any]:
     return {key: value for key, value in facts.items()
-            if isinstance(key, tuple) and key[:1] in _STALE_SLICE_KEYS}
+            if isinstance(key, tuple) and key[:1] in _STALE_SLICE_KEYS}  # guard-ok: tuple-prefix shape test, not content
 
 
 def _stash_stale(store: Any, facts: Mapping[Any, Any]) -> None:
@@ -4428,7 +4434,7 @@ def keep_pg_facts(dsn: str, cell_families: Sequence[str] | None = None, *,
         except Exception as exc:  # noqa: BLE001 - reported with its kind
             if loud:
                 raise FactsNotKept(f"a fact read failed: {type(exc).__name__}: "
-                                   f"{str(exc)[:300]}") from exc
+                                   f"{str(exc)}") from exc
             return False
         finally:
             _trim_heap()
@@ -5027,9 +5033,9 @@ def _features(text: Any) -> list[dict] | None:
                  and _citation_ok(c)]
         if cites:
             feature["citations"] = [{k: c[k] for k in ("l1_handle", "field_path", "digest",
-                                                       "lineage")} for c in cites[:4]]
+                                                       "lineage")} for c in cites]
         out.append(feature)
-    return out[:16]
+    return out
 
 
 def _edge(row: Mapping[str, Any], tier: str) -> dict[str, Any] | None:
@@ -5039,8 +5045,8 @@ def _edge(row: Mapping[str, Any], tier: str) -> dict[str, Any] | None:
             or not _OBJECT_ID.match(row["to_object"] or "")):
         return None
     if tier != row["tier"]:
-        why_not = (why_not + [{"feature": "never_authority_lineage", "agrees": None}])[:16]
-    edge: dict[str, Any] = {"link_id": row["link_id"][:128], "link_type": row["link_type"],
+        why_not = why_not + [{"feature": "never_authority_lineage", "agrees": None}]
+    edge: dict[str, Any] = {"link_id": row["link_id"], "link_type": row["link_type"],
                             "from": row["from_object"], "to": row["to_object"], "tier": tier,
                             "reason": reason, "why_not": why_not}
     markings = sorted(set(_json_list(row["markings"])))
@@ -5193,7 +5199,7 @@ def _event_out(row: Mapping[str, Any], relations: Sequence[tuple[str, str]],
                if _NAME.match(q or "") and _OBJECT_ID.match(oid or "")][:MAX_EVENT_OBJECTS]
     if not objects:
         return None
-    event: dict[str, Any] = {"event_id": row["event_id"][:128], "event_type": row["event_type"],
+    event: dict[str, Any] = {"event_id": row["event_id"], "event_type": row["event_type"],
                              "time_basis": row["time_basis"], "time": row["time"],
                              "objects": objects, "citation": citation}
     if row["time_basis"] == "capture_observed":

@@ -30,7 +30,7 @@ const CONTACTISH = /@[\w.-]+\.\w|\+?\d[\d ().-]{7,}\d|^\s*[etmpfw]:\s|www\./i;
 /**
  * A message body as a person reads it: inline-image placeholders ([cid:...]) go wherever
  * they sit, an address repeated after a name (<mailto:...>) goes, a link repeated after its
- * own text goes, a wrapped safe-link reads "(link)", and a line of 10+ _ - = becomes "—".
+ * own text goes, a wrapped safe-link reads "(link)", and a line of 10+ _ - = becomes "–".
  * Display only: the cited text is unchanged on the server.
  */
 export function readableBody(text: string): string {
@@ -42,7 +42,7 @@ export function readableBody(text: string): string {
     .replace(/<https:\/\/[^>\s]*safelinks\.protection\.outlook\.com[^>\s]*>/g, " (link)")
     .replace(/[​‌‍﻿]/g, "")
     .split("\n")
-    .map((l) => (RULE.test(l) ? "—" : l.replace(/[ \t]+$/, "")))
+    .map((l) => (RULE.test(l) ? "–" : l.replace(/[ \t]+$/, "")))
     .join("\n")
     .replace(/^\s*$\n(?=\s*$)/gm, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -295,7 +295,7 @@ export function SourceDocument({
   const body = email ? readableBody(text) : text;
   const split = email ? splitSignature(body) : { main: body, signature: "" };
   // a separator line left just above the signature says nothing once the signature folds away
-  const main = split.signature ? split.main.replace(/\n+—\s*$/, "") : split.main;
+  const main = split.signature ? split.main.replace(/\n+[–—]\s*$/, "") : split.main;
   const signature = split.signature;
   const H = headingLevel === 1 ? "h1" : "h2";
   const citedCount = cited.length > 0 ? lead.filter((_, i) => i < cited.length).length : 0;

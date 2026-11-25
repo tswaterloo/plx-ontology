@@ -54,6 +54,13 @@ describe("answer table type", () => {
     expect(name?.className).not.toContain("text-right");
     expect(screen.getByText("Replies").closest("th")?.className).toContain("text-right");
   });
+
+  it("right-aligns numeric columns containing currency prefixes, unverified figures before currency, or placeholder dashes", () => {
+    render(<AnswerText text={"| Supplier | Owed |\n|---|---|\n| North Co | CA$12,400.00 |\n| South Ltd | 9 (unverified) USD |\n| East Inc | – |"} />);
+    expect(screen.getByText("Owed").closest("th")?.className).toContain("text-right");
+    expect(screen.getByText("CA$12,400.00").closest("td")?.className).toContain("text-right");
+    expect(screen.getByText("–").closest("td")?.className).toContain("text-right");
+  });
 });
 
 describe("splitTables", () => {
@@ -295,5 +302,84 @@ describe("simple Ask Excel export", () => {
         },
       ],
     });
+  });
+});
+
+describe("Ask chart placement and streaming", () => {
+  const monthlyChart = {
+    kind: "bar" as const,
+    title: "Monthly revenue for 2026 (CAD)",
+    x: "month",
+    labels: ["Jan", "Feb", "Mar"],
+    series: [{ name: "revenue", values: [100000, 120000, 115000] }],
+    rows: 3,
+    shown: 3,
+    currency: "CAD",
+  };
+
+  it("renders charts right after the opening summary paragraph and before the Markdown breakdown table", () => {
+    const withChart: Answer = {
+      ...simple,
+      question: "Plot monthly revenue for 2026 in CAD",
+      direct_answer: [
+        "Monthly invoiced revenue for 2026 totaled 335,000 CAD across three months.",
+        "",
+        "| Month | Revenue |",
+        "|---|---|",
+        "| Jan | 100,000 CAD |",
+        "| Feb | 120,000 CAD |",
+        "| Mar | 115,000 CAD |",
+        "",
+        "- Peak month was February.",
+      ].join("\n"),
+      charts: [monthlyChart],
+    };
+    render(<AnswerCard turn={{ id: "t-chart", question: withChart.question, phase: "done", streamed: "", answer: withChart }} />);
+
+    const summary = screen.getByText(/Monthly invoiced revenue for 2026 totaled/);
+    const chart = screen.getByTestId("answer-charts");
+    const table = screen.getByTestId("simple-answer").querySelector("table");
+    expect(table).not.toBeNull();
+    // DOM order: opening summary paragraph -> chart -> breakdown table
+    expect(summary.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chart.compareDocumentPosition(table!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders charts at the top when the answer starts directly with a Markdown table", () => {
+    const tableFirst: Answer = {
+      ...simple,
+      direct_answer: "| Month | Revenue |\n|---|---|\n| Jan | 100,000 CAD |\n| Feb | 120,000 CAD |",
+      charts: [monthlyChart],
+    };
+    render(<AnswerCard turn={{ id: "t-table-first", question: "Plot monthly revenue", phase: "done", streamed: "", answer: tableFirst }} />);
+
+    const chart = screen.getByTestId("answer-charts");
+    const table = screen.getByTestId("simple-answer").querySelector("table");
+    expect(table).not.toBeNull();
+    expect(chart.compareDocumentPosition(table!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders early charts SSE event immediately while streaming before the final answer arrives", async () => {
+    let turn: Turn = { id: "t-stream-chart", question: "Plot monthly revenue for 2026 in CAD", phase: "thinking", streamed: "" };
+    turn = applyEvent(turn, {
+      event: "token",
+      data: {
+        text: "Monthly revenue for 2026 totaled 335,000 CAD.\n\n| Month | Revenue |\n|---|---|\n| Jan | 100,000 CAD |",
+        whole: true,
+      },
+    });
+    turn = applyEvent(turn, {
+      event: "charts",
+      data: { charts: [monthlyChart] },
+    });
+    expect(turn.phase).toBe("streaming");
+    expect(turn.charts).toHaveLength(1);
+
+    render(<AnswerCard turn={turn} />);
+    await waitFor(() => expect(screen.getByTestId("answer-charts")).toBeInTheDocument());
+    expect(screen.getByTestId("answer-charts")).toHaveTextContent("Monthly revenue for 2026 (CAD)");
+    await waitFor(() => expect(screen.getByTestId("simple-answer").querySelector("table")).not.toBeNull());
+    const table = screen.getByTestId("simple-answer").querySelector("table")!;
+    expect(screen.getByTestId("answer-charts").compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

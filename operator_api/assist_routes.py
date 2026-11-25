@@ -21,6 +21,7 @@ Nothing here sends or writes anywhere but ``assist.matter_log`` (append only: th
 may do nothing else to the Assist tables)."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -55,21 +56,42 @@ def _pool(backend: Any) -> Any:
     return getattr(getattr(backend, "memory", None), "pool", None)
 
 
+def _bump_assist_drafts(backend: Any) -> None:
+    """Advance the in-process Assist drafts cache version so the next ``GET /api/autopilot/drafts``
+    sees matter/queue writes immediately."""
+    lock = getattr(backend, "_lock", None)
+    if lock is not None:
+        with lock:
+            backend._assist_drafts_ver = int(getattr(backend, "_assist_drafts_ver", 0)) + 1
+    else:
+        backend._assist_drafts_ver = int(getattr(backend, "_assist_drafts_ver", 0)) + 1
+
+
 def _door(backend: Any, reader: Reader) -> Callable[[Sequence[Mapping[str, Any]]], set]:
-    """The reader's door over a whole list at once: the grant read once, every cited handle
-    of every item decided in one call (``autopilot_reading.may_show`` per item)."""
+    """The reader's door over a whole list at once: the grant read once, items pre-filtered
+    by audience and marking before deciding cited handles in one call
+    (``autopilot_reading.may_show`` per item; fail closed)."""
     from operating.autopilot_reading import may_show
 
     def decide_all(may_read: Any, held: Any, decide: Any, items: Sequence[Mapping]) -> set:
-        cited = sorted({h for i in items for h in i["citations"]})
+        held_set = set(held)
+        eligible: list[Mapping[str, Any]] = []
+        for i in items:
+            try:
+                if all(may_read(a) for a in i["audiences"]) and set(i["markings"]) <= held_set:
+                    eligible.append(i)
+            except Exception:  # noqa: BLE001 - undecidable item is not shown (fail closed)
+                continue
+        if not eligible:
+            return set()
+        cited = sorted({h for i in eligible for h in i["citations"]})
         try:
             refused = decide(cited) if cited else {}
         except Exception:  # noqa: BLE001 - undecidable: nothing is shown, said in the log
             LOG.warning("assist list: the door could not decide %d handles", len(cited))
             return set()
-        held = set(held)
-        return {i["item_id"] for i in items if may_show(
-            i, may_read=may_read, held=held, refused=refused, cited=i["citations"])}
+        return {i["item_id"] for i in eligible if may_show(
+            i, may_read=may_read, held=held_set, refused=refused, cited=i["citations"])}
 
     def door(items: Sequence[Mapping[str, Any]]) -> set:
         grant = getattr(backend, "autopilot_grant", None)
@@ -98,7 +120,8 @@ def _names_of(backend: Any) -> Optional[Callable[[Any], Mapping[str, str]]]:
 
 
 def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
-                 fresh: bool = False) -> m.AutopilotDrafts:
+                 fresh: bool = False, include_queue: bool = True,
+                 matter_id: Optional[str] = None) -> m.AutopilotDrafts:
     """The reader's matters as ``AutopilotDrafts`` (module text); ``fresh``: the queue's
     cards read now, not from the kept list (an answer to a write)."""
     from operating import assist_matters as am
@@ -106,7 +129,7 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
     pool = _pool(backend)
     read_queue = backend._prepared_read if fresh else backend.autopilot_prepared_list
     if pool is None:      # no matters here: the queue's own cards only, and it is said
-        queue = read_queue(reader)
+        queue = read_queue(reader) if include_queue else m.AutopilotDrafts(items=[], never_senders=[])
         return m.AutopilotDrafts(items=list(queue.items), never_senders=queue.never_senders,
                                  status="not_run", reason="the Assist store is not connected here")
     owner = bool(backend._apa_is_owner(reader))
@@ -120,17 +143,50 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
         LOG.warning("assist list: the opt-in journal could not be read", exc_info=True)
         rows = None             # unreadable: nobody is shown (F26), said as opt_in_unreadable
     shown = am.shown_to(ids, rows=rows, draft=ae.load_draft())
-    with pool.connection() as pg:
-        got = am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=owner,
-                          all_ages=all_ages, door=_door(backend, reader),
-                          names_of=_names_of(backend))
+    extra = {"matter_id": matter_id} if matter_id is not None else {}
+
+    def read_matters() -> dict[str, Any]:
+        with pool.connection() as pg:
+            return am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=owner,
+                               all_ages=all_ages, door=_door(backend, reader),
+                               names_of=_names_of(backend), **extra)
+
+    if include_queue and matter_id is None:
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="assist-drafts") as ex:
+            f_matters = ex.submit(read_matters)
+            f_queue = ex.submit(read_queue, reader)
+            got = f_matters.result()
+            queue_items = list(f_queue.result().items)
+    else:
+        got = read_matters()
+        queue_items = list(read_queue(reader).items) if include_queue else []
     never = backend._apa_never(state, ids)
     # a matter made from one of the remaining queue triggers' items is listed as that item's
-    # own card (its prepared changes, holds and links), read as the queue lists it
-    items = _put_off(backend, state, [_prepared(i) for i in got["items"]
-                                      if not i["queue_card"] and i["kind_of_matter"] != am.MC_APPROVAL_KIND])
-    queue = read_queue(reader).items
-    items = sorted(items + list(queue), key=lambda i: i.created_at, reverse=True)
+    # own card (its prepared changes, holds and links), read as the queue lists it; automated
+    # internal system monitoring alerts (such as cos@petrasoap.com health alerts) are excluded
+    # from the employee's Mine queue
+    from operating.assist_readings import is_system_alert_mail
+    seen_sigs: set[tuple[str, str, str, str]] = set()
+    kept_raw = []
+    for i in got["items"]:
+        if i["queue_card"] or i["kind_of_matter"] == am.MC_APPROVAL_KIND:
+            continue
+        if i.get("channel") == "mail" and is_system_alert_mail(i.get("sender"), i.get("subject"), i.get("summary")):
+            continue
+        sig = (
+            str(i.get("owner") or "").lower(),
+            str(i.get("kind_of_matter") or ""),
+            " ".join(str(i.get("summary") or "").lower().split()),
+            " ".join(str(i.get("note") or "").lower().split()),
+        )
+        if matter_id is None and sig[2] and sig in seen_sigs:
+            continue
+        if sig[2]:
+            seen_sigs.add(sig)
+        kept_raw.append(i)
+    items = _put_off(backend, state, [_prepared(i) for i in kept_raw])
+    if include_queue:
+        items = sorted(items + queue_items, key=lambda i: i.created_at, reverse=True)
     return m.AutopilotDrafts(items=items, never_senders=never, older=got["older"],
                              status=got["status"], reason=got["reason"],
                              stale_since=got["as_of"].isoformat()
@@ -138,14 +194,35 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
 
 
 def _prepared(i: Mapping[str, Any]) -> m.AutopilotPrepared:
-    from operating.assist_matters import clean_note_spacing
+    from operating.assist_matters import clean_note_spacing, clean_user_text
     def iso(v: Any) -> Optional[str]:
         return v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
+    todos = [
+        m.AutopilotTodo(
+            system=str(t.get("system") or ""),
+            record=clean_user_text(t.get("record") or ""),
+            what=clean_user_text(t.get("what") or ""),
+        )
+        for t in (i.get("todos") or ())
+        if isinstance(t, Mapping) and str(t.get("what") or "").strip()
+    ]
+    options = [
+        m.AutopilotOption(
+            label=clean_user_text(o.get("label") or ""),
+            reply=clean_user_text(o.get("reply") or ""),
+        )
+        for o in (i.get("options") or ())
+        if isinstance(o, Mapping) and str(o.get("reply") or "").strip()
+    ]
+    facts = [clean_user_text(f) for f in (i.get("facts") or ()) if str(f or "").strip()]
     return m.AutopilotPrepared(
-        item_id=i["item_id"], sender=i["sender"], channel=i["channel"], subject=i["subject"],
-        message=i["message"], kind=i["kind"], summary=i["summary"],
-        note=clean_note_spacing(i["note"]),
-        body=i["body"], to=i["to"], ask=i.get("ask", ""), created_at=iso(i["basis_at"]) or "",
+        item_id=i["item_id"], sender=clean_user_text(i["sender"]), channel=i["channel"],
+        subject=clean_user_text(i["subject"]), message=clean_user_text(i["message"]),
+        kind=i["kind"], summary=clean_user_text(i["summary"]),
+        note=clean_note_spacing(clean_user_text(i["note"])),
+        body=clean_user_text(i["body"]), to=list(i["to"]), ask=clean_user_text(i.get("ask", "")),
+        facts=facts, todos=todos, options=options, redo=bool(i.get("redo", False)),
+        created_at=iso(i["basis_at"]) or "",
         state=i["state"], verified_at=iso(i["verified_at"]), plan_status=i["plan_status"],
         plan_reason=i["plan_reason"], plan_at=iso(i.get("plan_at")),
         requested_at=iso(i.get("requested_at")))
@@ -153,7 +230,7 @@ def _prepared(i: Mapping[str, Any]) -> m.AutopilotPrepared:
 
 def _matter(backend: Any, reader: Reader, item_id: str) -> dict[str, Any]:
     """The reader's own listed matter (as the list shows it, through the door), else 404."""
-    got = matters_list(backend, reader, all_ages=True)
+    got = matters_list(backend, reader, all_ages=True, include_queue=False, matter_id=item_id)
     if not any(i.item_id == item_id for i in got.items):
         raise UserFacing("not_found", "That item is not on your list.", 404)
     pool = _pool(backend)
@@ -180,6 +257,9 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
     def assist_list(all_ages: bool = False, who: Reader = Depends(reader)) -> m.AutopilotDrafts:
         """Your open work, newest first: each item kept true against its source; the last
         14 days unless ``all_ages`` (``older`` says how many more)."""
+        cached = getattr(backend, "assist_drafts", None)
+        if callable(cached):
+            return cached(who, all_ages=all_ages)
         return matters_list(backend, who, all_ages=all_ages)
 
     @app.post("/api/autopilot/items/{item_id:matter}/draft", response_model=m.AssistWorking,
@@ -188,6 +268,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         """Draft this item now (it goes to the front of the drafting queue)."""
         _matter(backend, who, item_id)
         _log(backend, item_id, "requested", {"by": sorted(_ids(backend, who))[:1]})
+        _bump_assist_drafts(backend)
         return m.AssistWorking(status="working")
 
     @app.post("/api/autopilot/items/{item_id:matter}/decision", response_model=m.AutopilotItem,
@@ -199,6 +280,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         if found["legacy"]:
             item = backend.autopilot_decide(who, found["legacy"], body)
             notes.autopilot_decided(who, item)
+            _bump_assist_drafts(backend)
             return item
         if body.decision not in ("accept", "reject", "snooze"):
             raise UserFacing("action_refused", "This item can be marked done, not needed or "
@@ -207,6 +289,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         if body.decision != "snooze":
             _log(backend, item_id, "closed", {"by": sorted(_ids(backend, who))[:1],
                                               "decision": body.decision, "note": body.note or ""})
+        _bump_assist_drafts(backend)
         return _decided(item_id, found["owner"], body.decision)
 
     @app.post("/api/autopilot/items/{item_id:matter}/reply-from-line",
@@ -216,10 +299,13 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         """Your one line for this item: the draft is written from it."""
         found = _matter(backend, who, item_id)
         if found["legacy"]:
-            return backend.autopilot_reply_from_line(who, found["legacy"], body)
+            res = backend.autopilot_reply_from_line(who, found["legacy"], body)
+            _bump_assist_drafts(backend)
+            return res
         _log(backend, item_id, "person_line", {"by": sorted(_ids(backend, who))[:1],
                                                "line": body.line})
         _log(backend, item_id, "requested", {"by": sorted(_ids(backend, who))[:1]})
+        _bump_assist_drafts(backend)
         return _decided(item_id, found["owner"], None)
 
     @app.post("/api/autopilot/items/{item_id:matter}/hand", response_model=m.AutopilotDrafts,
@@ -230,6 +316,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         if not found["legacy"]:
             raise UserFacing("action_refused", "This item cannot be passed on yet.", 409)
         backend.autopilot_hand(who, found["legacy"], body)
+        _bump_assist_drafts(backend)
         return matters_list(backend, who, fresh=True)
 
     @app.post("/api/autopilot/items/{item_id:matter}/take", response_model=m.AutopilotDrafts,
@@ -239,6 +326,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
         if not found["legacy"]:
             raise UserFacing("action_refused", "This item cannot be taken yet.", 409)
         backend.autopilot_take(who, found["legacy"])
+        _bump_assist_drafts(backend)
         return matters_list(backend, who, fresh=True)
 
 
@@ -274,15 +362,21 @@ def _put_off(backend: Any, state: Any, items: Sequence[Mapping[str, Any]]) -> li
     """The matters the person already closed or put off since their basis message (their word
     in the decisions journal), left out of the list until the cycle catches up."""
     from datetime import datetime, timezone
-    from .autopilot_area import _instant
-    if state is None:
+    from operating.card_actions import Journal
+    from .autopilot_area import DECISIONS_FILE, _instant
+    if state is None or not (state / DECISIONS_FILE).exists():
         return list(items)
-    said = backend._apa_decisions(state)
+    said: dict[str, dict[str, Any]] = {}
+    for row in Journal(state / DECISIONS_FILE).rows():
+        if row.get("matter"):
+            said[str(row.get("item_id"))] = row
+    if not said:
+        return list(items)
     now = datetime.now(timezone.utc)
     out = []
     for i in items:
         d = said.get(i.item_id)
-        at = _instant(d.get("at")) if d and d.get("matter") else None
+        at = _instant(d.get("at")) if d else None
         basis = _instant(i.created_at)
         if at is not None and (basis is None or at > basis):
             if d["decision"] in ("accept", "reject"):

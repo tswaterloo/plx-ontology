@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { missingText } from "@/components/answer-parts";
-import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isBlocked, linkSections, moneyText, recordHead } from "./record";
+import { humanizeIsoTimestamps } from "./format";
+import { factMap, factValue, groupLinked, groupRelated, groupTimeline, isAccountingLinkGroup, isBlocked, linkSections, moneyText, plainLinkedHeading, recordHead } from "./record";
 import type { LinkedItem, LinkGroup, LinkRef, ObjectPage, Source } from "./types";
 
 const bc = (field: string): Source => ({ system: "BC", handle: "bc://production/c/purchaseOrders/1@e", label: "BC production", fields: { [field]: "x" } });
@@ -306,6 +307,26 @@ describe("links by link kind", () => {
     const obj = { object_id: "SalesOrder:bc.sales_orders:so1", type: "SalesOrder", label: "SO-1", summary: "", status: { state: "read", text: "", sources: [] }, facts: [{ text: "External document number: PO-55", sources: [src], check: "read_from_record" }] } as unknown as ObjectPage;
     const fact = recordHead(obj).keyFacts.find((k) => k.value === "PO-55");
     expect(fact?.source).toEqual(src);
+  });
+
+  it("maps internal Sage accounting labels to plain English and classifies accounting sub-tables for folding", () => {
+    expect(plainLinkedHeading("AR customer period statistics")).toBe("Customer period totals");
+    expect(plainLinkedHeading("AR customer optional field")).toBe("Customer custom fields");
+    expect(plainLinkedHeading("AR open document journal line")).toBe("Receivables journal entries");
+    expect(plainLinkedHeading("AR customer optional field · custom")).toBe("Customer custom fields · custom");
+    expect(plainLinkedHeading("Sales invoice")).toBe("Sales invoice");
+
+    expect(isAccountingLinkGroup({ type: "RelSageArStcus", type_label: "AR customer period statistics" }, "AR customer period statistics")).toBe(true);
+    expect(isAccountingLinkGroup({ type: "RelSageArCuso", type_label: "AR customer optional field" }, "AR customer optional field")).toBe(true);
+    expect(isAccountingLinkGroup({ type: "RelSageArObp", type_label: "AR open document journal line" }, "AR open document journal line")).toBe(true);
+    expect(isAccountingLinkGroup({ type: "SalesOrder" }, "Customer order")).toBe(false);
+    expect(isAccountingLinkGroup({ type: "Quote" }, "Quote")).toBe(false);
+  });
+
+  it("humanizes raw ISO microsecond timestamps in server warning banners", () => {
+    const out = humanizeIsoTimestamps("the matters were last re-checked 2026-11-25T15:59:02.170055+00:00");
+    expect(out).not.toContain("2026-11-25T15:59:02");
+    expect(out).toMatch(/the matters were last re-checked .*ET$/);
   });
 });
 

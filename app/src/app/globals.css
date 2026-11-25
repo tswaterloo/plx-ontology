@@ -19,15 +19,15 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background: var(--bg-subtle);
+    background: var(--canvas);
   }
   body {
-    background: var(--bg);
+    background: var(--canvas);
     color: var(--fg);
     font-family: var(--font-sans);
     font-size: 14px;
     line-height: 22px;
-    letter-spacing: -0.006em;
+    letter-spacing: -0.008em;
     font-variant-numeric: lining-nums tabular-nums;
   }
   /* thin, quiet scrollbars inside panes, as a desktop app draws them */
@@ -36,13 +36,13 @@
     scrollbar-color: var(--border-strong) transparent;
   }
   :focus-visible {
-    outline: 2px solid var(--ring);
+    outline: 1.5px solid var(--ring);
     outline-offset: 2px;
-    border-radius: 2px;
+    border-radius: 3px;
   }
-  /* controls feel alive: a quick colour change on hover and focus, a pointer on anything pressable */
+  /* controls feel alive: crisp 150ms micro-interactions with physical ease-out */
   button, a, summary, select, input, [role="button"], [role="tab"] {
-    transition: color 100ms ease, background-color 100ms ease, border-color 100ms ease, opacity 100ms ease, box-shadow 100ms ease;
+    transition: color 150ms cubic-bezier(0.2, 0, 0, 1), background-color 150ms cubic-bezier(0.2, 0, 0, 1), border-color 150ms cubic-bezier(0.2, 0, 0, 1), opacity 150ms cubic-bezier(0.2, 0, 0, 1), box-shadow 150ms cubic-bezier(0.2, 0, 0, 1), transform 150ms cubic-bezier(0.2, 0, 0, 1);
   }
   button:not(:disabled), [role="button"], [role="tab"], summary, select {
     cursor: pointer;
@@ -77,8 +77,17 @@
   --fg-faint: #636367;
 }
 :root[data-os="win"].dark {
-  --fg-muted: #b0b0b5;
-  --fg-faint: #98989e;
+  --fg-muted: #a4aab6;
+  --fg-faint: #8f96a4;
+}
+
+/* Dark-mode WCAG AA contrast pairing: solid primary buttons use --accent-fill (#2563eb with
+   #ffffff = 5.17:1) while accent text links use --accent-text (#60a5fa = 7.43:1 on #101114). */
+.dark .bg-accent.text-accent-fg {
+  background-color: var(--accent-fill);
+}
+.dark .text-accent {
+  color: var(--accent-text);
 }
 
 /* A list row reached with j / k clears the sticky pane header. */
@@ -124,11 +133,10 @@
   }
 }
 
-/* Figures that are data (IDs, counts, money, days late) set in Geist Mono with tabular
-   digits. Size and tracking stay with the element's own text classes. */
+/* Numeric figures (counts, totals, dates, days) use crisp sans-serif with tabular digits. */
 @utility num {
-  font-family: var(--font-mark);
-  font-variant-numeric: tabular-nums;
+  font-family: var(--font-sans);
+  font-variant-numeric: lining-nums tabular-nums;
 }
 
 /* A chart is drawn 640 units wide and shrunk to the phone's width (about 0.55): its 10-11 unit

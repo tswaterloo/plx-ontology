@@ -220,11 +220,9 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
     (``document_understanding.OcrFailed``). ``defer_ocr``: no OCR run now; a PDF with
     pages lacking a text layer is ``ocr_pending`` (text layer kept) on a host with an
     engine, so a later pass OCR-reads the stored bytes (``ocr_unavailable`` without one)."""
-    from .document_understanding import (MAX_BYTES, MAX_PAGES, OcrFailed, extract_document,
+    from .document_understanding import (MAX_PAGES, OcrFailed, extract_document,
                                          local_ocr_available)
 
-    if len(content) > MAX_BYTES:
-        return TEXT_EXCEEDS_BOUND, None
     url = record.get("original_url")
     mime, name = _mime(record), _name(record)
     # A label file's own preview of its label (``text_formats.label_preview``).
@@ -287,6 +285,14 @@ def capture_text(content: bytes, record: Mapping[str, Any], *,
         # a file of a named kind that holds no search text is its own terminal class
         return terminal_class(name, content) or "unsupported", None
     return (found.status if found.status == "no_text" else "failed"), None
+
+
+def capture_text_file(path: str | Path, record: Mapping[str, Any], *,
+                      max_chars: int | None = None, defer_ocr: bool = False,
+                      image_ocr: bool = False) -> tuple[str, str | None]:
+    """Path-based entry point to :func:`capture_text` for streamed files on disk."""
+    return capture_text(Path(path).read_bytes(), record, max_chars=max_chars,
+                        defer_ocr=defer_ocr, image_ocr=image_ocr)
 
 
 def _first_chars(content: bytes, mime: str, name: str, max_chars: int

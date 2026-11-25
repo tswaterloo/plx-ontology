@@ -12,8 +12,8 @@ const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString
 const LIST: AskChats = {
   available: true,
   chats: [
-    { conversation_id: "c2", title: "PO 90412 chase", named: true, pinned: true, questions: 3, last_at: hoursAgo(30) },
-    { conversation_id: "c1", title: "Which orders are late?", named: false, pinned: false, questions: 1, last_at: hoursAgo(1) },
+    { conversation_id: "c2", title: "PO 90412 chase", named: true, pinned: true, questions: 3, last_at: hoursAgo(30), running: false },
+    { conversation_id: "c1", title: "Which orders are late?", named: false, pinned: false, questions: 1, last_at: hoursAgo(1), running: false },
   ],
 };
 
@@ -81,7 +81,7 @@ describe("Ask's chats list", () => {
   });
 
   it("folds the same question asked again into one row with a count, the rest one click away", async () => {
-    const again = [1, 2, 3].map((n) => ({ conversation_id: `r${n}`, title: "Which open sales orders are late?", named: false, pinned: false, questions: 1, last_at: hoursAgo(n) }));
+    const again = [1, 2, 3].map((n) => ({ conversation_id: `r${n}`, title: "Which open sales orders are late?", named: false, pinned: false, questions: 1, last_at: hoursAgo(n), running: false }));
     api.getAskChats.mockResolvedValue({ available: true, chats: again });
     render(<AskChatList onNew={() => undefined} />);
     await screen.findByText("Which open sales orders are late?");
@@ -91,12 +91,27 @@ describe("Ask's chats list", () => {
   });
 
   it("reaches every chat of a long list with no cap or show-more wall", async () => {
-    const many = Array.from({ length: 150 }, (_, n) => ({ conversation_id: `m${n}`, title: `Question ${n}`, named: false, pinned: false, questions: 1, last_at: hoursAgo(n / 10) }));
+    const many = Array.from({ length: 150 }, (_, n) => ({ conversation_id: `m${n}`, title: `Question ${n}`, named: false, pinned: false, questions: 1, last_at: hoursAgo(n / 10), running: false }));
     api.getAskChats.mockResolvedValue({ available: true, chats: many });
     render(<AskChatList onNew={() => undefined} />);
     await screen.findByText("Question 0");
     // no IntersectionObserver in this environment: the whole list is drawn
     await waitFor(() => expect(screen.getAllByRole("link")).toHaveLength(150));
     expect(screen.queryByText(/Show 30 more|Show all/)).toBeNull();
+  });
+
+  it("shows a quiet pulsing status dot on a chat that is actively running", async () => {
+    api.getAskChats.mockResolvedValue({
+      available: true,
+      chats: [
+        { conversation_id: "c_run", title: "Soapbox shipments", named: false, pinned: false, questions: 1, last_at: hoursAgo(0), running: true },
+        LIST.chats[1],
+      ],
+    });
+    render(<AskChatList current="c_run" onNew={() => undefined} />);
+    await screen.findByText("Soapbox shipments");
+    const dots = screen.getAllByTestId("chat-running-dot");
+    expect(dots).toHaveLength(1);
+    expect(dots[0]).toHaveAttribute("aria-label", "Working on an answer");
   });
 });

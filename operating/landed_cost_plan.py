@@ -131,7 +131,6 @@ _TARIFF_PERCENT = re.compile(r"(\d{1,3}(?:\.\d{1,6})?)\s*%")
 _TARIFF_UNITS = {"%": Decimal(100), "percent": Decimal(100), "pct": Decimal(100),
                  "ratio": Decimal(1), "fraction": Decimal(1)}
 _LINE_ROLES = ("unit_price", "quantity", "received")
-MAX_STEP_CHARS = 400
 # The roles whose sources a cost input rests on (named in its gap as what was searched).
 _COST_ROLES = {"goods": ("unit_price", "confirmation_amount"), "freight": ("freight_estimate", "receipt_freight"),
                "duty": ("duty_estimate", "classification", "receipt_duty"),
@@ -214,7 +213,7 @@ def duty_assumption(record: Mapping[str, Any]) -> dict[str, Any]:
         raise LandedCostError("assumption_must_be_mapping")
     extra = set(record) - _ASSUMPTION_KEYS
     if extra:
-        raise LandedCostError("assumption_unknown_keys:" + ",".join(sorted(map(str, extra)))[:200])
+        raise LandedCostError("assumption_unknown_keys:" + ",".join(sorted(map(str, extra))))
     if record.get("kind") not in ASSUMPTION_KINDS:
         raise LandedCostError("assumption_kind_unknown")
     if record.get("author_kind") != "human":
@@ -307,7 +306,7 @@ def _part_steps(*, freight_basis: str, freight_label: str, duty_basis: Mapping[s
     if "estimated_from_history" in (freight_basis, *counts):
         steps.append("ESTIMATE: at least one part is estimated from PLX history, not recorded "
                      "for this purchase order, so the total is an estimate")
-    return [s[:MAX_STEP_CHARS] for s in steps]
+    return list(steps)
 
 
 def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[str],
@@ -363,21 +362,21 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     def handle(entry: Mapping[str, Any] | None) -> str | None:
         return entry["citation"]["l1_handle"] if entry and entry.get("citation") else None
 
-    labels = {oid: f"{name}_estimate_line_{i}"[:64] for i, oid in enumerate(line_ids, start=1)}
+    labels = {oid: f"{name}_estimate_line_{i}" for i, oid in enumerate(line_ids, start=1)}
     lines = [{"name": labels[oid], "kind": "computed", "value": None,
               "inputs": [], "steps": [], "basis": [oid], "check": "not_applicable"}
              for oid in line_ids]
-    subtotal: dict[str, Any] = {"name": f"{name}_estimate_subtotal"[:64], "kind": "computed",
+    subtotal: dict[str, Any] = {"name": f"{name}_estimate_subtotal", "kind": "computed",
                                 "value": None, "inputs": [], "steps": [],
                                 "check": "not_applicable"}
-    total: dict[str, Any] = {"name": f"{name}_estimate"[:64], "kind": "computed", "value": None,
-                             "inputs": [e["name"] for e in lines][:50], "steps": [],
+    total: dict[str, Any] = {"name": f"{name}_estimate", "kind": "computed", "value": None,
+                             "inputs": [e["name"] for e in lines], "steps": [],
                              "check": "not_applicable"}
     out = [total, subtotal, *lines]
 
     def close(why: str) -> list[dict[str, Any]]:
         for entry in out:
-            entry["steps"] = [why[:MAX_STEP_CHARS], label]
+            entry["steps"] = [why, label]
         return out
 
     if target is None:
@@ -395,7 +394,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                 raise LandedCostError("assumption_subject_not_this_purchase_order")
         except LandedCostError as exc:
             unknown("ASSUMPTION_RECORD_INVALID", "estimate duty assumption",
-                    f"a recorded assumption does not validate ({str(exc).split(':')[0][:80]}); "
+                    f"a recorded assumption does not validate ({str(exc).split(':')[0]}); "
                     "it is not applied", holds=False, who="FIN")
             continue
         recorded.append(checked)
@@ -583,7 +582,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
         origins = list(row.get("origin") or ())
         if origins:
             own[oid] += origins
-            notes[oid].append("origin: " + ", ".join(e["name"] for e in origins)[:200]
+            notes[oid].append("origin: " + ", ".join(e["name"] for e in origins)
                               + " (countryoforigin on the FileMaker replica supplier row; with "
                               "the HS code it decides the duty rate, which no source projects)")
     duty_actual = actuals.get("duty")
@@ -664,7 +663,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                 unknown("RATE_SETTING_TARIFF_UNREADABLE", "estimate duty rate setting",
                         setting["problem"], "rate_setting_tariff", holds=False, who="FIN")
             set_entries = list((setting or {}).get("entries") or ())
-            set_names = ", ".join(e["name"] for e in set_entries)[:120]
+            set_names = ", ".join(e["name"] for e in set_entries)
             # A rate is used only when every entry it rests on re-reads for this reader;
             # otherwise the line is withheld, its rate named by entry only, never stated.
             reader = _Reader(resolver, actor)
@@ -684,7 +683,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                 rate = row.get("rate")
                 if rate is not None and not rereads(row["entries"]):
                     withheld.add(oid)
-                    names = ", ".join(e["name"] for e in row["entries"])[:120]
+                    names = ", ".join(e["name"] for e in row["entries"])
                     unknown("SUPPLIER_TARIFF_UNREAD", "estimate duty",
                             f"{names} (tariff_c on the FileMaker replica supplier row) is not "
                             "readable for this reader; the line's duty rests on it, so the "
@@ -703,7 +702,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                     duty_shares.append(Decimal(0))
                     continue
                 if rate is not None:
-                    names = ", ".join(e["name"] for e in row["entries"])[:120]
+                    names = ", ".join(e["name"] for e in row["entries"])
                     row_rated.add(oid)
                     own[oid] += list(row["entries"])
                     from_of[oid] = [h for h in map(handle, row["entries"]) if h] \
@@ -776,8 +775,7 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                             line=labels[oid], who=who)
                 duty_shares.append(rate * weight)
             if row_steps:
-                shown = row_steps[:10] + ([f"{len(row_steps) - 10} further rows, not listed"]
-                                          if len(row_steps) > 10 else [])
+                shown = row_steps
                 listed.append("assumption: duty at the FileMaker supplier row tariff (tariff_c "
                               "on the FileMaker replica supplier row of the order's own "
                               f"supplier for the line's item) on {len(row_steps)} of "
@@ -806,15 +804,15 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
             continue
         price, qty = prices[oid], quantities[oid]
         unit = unit_token(qty.get("unit"))
-        entry.update(unit=f"{target}/{unit}"[:20])
+        entry.update(unit=f"{target}/{unit}")
         # Inputs name the header entries only: every line's price and quantity entries are
         # already the actual-cost lines' inputs, and naming them on every estimate line would
         # make them shared across all answer pages (result_too_large on a long PO). The line's
         # own cited price and quantity are its basis object and its compute steps.
         header_used = [*freight_entries, *own[oid]]
-        entry["inputs"] = list(dict.fromkeys(e["name"] for e in header_used if e))[:50]
+        entry["inputs"] = list(dict.fromkeys(e["name"] for e in header_used if e))
         entry["basis"] = sorted({oid} | {e["object_id"] for e in header_used
-                                         if e and e.get("object_id")})[:100]
+                                         if e and e.get("object_id")})
         costs = [{"name": "goods", "category": "goods",
                   **({**net_goods[oid], "unit": f"{target}/{unit}", "currency": target}
                      if oid in net_goods else
@@ -845,8 +843,8 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                  f"freight share: {money_text(share, target)} {target} of the {freight_label} "
                  f"{money_text(freight_total, target)} {target}, {ESTIMATE_BASIS}",
                  f"duty: {money_text(duty, target)} {target}; {rule_of[oid]}", *notes[oid]]
-        entry["steps"] = ([s[:MAX_STEP_CHARS] for s in record["steps"]][:30]
-                          + [s[:MAX_STEP_CHARS] for s in rules + listed] + [label])
+        entry["steps"] = (list(record["steps"])
+                          + list(rules + listed) + [label])
         entry["digest"] = record["digest"]
         try:
             outcome = LandedOutcome.from_record(record)
@@ -859,12 +857,12 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
             entry["value"] = _dec_str(outcome.per_unit.value)
             line_totals.append(outcome.total.value)
     subtotal["inputs"] = list(dict.fromkeys(
-        [e["name"] for e in freight_entries] + [e["name"] for e in lines]))[:50]
+        [e["name"] for e in freight_entries] + [e["name"] for e in lines]))
     computed = len(line_totals) == len(line_ids)
     duty_total = sum(duty_shares, Decimal(0))
     sub = goods_total + freight_total
     subtotal["steps"] = [goods_step, f"freight: {money_text(freight_total, target)} {target} "
-                         f"({freight_label}), {ESTIMATE_BASIS}"[:MAX_STEP_CHARS],
+                         f"({freight_label}), {ESTIMATE_BASIS}",
                          f"subtotal: goods + freight = {money_text(sub, target)} {target}",
                          label]
     if not computed:
@@ -878,7 +876,6 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
     estimate = sum(line_totals, Decimal(0))
     steps = [f"{e['name']}: total {money_text(v, target)} {target}"
              for e, v in zip(lines, line_totals)]
-    steps = steps[:20] + ([f"{len(steps) - 20} further line(s), not listed"] if len(steps) > 20 else [])
     steps += [f"subtotal (goods + freight): {money_text(sub, target)} {target}",
               f"duty: {money_text(duty_total, target)} {target}", *listed,
               *([currency_step] if currency_step else [])]
@@ -893,11 +890,11 @@ def _pre_receipt_estimate(*, name: str, target: str | None, line_ids: Sequence[s
                      f"{len(fallback)} line(s) "
                      f"at {fallback_label.replace(' tariffRate', '')}) to "
                      f"{money_text(estimate, target)} {target} (duty at {fallback_label})")
-    steps = [s[:MAX_STEP_CHARS] for s in steps][:39] + [label]
+    steps = list(steps) + [label]
     total.update(value=_dec_str(estimate), steps=steps,
                  digest=_sha(_canon({"lines": [e.get("digest") for e in lines],
                                      "steps": steps})))
-    total["inputs"] = list(dict.fromkeys([subtotal["name"]] + total["inputs"]))[:50]
+    total["inputs"] = list(dict.fromkeys([subtotal["name"]] + total["inputs"]))
     return out
 
 
@@ -1099,7 +1096,7 @@ def _code_of(reason: str) -> str:
         return "MIXED_CURRENCY_NO_CITED_RATE"
     if head == "goods_cost_not_positive":
         return "UNPRICED_LINE"
-    return re.sub(r"[^A-Z0-9_]", "_", head.upper())[:64] or "UNKNOWN"
+    return re.sub(r"[^A-Z0-9_]", "_", head.upper()) or "UNKNOWN"
 
 
 def _equal_at(value: Decimal, stated: Decimal) -> bool:
@@ -1358,10 +1355,10 @@ def _row_inputs(got: Mapping[str, Sequence[Mapping[str, Any]]],
         # An empty tariff_c states no rate: absent, as a row with no tariff_c is, never a gap.
         tariffs = [e for e in on_rows("supplier_tariff") if not _blank(e.get("value"))]
         rates = [supplier_tariff_rate(e) for e in tariffs]
-        names = ", ".join(e["name"] for e in tariffs)[:200]
+        names = ", ".join(e["name"] for e in tariffs)
         problem = None
         if any(r is None for r in rates):
-            bad = ", ".join(e["name"] for e, r in zip(tariffs, rates) if r is None)[:200]
+            bad = ", ".join(e["name"] for e, r in zip(tariffs, rates) if r is None)
             problem = ("SUPPLIER_TARIFF_UNREADABLE",
                        f"{bad} (tariff_c on the FileMaker replica supplier row) is not written "
                        "as a rate with its unit (N%, or a value cited in %, percent or ratio, "
@@ -1393,9 +1390,9 @@ def _rate_setting(found: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     if not stated:
         return None
     rates = [rate_setting_tariff(e) for e in stated]
-    names = ", ".join(e["name"] for e in stated)[:200]
+    names = ", ".join(e["name"] for e in stated)
     if any(r is None for r in rates):
-        bad = ", ".join(e["name"] for e, r in zip(stated, rates) if r is None)[:200]
+        bad = ", ".join(e["name"] for e, r in zip(stated, rates) if r is None)
         return {"rate": None, "entries": [], "problem":
                 f"{bad} (public.app_rate_settings tariff_rate) is not a decimal fraction "
                 "between 0 and 1; it is not applied"}
@@ -1484,7 +1481,7 @@ def _fm_agreement(*, name: str, target: str | None, line_ids: Sequence[str],
     inputs: list[str] = []
     basis: set[str] = set()
     for index, oid in enumerate(line_ids, start=1):
-        label = f"{name}_line_{index}"[:64]
+        label = f"{name}_line_{index}"
         value, mode = ours.get(oid, (None, "estimate"))
         unit = unit_token((quantities.get(oid) or {}).get("unit"))
         entry, outcome = _chosen_tier(tiers_of.get(oid, ()), quantities.get(oid), least,
@@ -1513,16 +1510,16 @@ def _fm_agreement(*, name: str, target: str | None, line_ids: Sequence[str],
             inputs.append(entry["name"])
             basis.add(entry["object_id"])
         counts[outcome.split(" ", 1)[0]] += 1
-        steps.append(f"{label}: {outcome}"[:MAX_STEP_CHARS])
+        steps.append(f"{label}: {outcome}")
         inputs.append(label)
-    shown = steps[:38] + ([f"{len(steps) - 38} further line(s), not listed"] if len(steps) > 38 else [])
+    shown = list(steps)
     shown.append(f"counts: agree {counts['agree']}, differ {counts['differ']}, missing "
                  f"{counts['missing']} (within {_dec_str(FM_AGREEMENT_TOLERANCE * 100)}% of "
                  "FileMaker's recorded dlt_costlanded_c per unit, at the tier the ordered "
                  "quantity reaches; counts only, no amount is stated)")
-    return [{"name": f"{name}_fm_agreement"[:64], "kind": "computed", "value": None,
-             "inputs": list(dict.fromkeys(inputs))[:50], "steps": shown,
-             "basis": sorted(basis)[:100], "check": "not_applicable"}]
+    return [{"name": f"{name}_fm_agreement", "kind": "computed", "value": None,
+             "inputs": list(dict.fromkeys(inputs)), "steps": shown,
+             "basis": sorted(basis), "check": "not_applicable"}]
 
 
 def _fm_unit(unit: Any, target: str) -> str | None:
@@ -1619,7 +1616,7 @@ def _history_label(est: Mapping[str, Any], part: str) -> str:
 
 
 def _actuals_note(got: Mapping[str, Any]) -> str:
-    return f"capture {str(got.get('digest'))[:16]} built {str(got.get('built_at'))[:32]}"
+    return f"capture {str(got.get('digest'))} built {str(got.get('built_at'))}"
 
 
 def _history_defaults(got: Mapping[str, Any], cite: str, unknown: Callable[..., None],
@@ -1868,7 +1865,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         for role in role_names:
             item = items.get(roles.get(role) or "")
             if item:
-                out.append(f"{item['object_type']}.{'|'.join(item['properties'])}"[:64])
+                out.append(f"{item['object_type']}.{'|'.join(item['properties'])}")
         return out
 
     def unknown(code: str, subject: str, detail: str, *role_names: str,
@@ -1876,27 +1873,27 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         """One gap per (code, subject, detail); the lines it holds for are listed in it.
         ``holds``: the gap's code is a reason the answer is partial; ``who``: who can answer
         it (``who_can_answer``; without it the executor names the searched sources' owners)."""
-        detail = (detail if detail.startswith(code) else f"{code}: {detail}")[:600]
+        detail = detail if detail.startswith(code) else f"{code}: {detail}"
         gap = grouped.get((code, subject, detail))
         if gap is None:
             gap = grouped[(code, subject, detail)] = {
-                "state": _GAP_STATES.get(code, "unknown"), "reason": code.lower()[:64],
+                "state": _GAP_STATES.get(code, "unknown"), "reason": code.lower(),
                 "subject": subject, "detail": detail, "lines": []}
             sources = searched(*role_names)
             if sources:
-                gap["searched"] = {"sources": sources[:8]}
-        if who and who[:200] not in gap.get("who_can_answer", ()):
-            gap["who_can_answer"] = (gap.get("who_can_answer", []) + [who[:200]])[:10]
+                gap["searched"] = {"sources": sources}
+        if who and who not in gap.get("who_can_answer", ()):
+            gap["who_can_answer"] = gap.get("who_can_answer", []) + [who]
         if line:
             gap["lines"].append(line)
         if holds and code.lower() not in reasons:
-            reasons.append(code.lower()[:64])
+            reasons.append(code.lower())
 
     def open_input(line: str, cost: str, reason: str, who: str | None) -> None:
         unknown(_code_of(reason), cost, reason, *_COST_ROLES.get(cost, ()), line=line, who=who)
 
     def entry_names(role: str) -> str:
-        return ", ".join(e["name"] for e in got[role])[:200]
+        return ", ".join(e["name"] for e in got[role])
 
     def by_object(role: str) -> dict[str, Mapping[str, Any]]:
         out: dict[str, Mapping[str, Any]] = {}
@@ -1916,7 +1913,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                    and e.get("value") is not None]
         if dropped:
             unknown("PO_HEADER_ON_UNCONFIRMED_TWIN", "purchase order " + role,
-                    f"{', '.join(e['name'] for e in dropped)[:200]} rest(s) only on a record "
+                    f"{', '.join(e['name'] for e in dropped)} rest(s) only on a record "
                     "reached by a lead-tier link (an unconfirmed twin of the purchase order); "
                     "no amount rests on it until a person confirms the twin", role,
                     holds=not any(e.get("value") is not None for e in kept), who="PROC")
@@ -2192,17 +2189,17 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             unknown(code, subject, text.format(**params),
                     *(_QUOTE_COUNT_SEARCHED if code in _QUOTE_COUNT_CODES else _QUOTE_SEARCHED),
                     who=who)
-        entry_name = f"{name}_freight_quote_{index}"[:64]
+        entry_name = f"{name}_freight_quote_{index}"
         if record.get("value") is not None and record.get("currency") == target:
             quote_totals.append((Decimal(record["value"]), entry_name,
                                  [e for e in fields.values() if e], duties_included))
         # A machine-read quote disagreeing with itself: a lead, never resolved here.
-        conflicts += [{"kind": "value_disagreement", "subject": f"{entry_name}: {c['about']}"[:700],
-                       "inputs": c["inputs"][:12], "note": c["note"][:600], "tier": "lead"}
+        conflicts += [{"kind": "value_disagreement", "subject": f"{entry_name}: {c['about']}",
+                       "inputs": c["inputs"], "note": c["note"], "tier": "lead"}
                       for c in disagree]
         quote_entries.append({"name": entry_name, "kind": "computed",
                               "value": None, **record,
-                              "inputs": [e["name"] for e in fields.values() if e][:50],
+                              "inputs": [e["name"] for e in fields.values() if e],
                               "basis": [oid], "check": "not_applicable"})
     estimate = _entry_decimal(freight_est)
     estimate_is_partial_quote = estimate is not None and any(
@@ -2259,7 +2256,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             out.append(next((e["name"] for e in got["confirmation_amount"]
                              if e.get("object_id") == oid), None) or
                        (own[0] if own else f"confirmation {oid}"))
-        return ", ".join(out)[:300]
+        return ", ".join(out)
 
     def unread_text() -> str:
         return (f"PI_AMOUNT_UNREAD: no readable amount is cited for {unread_names()} (see "
@@ -2271,11 +2268,11 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         sources = set(confirmation_ids)
         figures = [e for role in CONFIRMATION_ROLES for e in got[role]
                    if e.get("object_id") in sources and e not in amounts]
-        confirmed = {"name": f"{name}_goods"[:64], "kind": "computed", "value": None,
-                     "inputs": (names + [e["name"] for e in figures])[:50], "steps": [f"{e['name']}: {e['value']} "
+        confirmed = {"name": f"{name}_goods", "kind": "computed", "value": None,
+                     "inputs": names + [e["name"] for e in figures], "steps": [f"{e['name']}: {e['value']} "
                                                      f"{e.get('currency') or '(no currency)'}"
-                                                     for e in amounts][:20],
-                     "basis": sorted(sources)[:100],
+                                                     for e in amounts],
+                     "basis": sorted(sources),
                      "check": "not_applicable"}
         if differ:
             what = " and ".join(differing)
@@ -2287,8 +2284,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             conflicts.append({"kind": "value_disagreement",
                               "subject": f"PI_VERSION_UNRESOLVED: {confirmed['name']}: the "
                                          "supplier confirmations of the purchase order state "
-                                         f"different {what}"[:700],
-                              "inputs": listed[:12], "tier": "lead",
+                                         f"different {what}",
+                              "inputs": listed, "tier": "lead",
                               "note": "a revised proforma invoice is a person's call (which "
                                       "version the purchase order is priced at); none is "
                                       "chosen"})
@@ -2358,9 +2355,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         used = [e for e in (price, qty, net_used.get(oid), received.get(oid), freight_est, duty_est,
                             hs_of.get(oid), *receipt_entries, *receipt_currency_used,
                             *(from_confirmation or ((), ()))[1]) if e]
-        entry: dict[str, Any] = {"name": label[:64], "kind": "computed", "value": None,
-                                 "inputs": [e["name"] for e in used][:50], "steps": [],
-                                 "basis": sorted({oid} | {e["object_id"] for e in used})[:100],
+        entry: dict[str, Any] = {"name": label, "kind": "computed", "value": None,
+                                 "inputs": [e["name"] for e in used], "steps": [],
+                                 "basis": sorted({oid} | {e["object_id"] for e in used}),
                                  "check": "not_applicable"}
         entries.append(entry)
         if target is None:
@@ -2368,7 +2365,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             continue
         qty_unit = unit_token(qty.get("unit")) if qty and qty.get("value") is not None else None
         if qty_unit is not None:
-            entry.update(unit=f"{target}/{qty_unit}"[:20], currency=target)
+            entry.update(unit=f"{target}/{qty_unit}", currency=target)
         price_unit = unit_token(price.get("unit")) if price else None
         if from_confirmation is not None:
             goods: dict[str, Any] = from_confirmation[0]
@@ -2484,9 +2481,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             costs.append({"name": part, "category": category, **spec})
         if corrected_inputs:   # a sibling line's corrected weight moves this line's share
             entry["inputs"] = list(dict.fromkeys(
-                entry["inputs"] + [e["name"] for e in corrected_inputs]))[:50]
+                entry["inputs"] + [e["name"] for e in corrected_inputs]))
             entry["basis"] = sorted(set(entry["basis"]) | {
-                e["object_id"] for e in corrected_inputs})[:100]
+                e["object_id"] for e in corrected_inputs})
         freight_cost = next((c for c in costs if c["name"] == "freight"), {})
         freight_label = FREIGHT_LABELS[
             "none" if "derived" not in freight_cost else "posted" if "freight" in usable else
@@ -2526,7 +2523,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         unstated = [f"{c['name']} basis: recorded actual{actuals[c['name']]['posting_caveat']}"
                     for c in costs if (c.get("derived") or {}).get("basis") == "actual_recorded"
                     and (actuals.get(c["name"]) or {}).get("posting_caveat")]
-        entry["steps"] = [s[:MAX_STEP_CHARS] for s in record["steps"]][:39] + [freight_label] \
+        entry["steps"] = list(record["steps"]) + [freight_label] \
             + unstated
         entry["digest"] = record["digest"]
         try:
@@ -2542,7 +2539,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
 
     # The total rests on its line entries (inputs), each with its own basis.
     total: dict[str, Any] = {"name": name, "kind": "computed", "value": None,
-                             "inputs": [e["name"] for e in entries][:50], "steps": [],
+                             "inputs": [e["name"] for e in entries], "steps": [],
                              "check": "not_applicable"}
     if target is not None:
         total.update(unit=target, currency=target)
@@ -2567,8 +2564,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                           "computed landed cost; no purchase order total is stated"]
     if currency_step:
         total["steps"].append(currency_step)
-    total["steps"].append(("cost treatment: " + COST_TREATMENT["kind"] + "; "
-                           + COST_TREATMENT["current_portal_decision"])[:MAX_STEP_CHARS])
+    total["steps"].append("cost treatment: " + COST_TREATMENT["kind"] + "; "
+                           + COST_TREATMENT["current_portal_decision"])
 
     # Estimate mode: an open purchase order (a line not fully received) with no receipt actual.
     def fully_received(oid: str) -> bool:
@@ -2627,9 +2624,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                "freight or duty actual above zero; the landed cost entries state what the "
                "Portal posts")
         # It rests on the line entries (as the total does), each citing its received quantity.
-        inputs = [e["name"] for e in entries][:50]
-        steps = [why[:MAX_STEP_CHARS], ESTIMATE_LABEL]
-        estimates = [{"name": f"{name}_estimate"[:64], "kind": "computed", "value": None,
+        inputs = [e["name"] for e in entries]
+        steps = [why, ESTIMATE_LABEL]
+        estimates = [{"name": f"{name}_estimate", "kind": "computed", "value": None,
                       **({"unit": target, "currency": target} if target else {}),
                       "inputs": inputs, "steps": steps,
                       "digest": _sha(_canon({"inputs": inputs, "steps": steps})),
@@ -2658,7 +2655,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                     records.update((e["from"], e["to"]))
     packaging: list[dict[str, Any]] = []
     if any(e.get("value") is not None for e in got["units_per_box"]):
-        pack: dict[str, Any] = {"name": f"{name}_packaging"[:64], "kind": "computed",
+        pack: dict[str, Any] = {"name": f"{name}_packaging", "kind": "computed",
                                 "value": None, "unit": "case", "inputs": [], "steps": [],
                                 "basis": [], "check": "not_applicable"}
         cases_total, counted = 0, 0
@@ -2676,7 +2673,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                 pack["basis"] += [e["object_id"] for e in boxes]
                 unknown("UNITS_PER_CASE_CONFLICT", "packaging", "the item's records state "
                         f"{len({_entry_decimal(e) for e in boxes})} different units per case "
-                        f"({', '.join(e['name'] for e in boxes)})"[:300]
+                        f"({', '.join(e['name'] for e in boxes)})"
                         + "; none is chosen", "units_per_box", line=label, holds=False,
                         who="PROC")
                 continue
@@ -2702,7 +2699,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             pack["steps"].append("no case total: not every line of the purchase order is counted")
         pack["steps"].append("containers: not derived; case dimensions and gross weight are in "
                              "app_product_pack_spec, which the reporting API does not serve")
-        pack["inputs"], pack["basis"] = pack["inputs"][:50], sorted(set(pack["basis"]))[:100]
+        pack["inputs"], pack["basis"] = pack["inputs"], sorted(set(pack["basis"]))
         packaging.append(pack)
 
     gaps = []
@@ -2710,7 +2707,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         lines = gap.pop("lines")
         if lines:
             gap["subject"] = f"{gap['subject']} of {', '.join(lines)}"
-        gap["subject"] = gap["subject"][:700]
+        gap["subject"] = gap["subject"]
         gaps.append(gap)
     return {"entries": [total] + entries + ([confirmed] if confirmed else []) + packaging
             + quote_entries + estimates + agreement, "gaps": gaps,
@@ -2742,7 +2739,7 @@ def draft_request(subject: str, who: Sequence[str], codes: Sequence[str]) -> str
              f"Open for {subject}: {', '.join(quote)}"] if quote else []
     parts += [f"Draft request to {to} (not sent): {_UPSTREAM_ASKS[code]}. Open for {subject}: "
               f"{code}" for code in asks]
-    return " ".join(parts)[:1900]
+    return " ".join(parts)
 
 
 # ``reviewed_inputs``: a person's correction in force is computed from (``person_correction``).

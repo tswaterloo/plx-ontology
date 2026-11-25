@@ -378,6 +378,16 @@ describe("an Ask stream the server stops feeding", () => {
     expect(events.map((e) => e.event)).toEqual(["status", "error"]);
     expect((events[1].data as { code: string }).code).toBe("stream_interrupted");
   });
+
+  it("yields early charts SSE events before the final answer arrives", async () => {
+    const chart = { kind: "bar", title: "Monthly revenue", x: "month", labels: ["Jan"], series: [{ name: "rev", values: [100] }], rows: 1, shown: 1 };
+    const events = await collect([
+      `event: charts\ndata: ${JSON.stringify({ charts: [chart] })}\n\n`,
+      `event: answer\ndata: ${JSON.stringify({ answer_id: "a1", direct_answer: "Done." })}\n\n`,
+    ]);
+    expect(events.map((e) => e.event)).toEqual(["charts", "answer"]);
+    expect(events[0].event === "charts" ? events[0].data.charts : []).toHaveLength(1);
+  });
 });
 
 

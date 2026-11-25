@@ -18,7 +18,7 @@ export function CardBody({ className, ...props }: React.HTMLAttributes<HTMLDivEl
   return <div className={cn(className)} {...props} />;
 }
 
-/** A lifted sheet: the app's one surface for something you read or fill in as a whole. */
+/** A lifted sheet: the app's elevated surface for something you read or fill in as a whole. */
 export function Panel({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("rounded-xl bg-bg shadow-lift", className)} {...props} />;
+  return <div className={cn("rounded-lg border border-border bg-bg", className)} {...props} />;
 }

@@ -112,10 +112,10 @@ export default function InsightsPage() {
               aria-pressed={editing}
               onClick={() => setEditing((e) => !e)}
               className={cn(
-                "inline-flex h-8 items-center rounded-lg px-3 text-[13px] font-medium transition-colors cursor-pointer",
+                "inline-flex h-7 items-center rounded-md px-2.5 text-[12.5px] font-medium transition-colors cursor-pointer",
                 editing
                   ? "bg-accent text-accent-fg hover:brightness-110"
-                  : "bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]",
+                  : "border border-border bg-bg text-fg hover:border-border-strong hover:bg-hover dark:bg-surface",
               )}
             >
               {editing ? "Done" : "Customize"}
@@ -124,7 +124,7 @@ export default function InsightsPage() {
         }
       />
       <PageIntro path="/insights" />
-      <div className="w-full px-4 py-5 lg:px-6">
+      <div className="w-full px-4 py-4 lg:px-6">
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : data ? (
@@ -135,7 +135,7 @@ export default function InsightsPage() {
         ) : (
           <div aria-busy data-testid="insights-skeleton">
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-              {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} className="rounded-md border border-border p-4"><div className="skeleton skeleton-shimmer mb-4 h-5 w-2/3" /><ChartSkeleton /></div>)}
+              {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} className="rounded-md border border-border bg-bg p-4"><div className="skeleton skeleton-shimmer mb-4 h-5 w-2/3" /><ChartSkeleton /></div>)}
             </div>
             <Pending label="Reading your charts" />
           </div>

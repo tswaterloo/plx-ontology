@@ -114,4 +114,19 @@ describe("a Records list", () => {
     await screen.findByRole("link", { name: "BC-1" });
     expect(screen.queryByRole("searchbox", { name: "Search this list" })).toBeNull();
   });
+
+  it("preserves active filter and page when leaving via a row click and restores it on remount", async () => {
+    const { unmount } = render(<RecordList view="batches" />);
+    await screen.findByRole("link", { name: "BC-1" });
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Status" }), "Open");
+    await waitFor(() => expect(screen.getAllByRole("link", { name: /BC-/ })).toHaveLength(1));
+    const row = screen.getAllByRole("row")[1];
+    await userEvent.click(within(row).getByText("Base"));
+    expect(asked.push).toHaveBeenCalledWith("/object/Batch/b1");
+    unmount();
+
+    asked.calls = [];
+    render(<RecordList view="batches" />);
+    await waitFor(() => expect(asked.calls[0]).toMatchObject({ filters: { status: "Open" } }));
+  });
 });

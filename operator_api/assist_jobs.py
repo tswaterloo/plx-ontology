@@ -81,15 +81,16 @@ _RANKING_FALLBACK_MESSAGE = (
 
 
 def strip_internal_uris(text: Any) -> str:
-    """Remove or humanize raw internal URI handles (teams-chat://, mail://, record://, ...) in
-    user-facing Assist job text while preserving readability and spacing."""
+    """Remove or humanize raw internal URI handles (teams-chat://, mail://, record://, ...) and
+    em dashes in user-facing Assist job text while preserving readability and spacing."""
     s = str(text or "")
-    if "://" not in s:
-        return s
-    s = _PAREN_INTERNAL_URI.sub("", s)
-    s = _BARE_INTERNAL_URI.sub(lambda match: _URI_LABELS.get(match.group(1).lower(), "record"), s)
-    s = re.sub(r"[ \t]{2,}", " ", s)
-    s = re.sub(r" +([.,;:!?])", r"\1", s)
+    if "\u2014" in s:
+        s = re.sub(r"\s*\u2014\s*", " - ", s)
+    if "://" in s:
+        s = _PAREN_INTERNAL_URI.sub("", s)
+        s = _BARE_INTERNAL_URI.sub(lambda match: _URI_LABELS.get(match.group(1).lower(), "record"), s)
+        s = re.sub(r"[ \t]{2,}", " ", s)
+        s = re.sub(r" +([.,;:!?])", r"\1", s)
     return s.strip()
 
 

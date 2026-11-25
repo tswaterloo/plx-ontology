@@ -317,6 +317,90 @@ def own_text(text: str, *, mail: bool, most: Optional[int] = None) -> tuple[str,
     return text[:most] + "\n" + CUT.format(n=left), left
 
 
+_SYSTEM_ALERT_SENDERS = frozenset({
+    "cos@petrasoap.com",
+    "quarantine@messaging.microsoft.com",
+    "stage-rail@plxcustomer.io",
+    "password-expiry@emvue.ca",
+    "password-expiry@nfd.ca",
+    "cwadmin@emvue.ca",
+    "no-reply@microsoft.com",
+    "azure-noreply@microsoft.com",
+})
+_SYSTEM_ALERT_PREFIXES = (
+    "password-expiry@",
+    "quarantine@",
+    "mailer-daemon@",
+    "postmaster@",
+    "stage-rail@",
+)
+_SYSTEM_ALERT_SUBJECT = re.compile(
+    r"^(?:(?:Workbench\s+API|API|System|Staging)\s+health\b|Health\s+check\b|"
+    r"ALERT:|In\s+Progress\s+Seal\s+has\s+no\s+agent\s+run\b|"
+    r"UAT\s+BC\s+scheduled\s+sync\s+has\s+not\s+refreshed\b|"
+    r"PLX\s+required\s+CI\s+red:|"
+    r"Microsoft\s+365\s+security:\s+You\s+have\s+messages\s+in\s+quarantine\b|"
+    r"\[ACTION\].*Stage\s+Rail\s+loop\b|"
+    r"Your\s+password\s+expires\s+soon\b|"
+    r"Action\s+needed:\s+your\s+work\s+password\s+expires\b|"
+    r"QC\s+Morning\s+Headcount\s+Logged\b|"
+    r"\[[^\]]+\]\s+Possible\s+valid\s+secrets\s+detected\b|"
+    r"Automated\s+(?:Stage\s+Rail\s+)?alert:|"
+    r"Automated\s+QC\s+notice\b|"
+    r"Microsoft\s+quarantine\s+notice:|"
+    r"NetFusion\s+Designs\s+automated\s+notice:|"
+    r"Password-expiry\s+notice\b|"
+    r"Portal-to-BC\s+sync\s+has\s+not\s+run\b|"
+    r"UAT\s+BC\s+sync\s+has\s+not\s+run\b)",
+    re.IGNORECASE,
+)
+_SYSTEM_ALERT_SUFFIX = re.compile(r":\s*ALERT\s*$", re.IGNORECASE)
+_ANGLE_ADDR = re.compile(r"<([^>\s]+@[^>\s]+)>")
+
+
+def _bare_email(sender: Any) -> str:
+    raw = str(sender or "").strip().lower()
+    if not raw:
+        return ""
+    m = _ANGLE_ADDR.search(raw)
+    return m.group(1).strip() if m else raw
+
+
+def is_system_alert_mail(sender: Any, subject: Any, summary: Any = "") -> bool:
+    """Whether an email is an automated internal system monitoring, IT, quarantine, CI,
+    password-expiry, or Stage Rail alert that should be classified as automated/bulk rather
+    than polluting an employee's Assist queue."""
+    addr = _bare_email(sender)
+    subj = str(subject or "").strip()
+    summ = str(summary or "").strip()
+    if not subj and not summ and not addr:
+        return False
+    for text in (subj, summ):
+        if text and _SYSTEM_ALERT_SUBJECT.search(text):
+            return True
+    if addr in _SYSTEM_ALERT_SENDERS:
+        if addr != "cos@petrasoap.com":
+            return True
+        low = f"{subj} {summ}".lower()
+        if (
+            _SYSTEM_ALERT_SUFFIX.search(subj)
+            or "health" in low
+            or "scheduled sync" in low
+            or "has no agent run" in low
+            or "required ci red" in low
+            or "uat bc sync" in low
+            or "portal-to-bc sync" in low
+        ):
+            return True
+    if any(addr.startswith(prefix) for prefix in _SYSTEM_ALERT_PREFIXES):
+        return True
+    if addr in ("support@github.com", "noreply@github.com", "notifications@github.com"):
+        low = f"{subj} {summ}".lower()
+        if "secret" in low or "security" in low or "alert" in low or "ci " in low:
+            return True
+    return False
+
+
 def screened(text: str, subject: str) -> str:
     """Why a message's text may not reach a model ('' it may): pay, HR or personal financial
     matter (fail closed when undecidable). Freightcom is read like any other (owner 11-23: the
@@ -804,7 +888,7 @@ def prepare(pg: Any, s: str, page: Sequence[dict[str, Any]], covered: int, staff
     threads = thread_rows(pg, s, [m for m in page if not m.get("bulk")], covered)
     whys: list[str] = []
     for m in page:
-        if m.get("bulk"):
+        if m.get("bulk") or (m.get("view") == "emails" and is_system_alert_mail(m.get("sender"), m.get("subject"))):
             whys.append("bulk")
             continue
         text, why = texts.get((m["handle"], m["oid"]), (None, "no_text"))

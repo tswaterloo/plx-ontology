@@ -20,7 +20,16 @@ from . import models as m
 from .auth import Reader
 from .errors import UserFacing
 
-from .page_core import ENRICH_PRIORITY
+from .page_core import (
+    ENRICH_PRIORITY,
+    clean_enum,
+    clean_location,
+    clean_money_amount,
+    clean_person,
+    clean_subject,
+    clean_text,
+    fix_po_prefix,
+)
 
 BRIEF_TIMEOUT_SECONDS = 90
 # The weekly review is read whole (owner 11-23, no limit on what a page reads): no time
@@ -44,7 +53,9 @@ def _ref(object_id: Optional[str], label: Optional[str] = None) -> Optional[m.Ob
     if not isinstance(object_id, str) or not object_id:
         return None
     kind = br.type_of(object_id)
-    return m.ObjectRef(object_id=object_id, type=kind, label=(label or kind)[:200],
+    fallback = clean_enum(kind, "object_type") or kind
+    clean_lbl = clean_subject(label, fallback=fallback, max_len=200) if label else fallback
+    return m.ObjectRef(object_id=object_id, type=kind, label=clean_lbl,
                        open_url=object_url(kind, object_id))
 
 
@@ -76,13 +87,16 @@ def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
         return brief.model_copy(update={"sections": sections})
     rows = []
     for po in got.items:
-        bits = [po.supplier or "", f"{po.days_late} days late" if po.days_late else "",
+        days_word = "1 day late" if po.days_late == 1 else f"{po.days_late} days late"
+        bits = [clean_text(po.supplier) if po.supplier else "",
+                days_word if po.days_late else "",
                 f"needed {po.due_date}" if po.due_date else ""]
+        po_label = clean_text(fix_po_prefix("PO", po.label)) or po.label
         rows.append(m.BriefRow(
-            label=po.label, detail=", ".join(b for b in bits if b) or None, date=po.due_date,
+            label=po_label, detail=", ".join(b for b in bits if b) or None, date=po.due_date,
             amount=po.amount,
             object=m.ObjectRef(object_id=po.object_id, type=po.object_id.split(":", 1)[0],
-                               label=po.label, open_url=po.open_url),
+                               label=po_label, open_url=po.open_url),
             sources=po.sources))
     section = m.BriefSection(
         key="late_pos", title="Late purchase orders (open now)",
@@ -97,30 +111,97 @@ def late_from_home(brief: m.Brief, late: Any) -> m.Brief:
     return brief.model_copy(update={"sections": sections})
 
 
+_AGED_BUCKET_RE = re.compile(
+    r"^aged\s+(receivable|payable)\s*\(([^)]+)\)$", re.IGNORECASE
+)
+_STATUS_BIT_RE = re.compile(r"\bstatus\s+(open|closed|draft|unknown|active)\b", re.IGNORECASE)
+_ORGANISED_BY_GROUP_RE = re.compile(
+    r"^Organised by\s+[^@\s]+@group\.calendar\.google\.com$", re.IGNORECASE
+)
+
+
+def _clean_brief_row_label(raw: Any) -> str:
+    text = clean_text(raw, strip_email_noise=False)
+    if text == "PO PurchaseOrder":
+        return "Purchase order"
+    if text == "Order SalesOrder":
+        return "Sales order"
+    if text.startswith(("Mail: ", "Meeting: ", "Teams: ")):
+        prefix, _, rest = text.partition(": ")
+        cleaned_rest = clean_subject(rest, fallback="(no subject)" if prefix != "Teams" else "Teams chat", max_len=200)
+        return f"{prefix}: {cleaned_rest}"
+    text = re.sub(r"^(Decision|Action item|Issue|Note)\s+\(other\):\s*", r"\1: ", text)
+    return text or "Item"
+
+
+def _clean_brief_row_detail(raw: Any) -> Optional[str]:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if _ORGANISED_BY_GROUP_RE.match(text):
+        return "Organised by shared calendar"
+    aged = _AGED_BUCKET_RE.match(text)
+    if aged:
+        side = aged.group(1).lower()
+        bucket = clean_enum(aged.group(2), "aging_bucket") or aged.group(2)
+        return f"Aged {side} ({bucket})"
+    text = _STATUS_BIT_RE.sub(lambda m_: clean_enum(m_.group(1), "status") or m_.group(1), text)
+    cleaned = clean_text(text, max_len=300, strip_email_noise=True)
+    return cleaned or None
+
+
 def brief_model(raw: Mapping[str, Any]) -> m.Brief:
     sections = []
     for s in raw.get("sections") or ():
-        rows = [m.BriefRow(label=r["label"], detail=r.get("detail"), date=r.get("date"),
-                           who=r.get("who"),
-                           amount=m.Money(**r["amount"]) if r.get("amount") else None,
-                           object=_ref(r.get("object_id"), None),
-                           sources=_sources(r.get("sources"))) for r in s.get("rows") or ()]
+        rows = []
+        for r in s.get("rows") or ():
+            amt = None
+            if r.get("amount"):
+                a = dict(r["amount"])
+                cleaned_amt = clean_money_amount(a.get("amount"))
+                if cleaned_amt is not None:
+                    a["amount"] = cleaned_amt
+                amt = m.Money(**a)
+            who = r.get("who")
+            who_clean = "Your note" if who == "Your note" else clean_person(who)
+            rows.append(m.BriefRow(
+                label=_clean_brief_row_label(r["label"]),
+                detail=_clean_brief_row_detail(r.get("detail")),
+                date=r.get("date"),
+                who=who_clean,
+                amount=amt,
+                object=_ref(r.get("object_id"), None),
+                sources=_sources(r.get("sources")),
+            ))
         figures = [m.BriefFigure(**{**f, "sources": _sources(f.get("sources"))})
                    for f in s.get("figures") or ()]
-        sections.append(m.BriefSection(key=s["key"], title=s["title"], state=s["state"],
-                                       note=s.get("note"), rows=rows, more=s.get("more", 0),
-                                       figures=figures))
+        note = clean_text(s.get("note")) if s.get("note") else None
+        sections.append(m.BriefSection(key=s["key"], title=clean_text(s["title"]) or s["title"],
+                                       state=s["state"], note=note or None, rows=rows,
+                                       more=s.get("more", 0), figures=figures))
     subject = raw.get("subject") or {}
+    clean_title = clean_subject(raw.get("title") or "", fallback="", max_len=200)
+    subj_label = clean_subject(subject.get("label"), fallback=clean_title, max_len=200) if subject.get("label") else None
     question = None
-    if raw.get("kind") == "meeting" and subject.get("label"):
-        question = (f"Prepare me for the meeting \"{subject['label']}\": read everything about "
+    if raw.get("kind") == "meeting" and subj_label:
+        question = (f"Prepare me for the meeting \"{subj_label}\": read everything about "
                     "its people and topics (earlier meetings' notes and transcripts, mail, Teams, "
                     "the records, my open work and my own notes) and tell me what I should know "
                     "and what I have to do.")
     elif raw.get("kind") == "weekly":
-        question = f"Summarise the {raw.get('title', 'weekly review').lower()}."
-    return m.Brief(kind=raw["kind"], title=str(raw.get("title") or "")[:200],
-                   subject=_ref(subject.get("object_id"), subject.get("label")),
+        question = f"Summarise the {(clean_title or 'weekly review').lower()}."
+    gaps = [
+        m.BriefGap(**{
+            **g,
+            **({"what": clean_text(g["what"])} if g.get("what") else {}),
+            **({"reason": clean_text(g["reason"])} if g.get("reason") else {}),
+        })
+        for g in raw.get("gaps") or ()
+    ]
+    return m.Brief(kind=raw["kind"], title=clean_title,
+                   subject=_ref(subject.get("object_id"), subj_label),
                    subject_sources=_sources(raw.get("subject_sources")),
                    when=raw.get("when"), as_of=raw["as_of"],
                    parties=[r for r in (_ref(p["object_id"], p.get("label"))
@@ -128,8 +209,8 @@ def brief_model(raw: Mapping[str, Any]) -> m.Brief:
                    possible_parties=[r for r in (_ref(p["object_id"], p.get("label"))
                                                  for p in raw.get("possible_parties") or ())
                                      if r],
-                   sections=sections, gaps=[m.BriefGap(**g) for g in raw.get("gaps") or ()],
-                   basis=raw.get("basis") or "", summary_question=question,
+                   sections=sections, gaps=gaps,
+                   basis=clean_text(raw.get("basis") or ""), summary_question=question,
                    stored_at=raw.get("stored_at"))
 
 
@@ -260,6 +341,7 @@ def with_carried_items(brief: Any, held: frozenset[str], who: Any, state_dir: An
         if section.get("key") == "notes" and rows:
             section["rows"] = list(section.get("rows") or ()) + [
                 {**r, "sources": list(r.get("sources") or ())} for r in rows]
+            section["state"] = "shown"
             section["note"] = None
     return brief
 
@@ -425,18 +507,26 @@ def upcoming_entry(e: Mapping[str, Any]) -> m.UpcomingMeeting:
     def invitee(p: Any) -> Optional[m.MeetingInvitee]:
         if not isinstance(p, Mapping):
             return None
-        return m.MeetingInvitee(**{**p, "sources": _sources(p.get("sources"))})
+        cleaned = dict(p)
+        if cleaned.get("name"):
+            cleaned["name"] = clean_person(cleaned["name"]) or clean_text(cleaned["name"]) or None
+        return m.MeetingInvitee(**{**cleaned, "sources": _sources(p.get("sources"))})
     attendees = [a for a in (invitee(p) for p in e.get("attendees") or ()) if a]
     parties = [r for r in (_ref(p.get("object_id"), p.get("label"))
                            for p in e.get("parties") or ()) if r]
+    label = clean_subject(e["label"], fallback="(no subject)", max_len=200)
+    agenda = clean_text(e.get("agenda"), max_len=280, strip_email_noise=True) or None
+    if agenda and agenda.lower() == label.lower():
+        agenda = None
     return m.UpcomingMeeting(
-        object=_ref(e["object_id"], e["label"]), start=e.get("start"), end=e.get("end"),
-        all_day=bool(e.get("all_day")), location=e.get("location"),
-        online=bool(e.get("online")), join_url=e.get("join_url"), agenda=e.get("agenda"),
+        object=_ref(e["object_id"], label), start=e.get("start"), end=e.get("end"),
+        all_day=bool(e.get("all_day")), location=clean_location(e.get("location")),
+        online=bool(e.get("online")), join_url=e.get("join_url"), agenda=agenda,
         organizer=invitee(e.get("organizer")), attendees=attendees,
         is_organizer=bool(e.get("is_organizer")), private=bool(e.get("private")),
         people_withheld=bool(e.get("people_withheld")), parties=parties,
-        open_items=[m.MeetingOpenItem(label=i["label"], detail=i.get("detail"),
+        open_items=[m.MeetingOpenItem(label=clean_text(i["label"]),
+                                      detail=clean_text(i.get("detail"), strip_email_noise=True) or None,
                                       date=i.get("date"), sources=_sources(i.get("sources")))
                     for i in e.get("open_items") or ()],
         brief_url=brief_url(e["object_id"]), sources=_sources(e.get("sources")))
@@ -457,12 +547,14 @@ def nudge_card(item: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     card_id = NUDGE_CARD + str(item["id"])
     if len(card_id) > 200:
         return None
-    return {"id": card_id, "headline": str(item.get("summary") or "")[:300],
-            "subject": {"label": str(item.get("summary") or "Approval waiting")[:200]},
+    headline = clean_text(item.get("summary") or "", max_len=300, strip_email_noise=True)
+    return {"id": card_id, "headline": headline,
+            "subject": {"label": clean_subject(headline, fallback="Approval waiting", max_len=200)},
             "action": {"text": ""},
             "draft": {"channel": "email",
                       "to": {"address": to[0], "source": cites[0]} if to and cites else None,
-                      "subject": nudge.get("subject"), "body": nudge.get("body"), "facts": []},
+                      "subject": clean_subject(nudge.get("subject"), fallback="") or nudge.get("subject"),
+                      "body": nudge.get("body"), "facts": []},
             "teams_draft": None, "playbook": True}
 
 
@@ -512,12 +604,14 @@ def reply_card(line: Mapping[str, Any]) -> Optional[dict[str, Any]]:
     # is still in the text (``card_actions.review``)
     blanks = (sorted(set(BLANK.findall(body))) if line.get("drafted_by") == "model"
               and isinstance(body, str) else [])
-    return {"id": card_id, "headline": str(line.get("summary") or "")[:300],
-            "subject": {"label": str(line.get("subject") or "Needs your reply")[:200]},
+    return {"id": card_id,
+            "headline": clean_text(line.get("summary") or "", max_len=300, strip_email_noise=True),
+            "subject": {"label": clean_subject(line.get("subject"), fallback="Needs your reply", max_len=200)},
             "action": {"text": ""},
             "draft": {"channel": "email",
                       "to": {"address": to[0], "source": cites[0]} if to and cites else None,
-                      "subject": draft.get("subject"), "body": body, "facts": [],
+                      "subject": clean_subject(draft.get("subject"), fallback="") or draft.get("subject"),
+                      "body": body, "facts": [],
                       "blanks": blanks},
             "teams_draft": None, "playbook": True}
 
@@ -670,7 +764,11 @@ class BriefsMixin:
         return None
 
     def reply_triage(self, reader: Reader) -> m.ReplyTriage:
-        raw = self._brief_run(reader, lambda view: replies_of(view), priority=ENRICH_PRIORITY)
+        raw = self._brief_run(
+            reader,
+            lambda view: self._pg_replies(reader, view) or replies_of(view),
+            priority=ENRICH_PRIORITY,
+        )
         if raw is None:
             raise alerts_not_read()
         lines = raw["lines"] = self._owed_lines(reader, raw["lines"])
@@ -682,6 +780,79 @@ class BriefsMixin:
                 line["card_id"] = card["id"]
                 line["offers"] = ca.offers(card)
         return m.ReplyTriage(**{k: v for k, v in raw.items() if k != "schema"})
+
+    def _pg_replies(self, reader: Reader, view: Any) -> Optional[dict[str, Any]]:
+        """Read open ``reply_owed`` (``needs_my_reply``) alerts from ``biz.alerts`` when
+        Postgres is configured, strictly fail-closed on ``view.access.grant()``, comms
+        units, and own mailboxes."""
+        if not getattr(self, "pg_dsn", None) or not callable(getattr(self, "pg", None)):
+            return None
+        my_oids = self._my_oids(reader)
+        if not my_oids:
+            return None
+        grant = getattr(getattr(view, "access", None), "grant", None)
+        if grant is None:
+            return None
+        try:
+            may_read, held = grant()
+        except Exception:  # noqa: BLE001 - fail closed
+            return None
+        may_set = set(may_read or ())
+        held_set = set(held or ())
+        if not may_set:
+            return None
+        from operating.pg import alerts as pg_alerts
+        today = self.today() if getattr(self, "today", None) else date.today()
+        try:
+            with self.pg().connection() as conn:
+                unit_rows = conn.execute(
+                    "SELECT unit, audience_key, marks FROM biz.comms_units"
+                ).fetchall()
+                units = [
+                    int(u) for u, ak, marks in unit_rows
+                    if ak in may_set and set(marks or ()) <= held_set
+                ]
+                if not units:
+                    return {
+                        "as_of": today.isoformat(), "total": 0,
+                        "lines": [], "sent": 0, "writes": 0,
+                    }
+                rows = pg_alerts.read(
+                    conn, classes=(), units=units,
+                    mailboxes=sorted(my_oids), me=sorted(my_oids),
+                    kinds=["reply_owed"], state="open", ai=False, limit=bf_max(),
+                )
+        except Exception:  # noqa: BLE001 - fail closed, fall back to gap_inbox if needed
+            return None
+        lines: list[dict[str, Any]] = []
+        for row in rows:
+            since = row.get("since")
+            days = max(0, (today - since.date()).days) if since is not None else 0
+            why_clean = clean_text(row["why"], strip_email_noise=True)
+            lines.append({
+                "id": f"pg:{row['rule']}:{row['handle']}",
+                "kind": row["kind"],
+                "summary": why_clean,
+                "channel": "mail",
+                "sent": since.isoformat() if since is not None else None,
+                "subject": None,
+                "days": days,
+                "records_named": {},
+                "customer_tier": None,
+                "chases": 0,
+                "rank": [0, 0, 0, min(days, 99)],
+                "new_inquiry": False,
+                "object_id": row["handle"],
+                "citations": [row["handle"]],
+                "draft": {
+                    "channel": "email", "status": "draft_not_sent", "sent": False,
+                    "subject": "Re: Needs your reply", "body": "",
+                },
+            })
+        return {
+            "as_of": today.isoformat(), "total": len(lines),
+            "lines": lines, "sent": 0, "writes": 0,
+        }
 
     def _owed_lines(self, reader: Reader, lines: list[dict[str, Any]]
                     ) -> list[dict[str, Any]]:
@@ -867,15 +1038,27 @@ class BriefsMixin:
                               priority=priority, long=long or priority >= ENRICH_PRIORITY)
 
     def meeting_brief(self, reader: Reader, object_type: str, object_id: str) -> m.Brief:
-        """The brief, drawn from the one prepared ahead when there is one; else built whole
-        now (no time limit). A kept brief past ``REFRESH_AFTER`` is shown and prepared again
-        behind the read. The person's own notes about the meeting and its parties are
-        added to the draw."""
+        """The brief, built fast through the reader's Postgres door (``operating.
+        meeting_brief_door``) when available; else drawn from the one prepared ahead or built
+        whole via the primitives fallback. The person's own notes about the meeting and its
+        parties are added to the draw."""
+        from operating import meeting_brief_door as mbd
         from . import meeting_briefs as mb
         if object_type not in br.MEETING_TYPES + br.PARTY_TYPES \
                 or br.type_of(object_id) != object_type:
             raise UserFacing("not_found", "A brief is prepared for a calendar event, a "
                              "meeting, a customer or a supplier.", 404)
+        if getattr(self, "doors", None) is not None:
+            try:
+                raw = mbd.build_for_reader(self, reader, object_id)
+            except br.BriefRefused:
+                raise UserFacing("not_found", "That record is not one you can open.", 404)
+            except mbd.DoorUnavailable:
+                raw = None
+            if raw is not None:
+                held = self._door_held_markings(reader)
+                raw = with_carried_items(raw, held, reader, getattr(self, "state_dir", None))
+                return self._with_notes(reader, brief_model(raw))
         store = self._meeting_store()
         try:
             raw = self._brief_run(reader, lambda view: meeting_brief_of(
@@ -888,6 +1071,15 @@ class BriefsMixin:
         if raw.get("kept") and raw.get("kept_age", 0) > mb.REFRESH_AFTER:
             self._prepare_ahead(reader, [object_id], refresh=True)
         return self._with_notes(reader, brief_model(raw))
+
+    def _door_held_markings(self, reader: Reader) -> frozenset[str]:
+        doors = getattr(self, "doors", None)
+        if doors is None:
+            return frozenset()
+        held = doors.get(reader)
+        if held is None:
+            return frozenset()
+        return frozenset(getattr(getattr(held[0], "grant", None), "held", ()) or ())
 
     def _meeting_store(self) -> Any:
         from . import meeting_briefs as mb

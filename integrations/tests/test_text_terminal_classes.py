@@ -82,9 +82,10 @@ class ClassificationTests(unittest.TestCase):
             self.assertTrue(all(len(r[1]) == len(body.decode()) for r in reads))
         self.assertEqual(self.read("e.json", b""), ("no_text", None))
         self.assertEqual(self.read("w.txt", b" \r\n"), ("no_text", None))
-        # past the plain-text bound it is a named class, not a failure
+        # past the old plain-text bound it is read whole by default (ASK-GENIE §20 #7)
         big = b"x" * (du.MAX_PLAIN_TEXT + 1)
-        self.assertEqual(self.read("big.txt", big), (ct.TEXT_EXCEEDS_BOUND, None))
+        status, text = self.read("big.txt", big)
+        self.assertEqual((status, len(text or "")), (ct.TEXT_EXTRACTED, len(big)))
         self.assertEqual(ct.capture_text(big, {"name": "big.txt"}, max_chars=50)[0],
                          ct.TEXT_EXTRACTED)
 
@@ -162,7 +163,7 @@ class DrainTests(tsp.CaptureCase):
         for p in patches:
             p.start()
         try:
-            self.capture().run(tsp.scope())
+            self.capture(max_content_bytes=20_000_000).run(tsp.scope())
         finally:
             for p in patches:
                 p.stop()

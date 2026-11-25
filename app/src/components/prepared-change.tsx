@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { getPrepared, preparedStep } from "@/lib/api";
+import { operationLabel } from "@/lib/autopilot";
 import type { PreparedWrite } from "@/lib/types";
 
 type Action = NonNullable<PreparedWrite["actions"]>[number];
@@ -61,7 +62,7 @@ function ActionShown({ action }: { action: Action }) {
           {SYSTEMS[action.system ?? ""] ?? action.system}
         </span>
         {" · "}
-        {action.operation}
+        {operationLabel(action.operation ?? "")}
         {action.decision ? ` · ${action.decision}` : ""}
       </p>
       {action.system === "bc" && (
@@ -216,6 +217,13 @@ export function PreparedChange({ id }: { id: string }) {
               ))}
             </tbody>
           </table>
+          {open && (
+            <p className="mt-1 text-[12px] leading-4 text-muted" data-testid="prepared-mode">
+              {card.live
+                ? `Live mode: confirming applies this change in ${Array.from(new Set((card.actions ?? []).map((a) => SYSTEMS[a.system ?? ""] ?? a.system).filter(Boolean))).join(", ") || "the target system"}.`
+                : `Pilot dry-run: confirming records this preview in the audit log and writes nothing to ${Array.from(new Set((card.actions ?? []).map((a) => SYSTEMS[a.system ?? ""] ?? a.system).filter(Boolean))).join(", ") || "external systems"}.`}
+            </p>
+          )}
           {(card.missing ?? []).map((p, i) => (
             <p key={i} className="text-[12px] leading-4 text-muted">
               {p}

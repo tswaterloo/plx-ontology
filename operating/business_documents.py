@@ -224,7 +224,7 @@ def _cite(gate: dt.Gate, oid: str) -> dict[str, Any]:
 
 
 def _cell(c: dt.Cell | None) -> dict[str, str] | None:
-    return None if c is None else {"sheet": c.sheet[:120], "cell": c.address}
+    return None if c is None else {"sheet": c.sheet, "cell": c.address}
 
 
 def _docs(conn, gate: dt.Gate, words: Sequence[str], ans: Answer, *,
@@ -426,7 +426,7 @@ class CustomerOf:
         best = max(votes, key=lambda c: (len(votes[c]), c))
         tied = sum(len(v) for v in votes.values())
         if len(votes[best]) >= 2 and len(votes[best]) >= THREAD_SHARE * tied:
-            return best, sorted(votes[best])[:3]
+            return best, sorted(votes[best])
         return None, []
 
     def names_in(self, text: str) -> set[str]:
@@ -507,7 +507,7 @@ class CustomerOf:
 
     def _named(self, d: dt.Doc) -> str | None:
         found = self.names_in(re.sub(r"[._-]+", " ", d.name) + " \n " +
-                              "\n".join((d.text or "").splitlines()[:8])[:1500])
+                              "\n".join((d.text or "").splitlines()))
         return next(iter(found)) if len(found) == 1 else None
 
 
@@ -768,13 +768,13 @@ def view_priority_fill(conn, gate, ans, args, as_of) -> None:
                 basis, evidence = of_list[1], of_list[2]
                 row_out = {"customer": customers[0] if len(customers) == 1 else None,
                            "customer_basis": basis if customers else None,
-                           "rank": rank, "priority": given.value[:40] if given else None,
-                           "listed": c.value[:60], "orders": orders[:10],
+                           "rank": rank, "priority": given.value if given else None,
+                           "listed": c.value, "orders": orders,
                            "list_received": d.day.isoformat() if d.day else None,
                            "document": d.object_id, "cell": _cell(c)}
                 key = orders[0]
                 listed[key] = ((d.day or date.min, d.object_id), row_out,
-                               [*d.cited, *customers[:1], *orders[:10], *evidence])
+                               [*d.cited, *customers, *orders, *evidence])
         if not has_order:
             ans.counts["list_no_order_column"] += 1
     order_rank = ("late", "not_scheduled", "scheduled", "shipped")
@@ -1010,15 +1010,15 @@ def view_compliance_pack(conn, gate, ans, args, as_of) -> None:
         by_kind[kind].append(d)
     for kind in PACK_KINDS:
         for d in sorted(by_kind.get(kind, []), key=lambda d: (d.day or date.min, d.object_id),
-                        reverse=True)[:20]:
+                        reverse=True):
             ans.counts[kind] += 1
-            ans.add({"kind": kind, "name": d.name[:160], "document": d.object_id,
+            ans.add({"kind": kind, "name": d.name, "document": d.object_id,
                      "dated": d.day.isoformat() if d.day else None, "subject": subject},
                     [*d.cited, subject])
     for code in codes:
         for coa in _coa_records(conn, code, ans):
             ans.counts["coa_record"] += 1
-            ans.add({"kind": "coa_record", "name": code[:60], "document": coa,
+            ans.add({"kind": "coa_record", "name": code, "document": coa,
                      "dated": None, "subject": subject}, [coa, subject])
 
 
@@ -1067,7 +1067,7 @@ def _coa_records(conn, code: str, ans: "Answer | None" = None) -> list[str]:
     if not found.complete and ans is not None:
         ans.counts["coa_more_matches"] += 1
         ans.complete = False
-    return sorted(out)[:20]
+    return sorted(out)
 
 
 # --------------------------------------------------------------------------- answer bank
@@ -1290,7 +1290,7 @@ def view_answer_bank(conn, gate, ans, args, as_of) -> None:
     ans.counts["answers"] = len(entries)
     entries.sort(key=lambda e: (-e[0], -e[1].toordinal(), e[2].object_id))
     for score, day, d, q, a, cell, customer, basis, evidence, specific in entries:
-        ans.add({"question": q[:300], "answer": a[:500], "match": round(score, 2),
+        ans.add({"question": q, "answer": a, "match": round(score, 2),
                  "answered": d.day.isoformat() if d.day else None, "document": d.object_id,
                  "cell": cell, "party": "customer", "party_id": customer,
                  "party_basis": basis,
@@ -1349,9 +1349,9 @@ def _issue_records(conn, ans: Answer) -> dict[str, tuple[str, str]]:
                     "SELECT f.object_id, k.body FROM chunk_text ct JOIN text_chunks k ON "
                     "k.chunk_id = ct.rowid JOIN text_fields f ON f.field_id = k.field_id WHERE "
                     "chunk_text MATCH ? AND (f.object_id LIKE 'TeamsChatMessage:%' OR "
-                    "f.object_id LIKE 'TeamsChannelMessage:%') LIMIT 5000", (q,)):
+                    "f.object_id LIKE 'TeamsChannelMessage:%')", (q,)):
                 try:
-                    out.append((oid, oid.split(":", 1)[0], chunk_text(body)[:2000]))
+                    out.append((oid, oid.split(":", 1)[0], chunk_text(body)))
                 except Exception:  # noqa: BLE001 - an unreadable chunk says nothing
                     continue
         except sqlite3.Error:
@@ -1388,7 +1388,7 @@ def _is_issue(text: str) -> bool:
 
 def _codes_in(resolve: dt.Resolver, text: str) -> tuple[set[str], set[str]]:
     lots, items = set(), set()
-    for tok in sorted(set(re.findall(r"\b[A-Z0-9][A-Z0-9-]{3,30}\b", text.upper())))[:40]:
+    for tok in sorted(set(re.findall(r"\b[A-Z0-9][A-Z0-9-]{3,30}\b", text.upper()))):
         if not re.search(r"\d", tok):
             continue
         lots.update(resolve(tok, ("Lot",)))
@@ -1439,22 +1439,22 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
             # the sender is the material's supplier only when it supplies an item the
             # message names (``SupplierItem``); else it reported the issue (a lab, a broker)
             supplied = {dt.root(conn, s2, "Supplier.same_record_as")
-                        for i in sorted(items)[:5]
+                        for i in sorted(items)
                         for si in dt.links_to(conn, [i], "SupplierItem.for_item").get(i, [])
                         for s2 in dt.links_from(conn, [si], "SupplierItem.offered_by"
                                                 ).get(si, [])}
             if reporter in supplied:
                 suppliers.add(reporter)
         receipts: set[str] = set()
-        for lot in sorted(lots)[:5]:
-            for rl in dt.links_to(conn, [lot], "ReceiptLine.received_lot").get(lot, [])[:5]:
+        for lot in sorted(lots):
+            for rl in dt.links_to(conn, [lot], "ReceiptLine.received_lot").get(lot, []):
                 for rc in dt.links_from(conn, [rl], "ReceiptLine.line_of").get(rl, []):
                     receipts.add(rc)
                     suppliers.update(dt.links_from(conn, [rc], "Receipt.supplied_by").get(rc, []))
         # the receipts that took the lot in are shown and cited only where the reader may
         # read them (a withheld receipt still names its supplier, never itself)
         gate.load(receipts)
-        shown_receipts = sorted(r for r in receipts if gate.visible(r))[:5]
+        shown_receipts = sorted(r for r in receipts if gate.visible(r))
         ans.withheld["receipt_not_readable"] += len(receipts) - len(
             [r for r in receipts if gate.visible(r)])
         if not (suppliers or lots or items or reporter):
@@ -1471,17 +1471,17 @@ def view_supplier_issues(conn, gate, ans, args, as_of) -> None:
             continue
         if reporter:
             reported[reporter][month] += 1
-        ans.add({"record": oid, "source": otype, "kind": kind, "title": title[:200],
+        ans.add({"record": oid, "source": otype, "kind": kind, "title": title,
                  "dated": when.isoformat() if when else None,
-                 "suppliers": sorted(suppliers)[:5], "reported_by": reporter,
-                 "items": sorted(items)[:5], "lots": sorted(lots)[:5],
+                 "suppliers": sorted(suppliers), "reported_by": reporter,
+                 "items": sorted(items), "lots": sorted(lots),
                  "receipts": shown_receipts},
-                [oid, *sorted(suppliers)[:5], *([reporter] if reporter else []),
+                [oid, *sorted(suppliers), *([reporter] if reporter else []),
                  *shown_receipts])
     def ranked(by: Mapping[str, Counter]) -> list[dict[str, Any]]:
         return [{"supplier": s, "issues": sum(m.values()), "by_month": dict(sorted(
             m.items())[-12:])} for s, m in sorted(by.items(), key=lambda kv: (
-                -sum(kv[1].values()), kv[0])) if gate.visible(s)][:50]
+                -sum(kv[1].values()), kv[0])) if gate.visible(s)]
     ans.extra = {"trend": ranked(trend), "reported_by_trend": ranked(reported)}
 
 
@@ -1527,7 +1527,7 @@ def view_formula_lines(conn, gate, ans, args, as_of, *,
         return (bool(_FORMULA_NUMBER.search(n)) or _words_in(n, FORMULA_WORDS)) and \
             sum(w in toks for w in words) >= need
     # the product's longest name words find its sheets' names (any one of them)
-    probe = sorted(words, key=len, reverse=True)[:3]
+    probe = sorted(words, key=len, reverse=True)[:3]  # guard-ok: retrieval heuristic — the longest name words find candidate sheets, every word still scores the match
     docs = _docs(conn, gate, probe, ans, require=named) if probe else []
     resolve = dt.Resolver(conn)
     for i, d in enumerate(docs):
@@ -1551,11 +1551,11 @@ def view_formula_lines(conn, gate, ans, args, as_of, *,
             basis = "name"
         formula = (sheet["header"].get("formula_code") or {}).get("value")
         ans.counts["sheet_" + sheet["status"]] += 1
-        ans.add({"kind": "sheet", "document": d.object_id, "name": d.name[:160],
+        ans.add({"kind": "sheet", "document": d.object_id, "name": d.name,
                  "dated": d.day.isoformat() if d.day else None, "subject": subject,
                  "basis": basis, "formula_code": formula, "status": sheet["status"],
                  "share_total": sheet["share_total"], "lines": len(sheet["lines"]),
-                 "missing_lines": sheet["missing_lines"][:50]}, [*d.cited, subject])
+                 "missing_lines": sheet["missing_lines"]}, [*d.cited, subject])
         for line in sheet["lines"]:
             members = resolve.group(line["part"], ITEM_TYPES, ITEM_TWINS)
             item = members[0] if members else None
@@ -1574,7 +1574,7 @@ def view_formula_lines(conn, gate, ans, args, as_of, *,
                      "part": line["part"], "description": line["description"],
                      "share_percent": line["share"], "quantity": line["quantity"],
                      "unit": line["unit"], "check": line["check"], "item": item,
-                     "supplier_items": supplier_items[:50]},
+                     "supplier_items": supplier_items},
                     [*d.cited, subject] + ([item] if item else []))
 
 def view_item_on_hand_sheets(conn, gate, ans, args, as_of) -> None:
@@ -1691,14 +1691,14 @@ def view_item_po_prices(conn, gate, ans, args, as_of) -> None:
             # the same (no oracle)
             ans.counts["code_not_found"] += 1
             if isinstance(code, str):
-                ans.extra.setdefault("codes_not_found", []).append(code[:60])
+                ans.extra.setdefault("codes_not_found", []).append(code)
             continue
         if len({dt.root(conn, m, ITEM_TWINS) for m in visible}) > 1:
             # the code is several readable items' (no settled link makes them one): never
             # one's prices for the other's
             ans.counts["code_ambiguous"] += 1
             ans.extra.setdefault("codes_ambiguous", []).append(
-                (code if isinstance(code, str) else str(entry.get("item")))[:60])
+                (code if isinstance(code, str) else str(entry.get("item"))))
             continue
         item = visible[0]
         same = sorted(dt.cluster(conn, item, ITEM_TWINS))   # this item's own records only
@@ -1776,7 +1776,7 @@ def view_item_po_prices(conn, gate, ans, args, as_of) -> None:
         cited = [item] + ([last["line"], last["po"]] if last else [])
         # every stated price read (a $0 line's too: its existence is a price fact)
         marks = sorted({m for f in facts if f["price"] is not None for m in f["markings"]})
-        row = {"kind": "item_prices", "item": item, "code": str(code)[:60] if code else None,
+        row = {"kind": "item_prices", "item": item, "code": str(code) if code else None,
                "po_lines": len(facts), "priced_lines": len(priced), "zero_price_lines": len(zero),
                "received_lines": sum(1 for f in priced if f["received"] and f["received"] > 0),
                "last": {"price": format(last["price"], "f"), "currency": last["currency"],
@@ -1784,7 +1784,7 @@ def view_item_po_prices(conn, gate, ans, args, as_of) -> None:
                         "line": last["line"],
                         "dated": last["day"].isoformat() if last["day"] else None}
                if last else None,
-               "average": average[:10], "verdict": verdict, "lines_withheld": hidden,
+               "average": average, "verdict": verdict, "lines_withheld": hidden,
                "lines_unlinked": len(orphan),
                "stated_cost": format(stated, "f") if stated is not None else None}
         if ans.add(row, cited, marks):
@@ -1892,7 +1892,7 @@ def answer(conn, *, view: str, may_read: Callable[[str], bool], held: frozenset[
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
-    return {"error": {"code": code, "message": message[:600]}}
+    return {"error": {"code": code, "message": message}}
 
 
 class BusinessDocumentsTool:
@@ -1967,7 +1967,7 @@ def _checked(result: dict[str, Any]) -> dict[str, Any]:
     problems = validate(result, schema, root=contracts)
     if problems:
         return _error("contract_violation", ("output failed the contract: "
-                                             + str(problems[0]))[:600])
+                                             + str(problems[0])))
     return result
 
 

@@ -23,41 +23,41 @@ export function DoneRing({ size = 14, className }: { size?: number; className?: 
 }
 
 /**
- * A place in the app: a line icon in the place's own hue, with no tile behind it. Hues are
- * classes, not inline styles: the CSP drops style attributes in server-rendered markup.
+ * A place in the app: a restrained monochrome line icon (Linear/Claude style), with no tile
+ * behind it. Active state elevates to text-fg via className; inactive sits quietly in text-muted.
  */
 export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
-  "/": { icon: Inbox, hue: "text-[var(--place-work)]" },
-  "/late": { icon: Clock3, hue: "text-[var(--place-late)]" },
-  "/watching": { icon: BellRing, hue: "text-[var(--place-watching)]" },
-  "/ask": { icon: MessageCircle, hue: "text-[var(--place-ask)]" },
-  "/insights": { icon: ChartColumn, hue: "text-[var(--place-ask)]" },
-  "/assist": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
-  "/autopilot": { icon: Bot, hue: "text-[var(--place-autopilot)]" },
-  "/meetings": { icon: CalendarClock, hue: "text-[var(--place-meetings)]" },
-  "/team": { icon: Users, hue: "text-[var(--place-team)]" },
-  "/activity": { icon: History, hue: "text-[var(--place-activity)]" },
-  "/work-log": { icon: History, hue: "text-[var(--place-activity)]" },
-  "/templates": { icon: FileText, hue: "text-[var(--place-activity)]" },
-  "/ops": { icon: Activity, hue: "text-[var(--place-activity)]" },
-  "/data-health": { icon: Gauge, hue: "text-[var(--place-activity)]" },
-  "/feedback": { icon: MessageSquareText, hue: "text-[var(--place-feedback)]" },
-  "/memory": { icon: BookMarked, hue: "text-[var(--place-ask)]" },
-  "/records": { icon: Database, hue: "text-[var(--place-work)]" },
-  "/orders": { icon: ClipboardList, hue: "text-[var(--place-work)]" },
-  "/customers": { icon: Building2, hue: "text-[var(--place-work)]" },
-  "/suppliers": { icon: Truck, hue: "text-[var(--place-work)]" },
-  "/products": { icon: Package, hue: "text-[var(--place-work)]" },
-  "/more": { icon: Database, hue: "text-[var(--place-work)]" },
-  "/work": { icon: Briefcase, hue: "text-[var(--place-meetings)]" },
-  "/admin": { icon: Activity, hue: "text-[var(--place-activity)]" },
+  "/": { icon: Inbox, hue: "text-muted" },
+  "/late": { icon: Clock3, hue: "text-muted" },
+  "/watching": { icon: BellRing, hue: "text-muted" },
+  "/ask": { icon: MessageCircle, hue: "text-muted" },
+  "/insights": { icon: ChartColumn, hue: "text-muted" },
+  "/assist": { icon: Bot, hue: "text-muted" },
+  "/autopilot": { icon: Bot, hue: "text-muted" },
+  "/meetings": { icon: CalendarClock, hue: "text-muted" },
+  "/team": { icon: Users, hue: "text-muted" },
+  "/activity": { icon: History, hue: "text-muted" },
+  "/work-log": { icon: History, hue: "text-muted" },
+  "/templates": { icon: FileText, hue: "text-muted" },
+  "/ops": { icon: Activity, hue: "text-muted" },
+  "/data-health": { icon: Gauge, hue: "text-muted" },
+  "/feedback": { icon: MessageSquareText, hue: "text-muted" },
+  "/memory": { icon: BookMarked, hue: "text-muted" },
+  "/records": { icon: Database, hue: "text-muted" },
+  "/orders": { icon: ClipboardList, hue: "text-muted" },
+  "/customers": { icon: Building2, hue: "text-muted" },
+  "/suppliers": { icon: Truck, hue: "text-muted" },
+  "/products": { icon: Package, hue: "text-muted" },
+  "/more": { icon: Database, hue: "text-muted" },
+  "/work": { icon: Briefcase, hue: "text-muted" },
+  "/admin": { icon: Activity, hue: "text-muted" },
 };
 
 export function PlaceIcon({ href, className }: { href: string; className?: string }) {
   const p = PLACES[href];
   if (!p) return null;
   const Icon = p.icon;
-  return <Icon className={cn("size-4 shrink-0", p.hue, className)} strokeWidth={1.75} aria-hidden />;
+  return <Icon className={cn("size-4 shrink-0 text-muted", className)} strokeWidth={1.75} aria-hidden />;
 }
 
 /**

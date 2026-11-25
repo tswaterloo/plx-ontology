@@ -22,7 +22,7 @@ export function thumbs(entries: Pick<FeedbackEntry, "rating" | "status">[]): { u
   return { up, down, waiting };
 }
 
-const seconds = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`);
+const seconds = (ms: number | null) => (ms === null ? "–" : `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)} s`);
 
 /** Pure: one day of the Ask in a line: how many were answered and failed, how long they took, how many reads they made. */
 export function dayWords(d: AskDay): string {

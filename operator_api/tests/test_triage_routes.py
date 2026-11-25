@@ -193,6 +193,47 @@ class Routes(unittest.TestCase):
         sales = {t["team"]: t for t in body["teams"]}["SALES"]
         self.assertEqual((sales["awaiting_reply"], sales["suppressed"]), (None, True))
 
+    def test_pg_replies_uses_view_access_grant_when_backend_has_no_access(self):
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from operator_api.briefs import BriefsMixin
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                if "biz.comms_units" in sql:
+                    return SimpleNamespace(fetchall=lambda: [(1, f"mail:{ME}", []), (2, f"mail:{B}", [])])
+                return SimpleNamespace(fetchall=lambda: [])
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        class _Backend(BriefsMixin):
+            pg_dsn = "postgresql://unused"
+            @staticmethod
+            def _my_oids(r):
+                return frozenset({ME})
+            def pg(self):
+                return SimpleNamespace(connection=lambda: _Conn())
+            def _brief_run(self, reader, fn, priority=None):
+                view = SimpleNamespace(access=SimpleNamespace(grant=lambda: ([f"mail:{ME}"], [])))
+                return fn(view)
+
+        backend = _Backend()
+        self.assertFalse(hasattr(backend, "access"))
+        reader = SimpleNamespace(session=SimpleNamespace(principals=(f"oid:{ME}",)))
+        since = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+        with patch("operating.pg.alerts.read", return_value=[{
+            "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+            "handle": "graph-mail://me/1", "topic": "", "concerns": ME,
+            "why": "Alice wrote \"Quote\" on Nov 24 with no reply from you in the thread yet.",
+            "since": since, "state": "open", "resolved_at": None,
+        }]) as mock_read:
+            got = backend.reply_triage(reader)
+        self.assertEqual(got.total, 1)
+        self.assertEqual(got.lines[0].object_id, "graph-mail://me/1")
+        self.assertEqual(mock_read.call_args.kwargs["units"], [1])
+        self.assertEqual(mock_read.call_args.kwargs["mailboxes"], [ME])
+
 
 if __name__ == "__main__":
     unittest.main()

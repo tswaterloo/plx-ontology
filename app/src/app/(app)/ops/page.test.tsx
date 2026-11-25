@@ -155,4 +155,39 @@ describe("Reliability: open problems in words", () => {
     await showDetail();
     expect(screen.queryByTestId("ops-checks")).toBeNull();
   });
+
+  it("tucks internal dev notes and ticket references under collapsible Technical details", async () => {
+    const at = new Date().toISOString();
+    api.body = {
+      ...base,
+      open: [
+        {
+          key: "code_file_size",
+          line: "the autopilot file is 4 lines over its 2,000-line limit",
+          opened_at: at,
+          known: { owner: "Vince (disk request #23)", why: "Waiting on disk request #23", until: at },
+        },
+      ],
+      known: [
+        {
+          key: "disk_forecast:/data",
+          line: "Disk forecast: /data fills in about 11.8 days",
+          opened_at: at,
+          known: { owner: "Vince (disk request #23)", why: "Tracked in disk request #23", until: at },
+        },
+      ],
+    };
+    render(<OpsPage />);
+    const openList = await screen.findByTestId("ops-plain-list");
+    expect(openList).toHaveTextContent("Internal code maintenance check needs review");
+    expect(openList).toHaveTextContent("With Vince");
+    // Raw internal dev line and ticket note live inside the collapsed <details> element
+    const cardTech = screen.getByTestId("ops-card-tech-code_file_size") as HTMLDetailsElement;
+    expect(cardTech.open).toBe(false);
+    expect(cardTech).toHaveTextContent("2,000-line limit");
+    expect(cardTech).toHaveTextContent("disk request #23");
+    const knownTech = screen.getByTestId("ops-known-tech-disk_forecast:/data") as HTMLDetailsElement;
+    expect(knownTech.open).toBe(false);
+    expect(knownTech).toHaveTextContent("Tracked in disk request #23");
+  });
 });

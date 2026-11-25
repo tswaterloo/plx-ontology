@@ -90,17 +90,18 @@ NOT_RUN = frozenset({"dry_run", "needs_confirm", "killed", "refused", "excluded"
 
 
 
-_ONE_SEGMENT = re.compile(r"^/object/([^/?#]+)$")
+_ONE_SEGMENT = re.compile(r"^/object/([^/?#]+)/?([?#].*)?$")
 
 
 def card_href(href: str) -> str:
     """A card link as the app routes it: ``/object/<type>/<id>``. Items prepared before the
     writers named the type say ``/object/<id>`` (Page not found); the id's own prefix is the
-    type, so the link is rebuilt from it. Any other address is kept as it is."""
+    type, so the link is rebuilt from it (preserving any query or fragment). Any other
+    address is kept as it is."""
     from urllib.parse import unquote
     one = _ONE_SEGMENT.match(href)
     if one and ":" in unquote(one.group(1)):
-        return object_href(unquote(one.group(1)))
+        return object_href(unquote(one.group(1))) + (one.group(2) or "")
     return href
 
 
@@ -118,10 +119,10 @@ def todos_of(prepared: Mapping[str, Any]) -> list[m.AutopilotTodo]:
     out = []
     for t in prepared.get("todos") or ():
         if isinstance(t, Mapping) and str(t.get("what") or "").strip():
-            out.append(m.AutopilotTodo(system=str(t.get("system") or "")[:60],
-                                       record=str(t.get("record") or "")[:300],
-                                       what=str(t["what"]).strip()[:600]))
-    return out[:20]
+            out.append(m.AutopilotTodo(system=str(t.get("system") or ""),
+                                       record=str(t.get("record") or ""),
+                                       what=str(t["what"]).strip()))
+    return out
 
 
 def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
@@ -173,8 +174,8 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         facts.append("Choices asked: " + "; ".join(options))
     for link in prepared.get("links") or ():
         if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/"):
-            links.append(m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
-                                         href=card_href(str(link["href"]))[:600]))
+            links.append(m.AutopilotLink(label=str(link.get("label") or "Open"),
+                                         href=card_href(str(link["href"]))))
     if not [link for link in links if link.href.startswith("/object/")]:
         named = {str(a.get("object_id")): str(a.get("order_number") or "")
                  for a in affected if a.get("object_id")}
@@ -202,10 +203,10 @@ def alert_of(item: Mapping[str, Any], shown: Mapping[str, Any]
         title = label
     return m.AutopilotPrepared(
         item_id=item["item_id"], sender=str(happened.get("sender") or ""), channel="system",
-        subject=title[:300], kind="alert", summary=summary[:600],
+        subject=title, kind="alert", summary=summary,
         alert_kind=kind_prepared_by(str(item.get("autopilot") or "")),
         message=counted_words(shown_message(prepared.get("context") or happened.get("snippet"))),
-        facts=facts[:ALERT_FACTS], note=clean_note_spacing(counted_words(note[:300])), links=links[:4],
+        facts=facts, note=clean_note_spacing(counted_words(note)), links=links,
         created_at=str(item["created_at"]))
 
 
@@ -217,8 +218,8 @@ def pooled_card(item: Mapping[str, Any], shown: Mapping[str, Any]) -> m.Autopilo
     prepared = body.get("prepared") or {}
     happened = body.get("happened") or {}
     role = autopilot_queue.pool_role(str(item.get("owner") or "")) or ""
-    links = [m.AutopilotLink(label=str(link.get("label") or "Open")[:80],
-                             href=card_href(str(link["href"]))[:600])
+    links = [m.AutopilotLink(label=str(link.get("label") or "Open"),
+                             href=card_href(str(link["href"])))
              for link in prepared.get("links") or ()
              if isinstance(link, Mapping) and str(link.get("href") or "").startswith("/object/")]
     if not links and happened.get("object_id"):
@@ -226,10 +227,10 @@ def pooled_card(item: Mapping[str, Any], shown: Mapping[str, Any]) -> m.Autopilo
     words = role.replace("_", " ")
     return m.AutopilotPrepared(
         item_id=item["item_id"], sender="", channel="system",
-        subject=str(body.get("label") or "")[:300], kind="alert",
-        summary=str(prepared.get("summary") or "").strip()[:600],
+        subject=str(body.get("label") or ""), kind="alert",
+        summary=str(prepared.get("summary") or "").strip(),
         note=f"No record names who handles this, so it is on everyone in {words}'s list "
-             "until one of you takes it.", links=links[:4], pooled=words,
+             "until one of you takes it.", links=links, pooled=words,
         created_at=str(item["created_at"]))
 
 
@@ -241,7 +242,7 @@ def decision_view(prepared: Mapping[str, Any]) -> tuple[list[str], list[m.Autopi
     facts: list[str] = []
     rec = prepared.get("recommendation")
     if isinstance(rec, str) and rec.strip():
-        facts.append(f"Recommended: {rec.strip()[:40]}")
+        facts.append(f"Recommended: {rec.strip()}")
     facts += [str(r) for r in prepared.get("reasons") or () if isinstance(r, str)]
     links: list[m.AutopilotLink] = []
     mc = prepared.get("mc") if isinstance(prepared.get("mc"), Mapping) else {}
@@ -252,7 +253,6 @@ def decision_view(prepared: Mapping[str, Any]) -> tuple[list[str], list[m.Autopi
     return facts, links
 
 
-ALERT_FACTS = 8
 # what makes an item with nothing to prepare worth the person's look: why, what it holds up,
 # what is asked, or the records and where it is decided
 ALERT_BASIS = ("reasons", "affected", "options", "links", "evidence", "task", "action", "note")
@@ -487,13 +487,15 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             return {}
         return {str(k): str(v) for k, v in got.items()} if isinstance(got, Mapping) else {}
 
-    def _apa_decisions(self, state: Optional[Path]) -> dict[str, dict[str, Any]]:
+    def _apa_decisions(self, state: Optional[Path],
+                       replaced: Optional[Mapping[str, str]] = None) -> dict[str, dict[str, Any]]:
         if state is None or not (state / DECISIONS_FILE).exists():
             return {}
         last: dict[str, dict[str, Any]] = {}
         for row in Journal(state / DECISIONS_FILE).rows():
             last[str(row.get("item_id"))] = row
-        return carried(last, self._apa_replaced(), lambda r: r.get("decision") == "snooze")
+        return carried(last, self._apa_replaced() if replaced is None else replaced,
+                       lambda r: r.get("decision") == "snooze")
 
     @staticmethod
     def _apa_never(state: Optional[Path], me: set[str]) -> list[str]:
@@ -527,7 +529,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "at": _iso(datetime.now(timezone.utc)),
                          "by": sorted(self._apa_me(reader))[0],
                          "ids": sorted(self._apa_me(reader))})
-        from .assist_routes import matters_list   # after a write: read now, never kept
+        from .assist_routes import _bump_assist_drafts, matters_list   # after a write: read now, never kept
+        _bump_assist_drafts(self)
         return matters_list(self, reader, fresh=True)
 
     @staticmethod
@@ -559,15 +562,16 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                                                datetime.now(timezone.utc), gate)
             except Exception:  # noqa: BLE001 - a dry run never stops the list
                 return ""
-            return "send" if not why else ("keep: " + ", ".join(dict.fromkeys(why)))[:200]
+            return "send" if not why else ("keep: " + ", ".join(dict.fromkeys(why)))
         return would
 
-    def _apa_handed(self, state: Optional[Path]) -> dict[str, dict[str, Any]]:
+    def _apa_handed(self, state: Optional[Path],
+                    replaced: Optional[Mapping[str, str]] = None) -> dict[str, dict[str, Any]]:
         """item -> the last row passing it on (``HAND_FILE``)."""
         if state is None or not (state / HAND_FILE).exists():
             return {}
         return carried({str(row.get("item_id")): row for row in Journal(state / HAND_FILE).rows()},
-                       self._apa_replaced())
+                       self._apa_replaced() if replaced is None else replaced)
 
     @staticmethod
     def _apa_to_me(hands: Mapping[str, Mapping[str, Any]], me: set[str]) -> tuple[str, ...]:
@@ -612,8 +616,9 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                          "to_name": to[1], "by": sorted(me)[0],
                          "by_name": viewing.name_among(me),
                          "at": _iso(datetime.now(timezone.utc)),
-                         "note": (body.note or "").strip()[:500] or None})
-        from .assist_routes import matters_list   # after a write: read now, never kept
+                         "note": (body.note or "").strip() or None})
+        from .assist_routes import _bump_assist_drafts, matters_list   # after a write: read now, never kept
+        _bump_assist_drafts(self)
         return matters_list(self, reader, fresh=True)
 
     def _apa_exclusion(self, env: Mapping[str, str] | None = None) -> Any:
@@ -672,7 +677,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         with Journal(state / TAKE_FILE).locked() as held:
             held.append({"event": "item_take", "item_id": item_id, "pool": found["pooled"],
                          "by": me[0], "at": _iso(datetime.now(timezone.utc))})
-        from .assist_routes import matters_list   # after a write: read now, never kept
+        from .assist_routes import _bump_assist_drafts, matters_list   # after a write: read now, never kept
+        _bump_assist_drafts(self)
         return matters_list(self, reader, fresh=True)
 
     def _apa_roles(self) -> dict[str, list[str]]:
@@ -768,10 +774,13 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         state = self._apa_state()
         queue_path = self._ap_queue_path()  # type: ignore[attr-defined]
         notes: list[str] = []
-        raw_items = self._ap_visible(reader, everyone=owner)  # type: ignore[attr-defined]
-        if raw_items is None:
-            raw_items = []
+        seen_all = self._ap_visible(reader, everyone=owner,  # type: ignore[attr-defined]
+                                    states=("open", "done"))
+        if seen_all is None:
+            raw_items: list[dict[str, Any]] = []
             notes.append("The autopilot has not prepared anything on this server yet.")
+        else:
+            raw_items = [i for i in seen_all if i.get("state", "open") == "open"]
         glob, off, broken = self._apa_off(env, state)
         if broken:
             notes.append("The per-workflow switch file is unreadable: every workflow is "
@@ -855,8 +864,6 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         # what became of each prepared item this reader may see, settled ones too (the
         # same audience, marking and citation checks as the list; counts only)
         from operating import autopilot_outcomes as outcomes_of
-        seen_all = self._ap_visible(reader, everyone=owner,  # type: ignore[attr-defined]
-                                    states=("open", "done"))
         outcomes = m.AutopilotOutcomes(**outcomes_of.measure(seen_all, decisions, now)) \
             if seen_all else None
         rows = self._apa_rows(state)
@@ -1051,6 +1058,77 @@ class AutopilotAreaMixin(AssistSwitchMixin):
 
     # ------------------------------------------------------------ decisions
 
+    def _apa_find_item(self, reader: Reader, item_id: str, *, also: tuple[str, ...] = ()
+                       ) -> Optional[dict[str, Any]]:
+        """Look up one visible queue item without scanning the entire queue when possible."""
+        one = getattr(self, "_ap_visible_one", None)
+        if callable(one):
+            return one(reader, item_id, also=also)
+        for item in self._ap_visible(reader, also=also) or ():  # type: ignore[attr-defined]
+            if item["item_id"] == item_id:
+                return item
+        return None
+
+    def _apa_item_view(self, reader: Reader, item: Mapping[str, Any],
+                       dec: Optional[Mapping[str, Any]], now: datetime,
+                       *, offer: Optional[str] = None) -> m.AutopilotItem:
+        """Build one ``AutopilotItem`` response without rebuilding the entire ``AutopilotArea``."""
+        env = self._ap_env()  # type: ignore[attr-defined]
+        state = self._apa_state()
+        from operating.proactive_commitments import owner_ids
+        me = owner_ids(_principals(reader))
+        registry = ap.load_registry()
+        specs = {s.get("id"): s for s in registry.get("autopilots") or ()}
+        role_members = self._apa_roles()
+        member_of: dict[str, set[str]] = {}
+        for role, members in role_members.items():
+            for oid in members:
+                member_of.setdefault(str(oid).lower(), set()).add(role)
+        today = now.astimezone(_LOCAL).date()
+        happened = item["body"].get("happened") or {}
+        flow = wf.of_item(item["autopilot"], happened)
+        roles = set(ap.item_roles(specs.get(item["autopilot"]) or {}))
+        roles |= {r for r in member_of.get(item["owner"], ()) if not r.startswith("person:")}
+        item_state, decision = "waiting", None
+        if dec:
+            until = _instant(dec.get("until"))
+            if dec["decision"] == "snooze" and until is not None and until <= now:
+                dec = None
+            else:
+                item_state = {"accept": "accepted", "reject": "rejected",
+                              "snooze": "snoozed", "edit": "edited"}[dec["decision"]]
+                if ao.refused_accept(dec):
+                    item_state = "waiting"
+                decision = m.AutopilotDecision(
+                    decision=dec["decision"], at=dec["at"], by_you=dec.get("by") in me,
+                    until=dec.get("until"), text=dec.get("text"), note=dec.get("note"),
+                    outcome=dec.get("outcome"), reasons=list(dec.get("reasons") or ()),
+                    steps=[m.AutopilotActionResult(
+                        kind=str(step.get("kind") or ""),
+                        system=str(step.get("system") or "other"),
+                        status=str(step.get("status") or "unknown"),
+                        reasons=[str(x) for x in step.get("reasons") or ()][:2])
+                        for step in dec.get("steps") or () if isinstance(step, dict)],
+                    sent=decision_sent(dec, item))
+        created = _instant(item["created_at"])
+        due = _instant(item["due_at"])
+        is_today = bool((created and created.astimezone(_LOCAL).date() == today) or
+                        (due and due.astimezone(_LOCAL).date() <= today))
+        shown = autopilot_engine.shown_item(item)
+        live_kinds = self._apa_live_of(env, state)(item) if item_state in ("waiting", "edited") else []
+        return m.AutopilotItem(
+            item_id=item["item_id"], autopilot=item["autopilot"],
+            label=item["body"].get("label") or item["autopilot"], title=shown["title"],
+            workflow=flow, system=system_of(item), roles=sorted(roles),
+            owner=item["owner"], mine=item["mine"],
+            happened=shown["body"].get("happened") or {},
+            prepared=shown["body"].get("prepared") or {}, citations=item["citations"],
+            due_at=item["due_at"], created_at=item["created_at"], today=is_today,
+            state=item_state, decision=decision,
+            live_kinds=live_kinds, live=bool(live_kinds),
+            confirm_token=offer,
+            used_for_draft=self._apa_used(reader, item, {}))
+
     def autopilot_decide(self, reader: Reader, item_id: str,
                          body: m.AutopilotDecisionRequest) -> m.AutopilotItem:
         """Record the reader's decision on an item of their own; an accept goes through the
@@ -1058,12 +1136,9 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         now = datetime.now(timezone.utc)
         env = self._ap_env()  # type: ignore[attr-defined]
         state = self._apa_state()
-        found = None
         to_me = self._apa_to_me(self._apa_handed(state), self._apa_me(reader))
-        for item in self._ap_visible(reader, also=to_me) or ():  # type: ignore[attr-defined]
-            if item["item_id"] == item_id and (item["mine"] or item.get("handed")):
-                found = item
-        if found is None:
+        found = self._apa_find_item(reader, item_id, also=to_me)
+        if found is None or not (found["mine"] or found.get("handed")):
             raise UserFacing("not_found", "That item is not on your list.", 404)
         if not found["mine"] and body.decision not in ("reject", "snooze"):
             raise UserFacing("action_refused", "An alert passed to you is decided in its own "
@@ -1075,7 +1150,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         row: dict[str, Any] = {"event": "item_decision", "item_id": item_id,
                                "decision": body.decision, "at": _iso(now),
                                "by": sorted(self._apa_me(reader))[0],
-                               "note": (body.note or "").strip()[:500] or None}
+                               "note": (body.note or "").strip() or None}
         if body.decision == "snooze":
             until = _instant(body.until)
             if until is None or until <= now or until > now + timedelta(days=SNOOZE_DAYS):
@@ -1146,12 +1221,14 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             # as much as an email is
             row["sent"] = any(r.get("kind") in SENDS and r.get("status") == "done"
                               for r in results)
-            row["reasons"] = [str(x) for r in results for x in r.get("reasons") or ()][:8]
+            row["reasons"] = [str(x) for r in results for x in r.get("reasons") or ()]
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         if offer is None:            # an accept waiting for its confirm is no decision yet
             journal = Journal(state / DECISIONS_FILE)
             with journal.locked() as held:
                 held.append(row)
+        from .assist_routes import _bump_assist_drafts
+        _bump_assist_drafts(self)
         if not found["mine"]:        # passed to the reader: set aside, and nothing else
             shown = autopilot_engine.shown_item(found)
             return m.AutopilotItem(
@@ -1163,11 +1240,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 state="rejected" if body.decision == "reject" else "snoozed",
                 decision=m.AutopilotDecision(decision=body.decision, at=row["at"], by_you=True,
                                              until=row.get("until"), note=row.get("note")))
-        for it in self._area_read(reader).items:
-            if it.item_id == item_id:
-                it.confirm_token = offer
-                return it
-        raise UserFacing("not_found", "That item is not on your list.", 404)
+        dec_row = row if offer is None else self._apa_decisions(state).get(item_id)
+        return self._apa_item_view(reader, found, dec_row, now, offer=offer)
 
     def autopilot_prepared_list(self, reader: Reader) -> m.AutopilotDrafts:
         """``_prepared_read`` (the backend serves it kept per reader: ``backend_screens``)."""
@@ -1179,34 +1253,42 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         the person already answered (their own later mail in the conversation, or a decision
         taken) is not here."""
         state = self._apa_state()
-        hands, mine_ids = self._apa_handed(state), self._apa_me(reader)
-        from operating.assist_matters import mc_approval_workflows
-        no_mc = mc_approval_workflows()    # decided in Mission Control, never listed here
-        # every queue trigger's own cards stay here until L1 deletes the triggers (ASSIST specs 5;
-        # open-assist3-l1-draft-executor): a draft already prepared is never taken off the list.
-        # A matter made from a queue item is listed as that item (``assist_routes``)
-        items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
-            reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
-            if (i["mine"] or i.get("handed") or i.get("pooled"))
-            and i["autopilot"] not in no_mc]
-        decisions = self._apa_decisions(state)
-        never = self._apa_never(state, self._apa_me(reader))
         path = self._ap_queue_path()  # type: ignore[attr-defined]
         queue = ap.Queue(path) if path is not None and Path(path).exists() else None
-        now = datetime.now(timezone.utc)
-        used_cache: dict[str, Any] = {}
-        jobs_cache: dict[str, Any] = {}
-        auto_would = self._apa_auto_would(state, mine_ids)
-        out: list[m.AutopilotPrepared] = []
-        # one card per real-world thing: an older item about the lot (or other subject) a
-        # newer item of the reader's is about is not listed, decided or not (the engine's
-        # settle sets it aside; until then it would show the same thing twice)
-        # (across every queue owner the reader reads for: their own and their role's)
-        gone = autopilot_queue.superseded([{**i, "owner": ""} for i in items if i["mine"]])
-        # before the settle sets the older ones aside: their snooze or pass carries already
-        decisions = carried(decisions, gone, lambda r: r.get("decision") == "snooze")
-        hands = carried(hands, gone)
         try:
+            replaced: dict[str, str] = {}
+            if queue is not None:
+                try:
+                    got_rep = queue.meta(autopilot_queue.SUPERSEDED_BY)
+                    if isinstance(got_rep, Mapping):
+                        replaced = {str(k): str(v) for k, v in got_rep.items()}
+                except (OSError, ValueError, sqlite3.Error):
+                    replaced = {}
+            hands, mine_ids = self._apa_handed(state, replaced=replaced), self._apa_me(reader)
+            from operating.assist_matters import mc_approval_workflows
+            no_mc = mc_approval_workflows()    # decided in Mission Control, never listed here
+            # every queue trigger's own cards stay here until L1 deletes the triggers (ASSIST specs 5;
+            # open-assist3-l1-draft-executor): a draft already prepared is never taken off the list.
+            # A matter made from a queue item is listed as that item (``assist_routes``)
+            items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
+                reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
+                if (i["mine"] or i.get("handed") or i.get("pooled"))
+                and i["autopilot"] not in no_mc]
+            decisions = self._apa_decisions(state, replaced=replaced)
+            never = self._apa_never(state, mine_ids)
+            now = datetime.now(timezone.utc)
+            used_cache: dict[str, Any] = {}
+            jobs_cache: dict[str, Any] = {}
+            auto_would = self._apa_auto_would(state, mine_ids)
+            out: list[m.AutopilotPrepared] = []
+            # one card per real-world thing: an older item about the lot (or other subject) a
+            # newer item of the reader's is about is not listed, decided or not (the engine's
+            # settle sets it aside; until then it would show the same thing twice)
+            # (across every queue owner the reader reads for: their own and their role's)
+            gone = autopilot_queue.superseded([{**i, "owner": ""} for i in items if i["mine"]])
+            # before the settle sets the older ones aside: their snooze or pass carries already
+            decisions = carried(decisions, gone, lambda r: r.get("decision") == "snooze")
+            hands = carried(hands, gone)
             for item in items:
                 if item["item_id"] in gone:
                     continue
@@ -1382,14 +1464,23 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 subject=str(happened.get("subject") or (happened.get("fields") or {}
                                                         ).get("title") or ""),
                 message=shown_message(happened.get("snippet")), kind="todo",
-                summary=str(prepared.get("summary") or "")[:300], todos=todos,
+                summary=str(prepared.get("summary") or ""), todos=todos,
                 created_at=str(item["created_at"]))
         if "desk" not in cache:
             try:
                 cache["desk"] = (self._pw_desk(reader), self._pw_person(reader))  # type: ignore[attr-defined]
             except UserFacing:
                 cache["desk"] = None
-        made = self._apa_job_ids(self._apa_state(), str(item["item_id"]))
+        if "jobs_by_item" not in cache:
+            by_item: dict[str, dict[int, str]] = {}
+            st_dir = self._apa_state()
+            if st_dir is not None and (st_dir / JOBS_FILE).exists():
+                for r in Journal(st_dir / JOBS_FILE).rows():
+                    iid = r.get("item_id")
+                    if iid and isinstance(r.get("index"), int) and isinstance(r.get("prepared_id"), str):
+                        by_item.setdefault(str(iid), {})[int(r["index"])] = str(r["prepared_id"])
+            cache["jobs_by_item"] = by_item
+        made = cache["jobs_by_item"].get(str(item["item_id"]), {})
         jobs: list[m.AutopilotJob] = []
         stages: list[Optional[str]] = []
         for n, p in enumerate(proposals):
@@ -1410,7 +1501,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             jobs.append(m.AutopilotJob(
                 index=n, tool=p["tool"], system="sharepoint" if doc else str(args.get("system") or ""),
                 operation="document_edit" if doc else str(args.get("operation") or ""),
-                reason=str(args.get("reason") or "")[:600],
+                reason=str(args.get("reason") or ""),
                 target={"citation": args.get("citation")} if doc else dict(args.get("target") or {}),
                 change={k: args[k] for k in ("find", "replace", "sheet", "cell", "value") if k in args}
                 if doc else dict(args.get("change") or {}),
@@ -1428,12 +1519,12 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             channel=channel if channel in ("mail", "teams") else "system",
             subject=str(happened.get("subject") or (happened.get("fields") or {}).get("title") or ""),
             # a brief (meeting prep) is the item's own text: what the person reads
-            message=brief[:3000] if brief else shown_message(happened.get("snippet")),
+            message=brief if brief else shown_message(happened.get("snippet")),
             kind="job",
-            summary=str(prepared.get("summary") or "")[:300], jobs=jobs, todos=todos,
+            summary=str(prepared.get("summary") or ""), jobs=jobs, todos=todos,
             # a decision the job came with (an MC approval): its recommendation, reasons
             # and where it is decided, on the same card as the proposed changes
-            facts=facts[:ALERT_FACTS], links=links[:4], note=clean_note_spacing(note[:300]),
+            facts=facts, links=links, note=clean_note_spacing(note),
             created_at=str(item["created_at"]))
 
     def prepare_proposal(self, reader: Reader, proposal: Mapping[str, Any], *, origin: str,
@@ -1445,12 +1536,12 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         from operating import autopilot_jobs as aj
         desk, person = self._pw_desk(reader), self._pw_person(reader)  # type: ignore[attr-defined]
         args = dict(proposal["arguments"])
-        cites = [*[c for c in args.pop("citations", None) or () if isinstance(c, str)], *citations][:20]
+        cites = [*[c for c in args.pop("citations", None) or () if isinstance(c, str)], *citations]
         if proposal["tool"] == aj.DOC_TOOL_NAME:
             got = self._pw_doc_tool(reader, desk, person).call(args)  # type: ignore[attr-defined]
             if not isinstance(got, Mapping) or not got.get("prepared_id"):
                 raise UserFacing("action_refused", " ".join(
-                    str(x) for x in (got or {}).get("refused") or ["Refused."])[:600], 422)
+                    str(x) for x in (got or {}).get("refused") or ["Refused."]), 422)
             return str(got["prepared_id"])
         # the same step as the Ask's: a file only from the reader's own made files
         args, refused = self._pw_resolve(reader, args)  # type: ignore[attr-defined]
@@ -1513,9 +1604,8 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         from operating import autopilot_drafter as ad
         env = self._ap_env()  # type: ignore[attr-defined]
         state = self._apa_state()
-        found = next((item for item in self._ap_visible(reader) or ()  # type: ignore[attr-defined]
-                      if item["item_id"] == item_id and item["mine"]), None)
-        if found is None:
+        found = self._apa_find_item(reader, item_id)
+        if found is None or not found["mine"]:
             raise UserFacing("not_found", "That item is not on your list.", 404)
         if state is None:
             raise UserFacing("action_refused", "The autopilot's state directory is not "
@@ -1579,10 +1669,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         with Journal(state / DECISIONS_FILE).locked() as held:
             held.append(row)
-        for it in self._area_read(reader).items:
-            if it.item_id == item_id:
-                return it
-        raise UserFacing("not_found", "That item is not on your list.", 404)
+        return self._apa_item_view(reader, found, row, now)
 
     def _apa_through_desk(self, reader: Reader, item: Mapping[str, Any],
                           chat: Mapping[str, Any], now: datetime, live: bool,
@@ -1667,9 +1754,9 @@ class AutopilotAreaMixin(AssistSwitchMixin):
         used = (item.get("body") or {}).get("context_used")
         if not isinstance(used, Mapping):
             return None
-        ids = [i for i in used.get("memory") or () if type(i) is int][:20]
+        ids = [i for i in used.get("memory") or () if type(i) is int]
         related = [i for i in used.get("related") or ()
-                   if type(i) is int and i not in ids][:20]
+                   if type(i) is int and i not in ids]
         template = used.get("template") if type(used.get("template")) is int else None
         if not ids and not related and template is None:
             return None
@@ -1946,11 +2033,11 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 system=r.get("system") or WRITE_SYSTEM.get(str(r.get("kind")))
                 if r.get("kind") else r.get("system"),
                 kind=r.get("kind"), operation=r.get("operation"),
-                target=json.dumps(target, sort_keys=True)[:200]
-                if isinstance(target, (dict, list)) else (str(target)[:200] if target else None),
+                target=json.dumps(target, sort_keys=True)
+                if isinstance(target, (dict, list)) else (str(target) if target else None),
                 item_id=r.get("item_id"), title=titles.get(str(r.get("item_id"))),
                 why=r.get("why") if isinstance(r.get("why"), str) else None,
-                reasons=[str(x) for x in r.get("reasons") or ()][:8] or (
+                reasons=[str(x) for x in r.get("reasons") or ()] or (
                     [str(r["why"].get("reason"))] if isinstance(r.get("why"), dict) else []),
                 key=r.get("key"), by=r.get("by"),
                 undoable=bool(done and r.get("inverse") and r.get("key") not in undo_state),
@@ -1960,7 +2047,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                 undo_note=r.get("undo_note") if done else None))
         live = sum(1 for r in rows if r.get("event") == "outcome" and r.get("mode") == "live"
                    and r.get("status") == "done")
-        return m.AutopilotAudit(rows=out[:500], live=live)
+        return m.AutopilotAudit(rows=out, live=live)
 
     def autopilot_undo(self, reader: Reader, key: str) -> m.AutopilotAudit:
         """The owner undoes a live action once, through the write path's recorded inverse."""
@@ -1969,7 +2056,7 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             self._apa_executor(state).undo(key, datetime.now(timezone.utc),
                                            by=sorted(self._apa_me(reader))[0])
         except (ValueError, KeyError) as refused:
-            raise UserFacing("action_refused", f"Not undone: {refused}"[:300], 409)
+            raise UserFacing("action_refused", f"Not undone: {refused}", 409)
         return self.autopilot_audit(reader)
 
 

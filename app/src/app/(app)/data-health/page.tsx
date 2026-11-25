@@ -1,10 +1,11 @@
 "use client";
 
+import { RefreshCw } from "lucide-react";
 import { useMemo } from "react";
 import { eastern, SectionTabs, sourceName } from "@/components/shell";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { Toolbar } from "@/components/ui/toolbar";
+import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { StoredAge } from "@/components/ui/stored-age";
 import { getTrust } from "@/lib/api";
@@ -18,7 +19,7 @@ import type { AutopilotWorkflowRow, TrustAlert, TrustAnswerScore, TrustAnswerSet
 
 /** "2 h 10 min", "3 days": a lag as a person reads it. */
 function lagText(seconds: number | null | undefined): string {
-  if (seconds == null) return "—";
+  if (seconds == null) return "–";
   if (seconds < 90) return "under 2 min";
   const m = Math.round(seconds / 60);
   if (m < 120) return `${m} min`;
@@ -27,7 +28,7 @@ function lagText(seconds: number | null | undefined): string {
   return `${Math.round(h / 24)} days`;
 }
 
-const pctText = (p: number | null | undefined) => (p == null ? "—" : `${p.toFixed(1)}%`);
+const pctText = (p: number | null | undefined) => (p == null ? "–" : `${p.toFixed(1)}%`);
 const dayText = (iso: string) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "America/New_York" }).replace("Sept", "Sep");
 
 /** "person:vince@x" -> "Vince"; a role by its label. */
@@ -112,13 +113,13 @@ function autopilotSentence(rows: AutopilotWorkflowRow[]): string {
 function AlertRow({ a }: { a: TrustAlert }) {
   const under = a.percent != null && a.percent < 90;
   return (
-    <tr className="align-top">
+    <tr className="align-top transition-colors hover:bg-hover/60">
       <td className="py-1 pr-3">
         {a.label}
         {a.note && <span className="block text-[11px] leading-4 text-faint">{a.note}</span>}
       </td>
-      <td className="num py-1 pr-3 text-right">{a.judged ?? "—"}</td>
-      <td className="num py-1 pr-3 text-right">{a.correct ?? "—"}</td>
+      <td className="num py-1 pr-3 text-right">{a.judged ?? "–"}</td>
+      <td className="num py-1 pr-3 text-right">{a.correct ?? "–"}</td>
       <td className={cn("num py-1 pr-3 text-right", a.percent == null ? "text-faint" : under ? "text-risk" : "text-ok")}>{pctText(a.percent)}</td>
       <td className="num py-1 pr-3 whitespace-nowrap text-muted max-sm:hidden">{a.measured_on ?? ""}</td>
       <td className={cn("py-1 text-[12px]", a.on ? "font-medium text-fg" : "text-muted")}>{a.on ? (a.home ? "On, Home" : "On") : "Off"}</td>
@@ -155,8 +156,19 @@ export default function DataHealthPage() {
     return `${name}: ${v.why}`;
   }), [fresh]);
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Data health" />
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
+      <Toolbar
+        heading
+        title="Data health"
+        actions={
+          !refused ? (
+            <ToolbarButton onClick={() => retry()} title="Refresh data health" aria-label="Refresh data health">
+              <RefreshCw className={cn("size-3.5", at !== null && "animate-spin")} strokeWidth={1.9} aria-hidden />
+              <span className="max-sm:sr-only">Refresh</span>
+            </ToolbarButton>
+          ) : undefined
+        }
+      />
       <SectionTabs section="admin" />
       <PageIntro path="/data-health" />
       <StoredAge at={at} className="px-4 pb-1" />
@@ -184,7 +196,8 @@ export default function DataHealthPage() {
               {fresh.length === 0 ? (
                 <p className="mt-1 text-[13px] text-muted">This server holds no capture ledger or served data to read.</p>
               ) : (
-                <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-freshness">
+                <div className="mt-1 overflow-x-auto">
+                <table className="w-full text-left text-[13px]" data-testid="trust-freshness">
                   <thead className="text-[12px] text-muted">
                     <tr className="border-b border-border">
                       <th className="py-1 pr-3 font-normal">Source</th>
@@ -197,16 +210,17 @@ export default function DataHealthPage() {
                     {problemFirst(fresh).map((f) => {
                       const v = verdictOf(f);
                       return (
-                        <tr key={f.system} className="align-top">
+                        <tr key={f.system} className="align-top transition-colors hover:bg-hover/60">
                           <td className="py-1.5 pr-3 font-medium">{sourceName(f.system)}</td>
                           <td className={cn("py-1.5 pr-3 font-medium whitespace-nowrap", v.tone)}>{v.word}</td>
-                          <td className="num py-1.5 pr-3 whitespace-nowrap">{f.captured_at ? `${eastern(f.captured_at)} · ${lagText(f.lag_seconds)} ago` : "—"}</td>
+                          <td className="num py-1.5 pr-3 whitespace-nowrap">{f.captured_at ? `${eastern(f.captured_at)} · ${lagText(f.lag_seconds)} ago` : "–"}</td>
                           <td className="py-1.5 text-[12px] text-muted max-sm:hidden">{v.why}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </section>
 
@@ -218,7 +232,8 @@ export default function DataHealthPage() {
                   Not measured yet.
                 </p>
               ) : (
-                <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-answers">
+                <div className="mt-1 overflow-x-auto">
+                <table className="w-full text-left text-[13px]" data-testid="trust-answers">
                   <thead className="text-[12px] text-muted">
                     <tr className="border-b border-border">
                       <th className="py-1 pr-3 font-normal">Question set</th>
@@ -228,7 +243,7 @@ export default function DataHealthPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {(page.answers ?? []).map((s) => (
-                      <tr key={s.name} className="align-top">
+                      <tr key={s.name} className="align-top transition-colors hover:bg-hover/60">
                         <td className="py-1.5 pr-3 font-medium">{s.name.replace(/_/g, " ")}</td>
                         <Score s={s.dev} label="Development" />
                         <Score s={s.held_out} label="Held-out" />
@@ -236,6 +251,7 @@ export default function DataHealthPage() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
               <div className="mt-4"><AnswersRight /></div>
             </section>
@@ -252,7 +268,8 @@ export default function DataHealthPage() {
               {rows.length === 0 ? (
                 <p className="mt-1 text-[13px] text-muted">{page.autopilot_note}</p>
               ) : (
-                <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-autopilot">
+                <div className="mt-1 overflow-x-auto">
+                <table className="w-full text-left text-[13px]" data-testid="trust-autopilot">
                   <thead className="text-[12px] text-muted">
                     <tr className="border-b border-border">
                       <th className="py-1 pr-3 font-normal">Workflow</th>
@@ -268,12 +285,12 @@ export default function DataHealthPage() {
                     {rows.map((r) => {
                       const shown = rowStateShown(r, false);
                       return (
-                        <tr key={`${r.role}/${r.workflow}`} className="align-top">
+                        <tr key={`${r.role}/${r.workflow}`} className="align-top transition-colors hover:bg-hover/60">
                           <td className="py-1.5 pr-3">{workflowLabel(r.workflow)}</td>
                           <td className="py-1.5 pr-3 text-muted">{whoOf(r)}</td>
                           <td className={cn("py-1.5 pr-3 text-[12px]", r.draft ? "font-medium text-accent" : shown.status === "ok" ? "text-ok" : "text-muted")}>{shown.label}</td>
                           <td className="num py-1.5 pr-3 text-right">
-                            {r.dev ? pctText(r.dev.percent) : "—"}
+                            {r.dev ? pctText(r.dev.percent) : "–"}
                             {r.dev && <span className="block text-[11px] text-faint">{r.dev.matched} of {r.dev.judged}</span>}
                           </td>
                           <td className="num py-1.5 text-[12px]">{countdownText(r.countdown) ?? <span className="text-faint">not scored yet</span>}</td>
@@ -282,13 +299,15 @@ export default function DataHealthPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               )}
             </section>
 
             <section aria-labelledby="trust-alerts" className="order-4">
               <h2 id="trust-alerts" className="text-[13px] font-semibold">Do the alerts get it right?</h2>
               {page.alert_rule && <p className="text-[12px] leading-5 text-muted">{page.alert_rule}</p>}
-              <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-alerts">
+              <div className="mt-1 overflow-x-auto">
+              <table className="w-full text-left text-[13px]" data-testid="trust-alerts">
                 <thead className="text-[12px] text-muted">
                   <tr className="border-b border-border">
                     <th className="py-1 pr-3 font-normal">Alert</th>
@@ -305,9 +324,10 @@ export default function DataHealthPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
               {alerts.unmeasured.length > 0 && (
                 <details className="mt-2 text-[13px]">
-                  <summary className="cursor-pointer text-[12px] text-muted">{alerts.unmeasured.length} types not measured yet (off until hand-checked)</summary>
+                  <summary className="cursor-pointer text-[12px] text-muted hover:text-fg">{alerts.unmeasured.length} types not measured yet (off until hand-checked)</summary>
                   <ul className="mt-1 divide-y divide-border">
                     {alerts.unmeasured.map((a) => (
                       <li key={a.type} className="py-1">
@@ -322,10 +342,11 @@ export default function DataHealthPage() {
 
             <section aria-labelledby="trust-switches" className="order-4">
               <h2 id="trust-switches" className="text-[13px] font-semibold">Switches for changing other systems</h2>
-              <table className="mt-1 w-full text-left text-[13px]" data-testid="trust-switches">
+              <div className="mt-1 overflow-x-auto">
+              <table className="w-full text-left text-[13px]" data-testid="trust-switches">
                 <tbody className="divide-y divide-border">
                   {(page.switches ?? []).map((s) => (
-                    <tr key={s.system}>
+                    <tr key={s.system} className="transition-colors hover:bg-hover/60">
                       <td className="w-48 py-1.5 pr-3 font-medium">{s.system}</td>
                       <td className={cn("w-16 py-1.5 pr-3 text-[12px] font-medium", s.state === "on" ? "text-ok" : "text-muted")}>{s.state === "on" ? "On" : s.state === "off" ? "Off" : "Read only"}</td>
                       <td className="py-1.5 text-[12px] text-muted">{s.words}</td>
@@ -333,6 +354,7 @@ export default function DataHealthPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </section>
           </>
         )}

@@ -30,9 +30,11 @@ SUGGEST_TYPE_RANK = {"customer": 0, "supplier": 0, "purchase_order": 1, "sales_o
                      # a document found by its number (an exact number ranks first before
                      # these; among equal matches the systems of record's before BC's pilot)
                      "sales_invoice": 1, "shipment": 1, "receipt": 1, "supplier_invoice": 2,
+                     "credit_note": 2, "purchase_invoice": 2,
                      "packing_slip": 3, "certificate_of_analysis": 3}
 SYSTEM_WORDS = {"portal": "Portal", "bc": "BC", "gen": "Sage"}
 NUMBERED_DOCUMENTS = frozenset({"sales_invoice", "shipment", "receipt", "supplier_invoice",
+                                "credit_note", "purchase_invoice",
                                 "packing_slip", "certificate_of_analysis"})
 # A copy of a record to open first: the Portal's own app record, then Business Central.
 OPEN_FIRST = ("portal.app_", "bc.")

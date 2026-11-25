@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -31,6 +32,33 @@ from .ask_check import _args, _evidence, _name, model as _model
 LOG = logging.getLogger("operator_api.ask")
 FEATURE = "ask_cover"
 KINDS = ("A", "B", "C")
+EFFORT_ENV = "PLX_ASK_COVER_EFFORT"
+EFFORT = "low"
+EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+SECONDS_ENV = "PLX_ASK_COVER_SECONDS"
+SECONDS = 12.0
+_SQL_MAX_CHARS = 1200
+_VALUES_MAX_CHARS = 800
+
+
+def cover_effort(environ: Mapping[str, str] = os.environ) -> Optional[str]:
+    """Reasoning effort for the covering-read call (default ``low`` for fast JSON triage)."""
+    raw = str(environ.get(EFFORT_ENV) or "").strip().lower()
+    if raw == "default":
+        return None
+    return raw if raw in EFFORTS else EFFORT
+
+
+def cover_seconds(environ: Mapping[str, str] = os.environ) -> float:
+    """Timeout in seconds for the covering-read call (default 12 s)."""
+    raw = str(environ.get(SECONDS_ENV) or "").strip()
+    if not raw:
+        return SECONDS
+    try:
+        val = float(raw)
+        return val if val > 0 else SECONDS
+    except ValueError:
+        return SECONDS
 
 PROMPT = """You check one answer a company data assistant wrote against a list of the reads it made. You have NO tools. For each read you get its statement or search, how many rows came back, and facts the host computed about it (limit reached, grouped by, how many rows each value of a column has). You do NOT get the rows.
 Find only these three kinds of statement in the answer:
@@ -70,6 +98,12 @@ def _plain(value: Any) -> Any:
     return value.get("untrusted_text") if isinstance(value, Mapping) else value
 
 
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)].rstrip() + "\u2026"
+
+
 def card(number: int, event: Mapping[str, Any]) -> str:
     """One read as the check sees it: its statement or arguments and the host's facts about
     its result, never the rows."""
@@ -80,14 +114,16 @@ def card(number: int, event: Mapping[str, Any]) -> str:
     if name == "plx.sql":
         prof = got.get("profile") if isinstance(got.get("profile"), Mapping) else {}
         grouped = prof.get("grouped_by")
-        return (f"[read {number}] plx.sql {args.get('sql') or json.dumps(args, default=str)}\n"
+        stmt = _clip(str(args.get("sql") or json.dumps(args, default=str)), _SQL_MAX_CHARS)
+        vals = _clip(_values(prof), _VALUES_MAX_CHARS) if prof else ""
+        return (f"[read {number}] plx.sql {stmt}\n"
                 f"   scope: {_plain(got.get('scope'))}\n"
                 f"   rows: {prof.get('rows', got.get('row_count'))}; columns: {got.get('columns')}; "
                 f"limit reached: {prof.get('limit_hit')}; grouped by: {grouped}; "
                 f"error: {got.get('error') or got.get('raw')}\n"
-                f"   value counts: {_values(prof) or 'none computed'}")
+                f"   value counts: {vals or 'none computed'}")
     docs = got.get("documents") or got.get("opened") or []
-    return (f"[read {number}] {name} {json.dumps(args, default=str)}\n"
+    return (f"[read {number}] {name} {_clip(json.dumps(args, default=str), _SQL_MAX_CHARS)}\n"
             f"   returned: {len(docs)}; coverage: "
             f"{json.dumps(got.get('coverage') or got.get('completeness'), default=str)}; "
             f"error: {got.get('error')}")
@@ -127,11 +163,12 @@ def parse(reply: str) -> list[dict[str, Any]]:
 
 
 def call_for(asker: Any) -> Callable[[str], Optional[str]]:
-    """The one call, no tools and no time limit (``ask_check.call_for``'s, under its own
-    ledger name)."""
+    """The one call, no tools, bounded time and low effort (``ask_check.call_for``'s,
+    under its own ledger name)."""
     from operating import humanize
     return humanize.rewriter(binary=getattr(asker, "claude_bin", "claude") or "claude",
-                             model=_model(), seconds=humanize.NO_LIMIT, feature=FEATURE)
+                             model=_model(), seconds=cover_seconds(), feature=FEATURE,
+                             effort=cover_effort())
 
 
 def check(asker: Any, question: str, answer: str, events: Sequence[Mapping[str, Any]], *,
@@ -171,6 +208,70 @@ def sentences(printed: str, cover: Cover) -> list[Mapping[str, Any]]:
             continue
         out.append({**f, "sentence": printed[at[0]:at[1]].strip()})
     return out
+
+
+def patches(written: str, printed: str, cover: Cover,
+            events: Sequence[Mapping[str, Any]] = ()
+            ) -> tuple[list[ask_patch.Patch], list[dict[str, Any]]]:
+    """Map ``cover`` flags (quoted from ``printed``) onto exact ``(start, end)`` spans in
+    ``written`` (raw session text with ``{{refs}}`` and chart fences intact).
+    Returns ``(matched_patches, unplaced_flags)``."""
+    flags = sentences(printed, cover)
+    if not flags:
+        return [], []
+    spans = ask_patch.spans(written)
+    rendered_spans: Optional[list[tuple[int, int, str]]] = None
+    reasons: dict[tuple[int, int], list[str]] = {}
+    asks: dict[tuple[int, int], list[str]] = {}
+    unplaced: list[dict[str, Any]] = []
+    for f in flags:
+        quoted = " ".join(str(f["sentence"] or "").split())
+        at = ask_patch.find(written, quoted)
+        if at is None and events:
+            if rendered_spans is None:
+                rendered_spans = [
+                    (a, b, " ".join(ask_refs.print_refs(written[a:b], events)[0].split()))
+                    for a, b in spans
+                ]
+            for a, b, s in rendered_spans:
+                if quoted == s:
+                    at = (a, b)
+                    break
+            if at is None:
+                for a, b, s in rendered_spans:
+                    if quoted in s or (s in quoted and len(s) > 12):
+                        at = (a, b)
+                        break
+        if at is None:
+            unplaced.append(dict(f))
+            continue
+        reasons.setdefault(at, []).append(f["why"] or "goes beyond what the reads cover")
+        if f["would_settle"]:
+            asks.setdefault(at, []).append(f["would_settle"])
+    out = [
+        ask_patch.Patch(
+            a, b, written[a:b],
+            "; ".join(dict.fromkeys(reasons[(a, b)])),
+            "; ".join(dict.fromkeys(asks.get((a, b), ()))),
+        )
+        for (a, b) in sorted(reasons)
+    ]
+    return out, unplaced
+
+
+def patch_message(patched: Sequence[ask_patch.Patch]) -> str:
+    """Targeted sentence-patch turn for ``ask_cover`` flags (PLAN-A2: patch only the
+    flagged sentence(s), never rewrite the whole answer or regenerate chart blocks)."""
+    return ask_patch.message(
+        patched,
+        "A check of your answer against what you read lists these sentences: each says "
+        "something wider than the reading behind it covers.",
+        "For each numbered sentence, narrow it to state only what your existing reads cover, "
+        "or run at most one quick read if needed to settle it. Give every figure as a "
+        "reference to the result it comes from ({{...}}). Write only the replacement "
+        "sentence itself: never frame it as a revision or update, and never mention checks, "
+        "reads, tools, or handles. Do not rewrite the rest of your answer or any charts.",
+    )
 
 
 STANDS = "stands"

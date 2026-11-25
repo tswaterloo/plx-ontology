@@ -599,7 +599,7 @@ class SetRegistry:
                 self._drop_live(owner, oid)
             while len(self._sets) >= MAX_SETS:
                 self._drop_set(min(self._sets, key=lambda k: self._sets[k][2]))
-            ids = tuple(object_ids[:MAX_SET_OBJECTS])
+            ids = tuple(object_ids[:MAX_SET_OBJECTS])  # guard-ok: cache memory bound; a cut set is never marked whole, so the incompleteness is carried truthfully
             owner = self._owner(actor)
             whole = bool(complete) and not live and len(ids) == len(object_ids) and (
                 total is None or total == len(ids))
@@ -679,7 +679,7 @@ class SetRegistry:
         with self._lock:
             entry = self._sets.get(handle)
             if entry is not None and entry[0] == self._owner(actor) and entry[7]:
-                self._sets[handle] = entry[:7] + (False, None)
+                self._sets[handle] = entry[:7] + (False, None)  # guard-ok: fixed tuple shape, not content
 
     def live_id(self, object_id: str, actor: Actor) -> bool:
         """Whether plx.find recently answered this object id to this same actor
@@ -858,7 +858,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
         if problems:
             # Never hand out a result that breaks the frozen contract.
             return _error("contract_violation", ("output failed the contract: "
-                                                 + "; ".join(problems))[:600])
+                                                 + "; ".join(problems)))
         if _envelope_bytes(result) > result_limit(self.limits):
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the request (object_type, properties, limit)")
@@ -882,10 +882,10 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
             raise ToolError("unknown_property",
                             f"{object_type} declares no property {', '.join(unknown)}",
                             (property_hint(self.schema, object_type, unknown)
-                             + (f"; or an event's date: {', '.join(sorted(timed)[:8])}"
+                             + (f"; or an event's date: {', '.join(sorted(timed))}"
                                 if timed else "")
                              + (f"; or a link, naming its records, a set or a name: "
-                                f"{', '.join(named[:12])}" if named else ""))[:600])
+                                f"{', '.join(named)}" if named else "")))
         for f in events:
             if f.get("op") not in ("gte", "gt", "lt", "lte", "eq", "in", "prefix", "present",
                                    "absent"):
@@ -1100,7 +1100,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                 entities, gaps = self._entities(actor, query, object_type)
                 if entities:
                     result["entities"] = entities
-                result["gaps"] = (list(result.get("gaps") or ()) + gaps)[:20]
+                result["gaps"] = list(result.get("gaps") or ()) + gaps
                 _fit_entities(result, result_limit(self.limits))
             return self._find_after(arguments, actor, result)
 
@@ -1115,13 +1115,13 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                         if not gaps else {"complete": False, "truncated": False,
                                           "reason": gaps[0]["reason"], "returned": returned})
         if not entities and not gaps:
-            gaps = [_gap("unknown", "no_entity_named", "text"[:700],
+            gaps = [_gap("unknown", "no_entity_named", "text",
                          "no name or code in the text names a record this reader may "
                          "read; search the records with plx.find query or object_type")]
             completeness = {"complete": False, "truncated": False,
                             "reason": "no_entity_named", "returned": 0}
         result = {"status": "resolved" if entities else "not_found", "candidates": [],
-                  "entities": entities, "gaps": gaps[:20], "completeness": completeness,
+                  "entities": entities, "gaps": gaps, "completeness": completeness,
                   "meta": self._meta_locked()}
         _fit_entities(result, result_limit(self.limits))
         return result
@@ -1213,7 +1213,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                                 "call plx.schema for the declared object types")
             if spec.get("availability", {}).get("state") == "not_served":
                 reason = spec["availability"].get("reason", "not served by any source")
-                raise ToolError("not_served", f"{object_type} is not served: {reason}"[:600],
+                raise ToolError("not_served", f"{object_type} is not served: {reason}",
                                 "record a gap; it cannot be found until a source serves it")
         filters = list(arguments.get("filters", ()))
         if object_type is not None and self.schema is not None:
@@ -1320,7 +1320,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
             # whose scope excludes it (a cancelled order: the Portal never matches it).
             leads = [m for m in ranked if m.reason in GRAMMAR_LEAD_REASONS
                      or any(f.get("feature") == SCOPE_EXCLUDED for f in m.why_not)]
-            related = leads + references[:RELATED_REFERENCE_CAP]
+            related = leads + references
             led = {m.object_id for m in leads}
             ranked = [m for m in ranked if m.object_id not in led]
         total = len(ranked)
@@ -1380,25 +1380,25 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                        "filters": [{"property": prop, "op": "eq", "value": value}]}
             gaps.append(_gap(
                 "unknown", "referenced_by" if rooted else "referenced_only",
-                f"{holder_type}.{prop}:{value}"[:700],
+                f"{holder_type}.{prop}:{value}",
                 (f"{len(held)} readable {holder_type} record(s) hold this value in {prop}, "
                  "a reference that names another record, never its holder; list them all "
-                 "with plx.find " + json.dumps(listing, separators=(",", ":")))[:600]))
+                 "with plx.find " + json.dumps(listing, separators=(",", ":")))))
         if undecided:
             gaps.extend(_filter_gaps(object_type, undecided))
         if not ranked and not prior:
             # (An empty last segment of a listing whose earlier segments matched is
             # no no-match: those matches stand.)
             subject = _not_found_subject(query, object_type, filters)
-            tried = [f"{k.kind}:{k.normalized}"[:200] for k in keys]
-            searched: dict[str, Any] = {"queries": ([query] if query else [subject[:200]])
-                                        + tried[:15]}
+            tried = [f"{k.kind}:{k.normalized}" for k in keys]
+            searched: dict[str, Any] = {"queries": ([query] if query else [subject])
+                                        + tried}
             if scope.sources:
-                searched["sources"] = list(scope.sources)[:8]
+                searched["sources"] = list(scope.sources)
             carried, missed = ([], []) if query is None else self._carriers_searched(
                 query, keys, object_type, store_meta, scope.sources)
             if carried:
-                searched["scopes"] = carried[:16]
+                searched["scopes"] = carried
             declared = self._declared_markings(object_type, carried, filters)
             lacking = sorted(declared - scope.held)
             withheld = bool(lacking or undecided)
@@ -1469,7 +1469,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
             gaps.append(_gap("unknown", "identifier_unparsed",
                              _not_found_subject(query, object_type, filters),
                              "the projection could not parse some values of "
-                             f"{', '.join(unparsed[:8])}{more} as identifiers of their "
+                             f"{', '.join(unparsed)}{more} as identifiers of their "
                              "kind; a record holding one is not found by that value"))
         def scan_cursor(position: int, after: str, before: int,
                         last: Sequence[str]) -> str | None:
@@ -1484,7 +1484,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
         timed_out = any(g.get("reason") == "time_budget" for g in gaps)
         if scan_truncated and not any(g.get("reason") in ("scan_cap", "time_budget")
                                       for g in gaps):
-            gaps.append(_gap("unknown", "scan_cap", f"query:{' '.join((query or object_type or '').split())}"[:700],
+            gaps.append(_gap("unknown", "scan_cap", f"query:{' '.join((query or object_type or '').split())}",
                              "the search stopped at its scan cap; narrow it with object_type, "
                              "identifier_kind or filters" if query is not None else
                              "this page's scan stopped at its per-call cap: pass "
@@ -1539,7 +1539,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
         result["meta"] = meta
         named_gaps = self._named_not_found(query, candidates)
         if named_gaps:
-            result["gaps"] = (named_gaps + list(result["gaps"]))[:20]
+            result["gaps"] = named_gaps + list(result["gaps"])
 
         def finish(count: int) -> dict[str, Any]:
             done = offset + max(0, count - len(repeated))
@@ -1607,7 +1607,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                  reason: str, feature: str) -> None:
             nonlocal truncated
             if len(rows) > LEAD_SCAN_CAP:
-                truncated, rows = True, rows[:LEAD_SCAN_CAP]
+                truncated, rows = True, rows[:LEAD_SCAN_CAP]  # guard-ok: the truncated flag reaches completeness
             for row in rows:
                 ident = (row["object_id"], row["l1_handle"], row["field_path"],
                          row["identifier_kind"])
@@ -1661,7 +1661,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
             for prefix in prefixes:
                 found = self.store.identifiers_by_prefix(scope, (key.kind,), prefix)
                 truncated = truncated or len(found) > LEAD_SCAN_CAP
-                for row in found[:LEAD_SCAN_CAP]:
+                for row in found[:LEAD_SCAN_CAP]:  # guard-ok: declared scan bound, truncation stated in completeness
                     ref = (row["object_id"], row["l1_handle"], row["field_path"])
                     rows[ref] = row
                     index.add(ref, row["normalized"], row["property"])
@@ -1709,7 +1709,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                 same = same_party(oid, lead.object_id, dict.fromkeys(
                     [*on.get(oid, ()), *on.get(lead.object_id, ())])) is True
                 feature: dict[str, Any] = {
-                    "feature": "related_same_record" if same else f"related_{lead.reason}"[:64],
+                    "feature": "related_same_record" if same else f"related_{lead.reason}"[:64],  # guard-ok: machine feature token shape, not content
                     "agrees": True if same else None}
                 value = cited.get((lead.l1_handle, lead.field_path))
                 if value is not None:
@@ -2135,7 +2135,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
                 raw["origin"]["sender_class"] = match.sender_class
             object_type = match.object_id.split(":", 1)[0]
             normalized, normalized_gap = identifier_out(
-                match.kind, match.normalized[:200], f"{object_type}.{match.property}",
+                match.kind, match.normalized, f"{object_type}.{match.property}",
                 raw["origin"]["citation"], raw["origin"].get("field_path"), limit)
             matched = {"identifier_kind": match.kind, "normalized": normalized, "raw": raw,
                        "property": match.property, "binding": match.binding,
@@ -2151,7 +2151,7 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
             why_not = [dict(feature) for feature in match.why_not]
             why_not += (corroboration or {}).get(match.object_id, [])
             if why_not:
-                candidate["why_not"] = why_not[:16]
+                candidate["why_not"] = why_not
             out.append(candidate)
         return out
 
@@ -2316,19 +2316,19 @@ class OntologyTools(ScopeSteps, FindSteps, ObjectSteps):
         result: dict[str, Any] = {
             "object": {"object_id": object_id, "object_type": object_type, "display": display,
                        "lineage": version["lineage"]},
-            "values": values, "conflicts": conflicts[:50], "identity": identity[:MAX_IDENTITY],
-            "linked_counts": linked_counts[:100], "gaps": gaps[:50]}
+            "values": values, "conflicts": conflicts, "identity": identity,
+            "linked_counts": linked_counts, "gaps": gaps}
         company = bc_company(version["lineage"], version["l1_handle"])
         if company is not None:
             result["object"]["company"] = company
         derived, checked = self._derived(scope, object_id, object_type, wanted)
         if checked is not None:
             # the header against its lines comes first: a later gap is cut before it
-            result["gaps"] = [checked, *gaps][:50]
+            result["gaps"] = [checked, *gaps]
         if derived:
             result["derived"] = derived
         if beyond:
-            result["linked_beyond"] = beyond[:MAX_BEYOND]
+            result["linked_beyond"] = beyond
         twins = self._twins_named(scope, object_id, identity)
         if twins:
             result["twins"] = twins
@@ -2550,7 +2550,7 @@ def _value_out(row: Mapping[str, Any], object_type: str, limit: int
     cannot be cited or does not fit its declared type."""
     subject = f"{object_type}.{row['property']}"
     if not _NAME.match(row["property"] or ""):
-        return None, _gap("unknown", "unnamed_property", subject[:700])
+        return None, _gap("unknown", "unnamed_property", subject)
     citation = _citation(row)
     if citation is None:
         return None, _gap("unknown", "uncitable_value", subject,
@@ -2636,7 +2636,7 @@ def _conflicts(object_type: str, values: list[dict], peer_values: list[tuple[str
         keys = {_compare_key(v["value_type"], compared_text(v["value"])) for v in present}
         if len(keys) >= 2:
             out.append({"kind": "value_disagreement", "subject": f"{object_type}.{prop}",
-                        "values": present[:12]})
+                        "values": present})
     return out
 
 

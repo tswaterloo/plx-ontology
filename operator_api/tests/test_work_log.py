@@ -836,9 +836,15 @@ class TimeSaved(unittest.TestCase):
         self.assertEqual(set(cited_handles(kept)), {trail, "graph-mail://b/m1@1"})
         events, _ = self.store.events(reader="plx:staff:ana", thread="ask:c1")
         [turn] = wl.resume("ask:c1", events)["turns"]
-        self.assertEqual((turn["question"], turn["answer"], turn["withheld"]),
-                         (big["question"], None, wl.PARTIAL_TURN))
-        # a source without a handle cannot be decided: the drafts are not kept
+        # Partial rows with a valid direct_answer and decidable _cited handles render on reopen
+        # (with safe defaults for omitted fields) while keeping _cited for kept_turns re-check.
+        self.assertEqual(turn["question"], big["question"])
+        self.assertIsNone(turn.get("withheld"))
+        self.assertIsNotNone(turn["answer"])
+        self.assertEqual(turn["answer"]["direct_answer"], big["direct_answer"])
+        self.assertEqual(turn["answer"]["outcome"], "answered")
+        self.assertEqual(set(cited_handles(turn["answer"])), {trail, "graph-mail://b/m1@1"})
+        # a source without a handle cannot be decided: the drafts are not kept and resume withholds it
         bad = {**big, "answer_id": "a2",
                "conflicts": [{"system": "BC", "quote": "no handle"}]}
         self.store.record(ana, kind="ask", verb="asked", title="q", thread="ask:c2",
@@ -847,6 +853,41 @@ class TimeSaved(unittest.TestCase):
         self.assertNotIn("drafts", kept)
         with self.assertRaises(ValueError):
             cited_handles(kept)   # its re-check withholds the turn
+        bad_events, _ = self.store.events(reader="plx:staff:ana", thread="ask:c2")
+        [bad_turn] = wl.resume("ask:c2", bad_events)["turns"]
+        self.assertEqual((bad_turn["question"], bad_turn["answer"], bad_turn["withheld"]),
+                         (bad["question"], None, wl.PARTIAL_TURN))
+
+    def test_large_multi_source_answer_under_2mb_is_kept_whole_and_over_2mb_keeps_charts_and_answer(self):
+        ana = self.reader("ana")
+        trail = "bc://x/purchaseOrders/p9@1"
+        charts = [{"kind": "bar", "title": "Revenue", "x": "month", "labels": ["2026-10"],
+                   "series": [{"name": "revenue", "values": [1000.0]}]}]
+        medium = {"question": "deep multi-source report", "conversation_id": "c3",
+                  "answer_id": "a3", "direct_answer": "Full finished report.",
+                  "charts": charts,
+                  "trail": {"steps": [{"source": {"system": "BC", "handle": trail,
+                                                  "quote": "q" * 350_000}}]}}
+        self.store.record(ana, kind="ask", verb="asked", title=medium["question"],
+                          thread="ask:c3", source="ask", source_id="a3", detail=medium)
+        kept = self.store.ask_detail("plx:staff:ana", "a3")
+        self.assertNotIn("_kept", kept)
+        self.assertEqual(kept["direct_answer"], "Full finished report.")
+        self.assertEqual(kept["charts"], charts)
+        events, _ = self.store.events(reader="plx:staff:ana", thread="ask:c3")
+        [turn] = wl.resume("ask:c3", events)["turns"]
+        self.assertIsNotNone(turn["answer"])
+        self.assertEqual(turn["answer"]["direct_answer"], "Full finished report.")
+
+        huge = {**medium, "conversation_id": "c4", "answer_id": "a4",
+                "trail": {"steps": [{"source": {"system": "BC", "handle": trail,
+                                                "quote": "q" * (wl.MAX_DETAIL + 100)}}]}}
+        self.store.record(ana, kind="ask", verb="asked", title=huge["question"],
+                          thread="ask:c4", source="ask", source_id="a4", detail=huge)
+        kept_huge = self.store.ask_detail("plx:staff:ana", "a4")
+        self.assertEqual(kept_huge["_kept"], "partial")
+        self.assertEqual(kept_huge["direct_answer"], "Full finished report.")
+        self.assertEqual(kept_huge["charts"], charts)
 
     def test_cardinality_and_the_exclusion(self):
         for n in (1, 10, 60):

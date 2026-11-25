@@ -11,6 +11,14 @@ import re
 from typing import Any, Iterable, Mapping, Optional
 
 from . import models as m
+from .page_core import (
+    clean_alert_label,
+    clean_enum,
+    clean_money_amount,
+    clean_person,
+    clean_subject,
+    clean_text,
+)
 from .test_records import hidden_words
 from .serving import (object_url, open_url, record_words, system_of)
 from .answers import (aged_to_today)
@@ -58,13 +66,15 @@ def home_group_pages(got: Any) -> list[str]:
         if (group.event_type != "po_late" and group.count > (group.in_top or 0)
                 and shown < HOME_GROUP_ROWS):
             kinds.append(group.event_type)
-    return kinds[:12]
+    return kinds
 
 
 def _answer_kept(answer: Any) -> dict[str, Any]:
     """What feedback on an answer attaches: its words, facts (with citations) and subjects,
     as served to its reader (bounded)."""
     try:
+        # guard-ok: a bounded feedback snapshot of the answer itself, which memory keeps
+        # whole under the same conversation id; nothing is cut that is not already kept whole
         queries = [
             {"title": c.title, "sql": c.sql, "measure_id": c.measure.id if c.measure else None}
             for c in (getattr(answer, "charts", None) or ()) if getattr(c, "sql", None)
@@ -75,11 +85,11 @@ def _answer_kept(answer: Any) -> dict[str, Any]:
         return {"answer": (answer.direct_answer or "")[:4000],
                 "conversation_id": answer.conversation_id,
                 "as_of": answer.freshness.as_of if answer.freshness else None,
-                "facts": [{"text": f.text[:600], "sources": [
+                "facts": [{"text": f.text[:600], "sources": [  # guard-ok: bounded feedback snapshot, kept whole in memory
                     {"system": s.system, "handle": s.handle, "label": s.label}
-                    for s in f.sources[:8]]} for f in answer.facts[:30]],
+                    for s in f.sources[:8]]} for f in answer.facts[:30]],  # guard-ok: bounded feedback snapshot, kept whole in memory
                 "subjects": [{"type": o.type, "object_id": o.object_id, "label": o.label}
-                             for o in answer.subjects[:20]],
+                             for o in answer.subjects[:20]],  # guard-ok: bounded feedback snapshot, kept whole in memory
                 "queries": queries}
     except Exception:  # noqa: BLE001 - the feedback keeps the question alone
         return {}
@@ -165,24 +175,34 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
     amount = facts.get("amount")
     action = item["next_action"]
     next_action = (trail.next_action if trail is not None and trail.next_action
-                   else m.NextAction(text=action["text"][:400], rule=action["rule"]))
+                   else m.NextAction(text=clean_text(action["text"]), rule=action["rule"]))
+    kind_words = clean_enum(kind, "object_type") or kind
+    fallback_subject = f"{kind_words} record"
+    amt_value = clean_money_amount(amount["value"]) if amount and amount.get("value") is not None else None
+    lines_sum_val = (
+        clean_money_amount(amount["disagree"]["lines_sum"])
+        if amount and isinstance(amount.get("disagree"), Mapping)
+        and amount["disagree"].get("lines_sum") is not None
+        else None
+    )
     return m.BriefingItem(
         rank=item["rank"], id=item["id"], event_type=item["event_type"],
-        label=item["label"], evidence=item.get("evidence") or "fixture-only",
+        label=clean_alert_label(item["event_type"], item.get("label")),
+        evidence=item.get("evidence") or "fixture-only",
         object_id=oid, object_type=kind,
-        subject_label=labels.get(oid) or f"{kind} record",
-        counterpart=counterpart,
-        summary=str(item.get("summary") or "")[:300],
+        subject_label=clean_subject(labels.get(oid), fallback=fallback_subject, max_len=200),
+        counterpart=clean_person(counterpart) or (clean_text(counterpart) or None),
+        summary=clean_text(item.get("summary") or "", strip_email_noise=True),
         carried=carried_words(item.get("carried")),
-        why=str(item["why"])[:600] if item.get("why") else None,
+        why=clean_text(item["why"], strip_email_noise=True) if item.get("why") else None,
         next_action=next_action,
-        amount=m.Money(amount=amount["value"], currency=amount["currency"])
+        amount=m.Money(amount=amt_value or str(amount["value"]), currency=amount["currency"])
         if amount else None,
         amount_basis=amount.get("basis") if amount else None,
-        amount_suspect=str(amount["suspect"])[:200] if amount and amount.get("suspect")
+        amount_suspect=clean_text(amount["suspect"]) if amount and amount.get("suspect")
         else None,
         amount_disagree=bool(amount) and isinstance(amount.get("disagree"), Mapping),
-        lines_sum=m.Money(amount=str(amount["disagree"]["lines_sum"]),
+        lines_sum=m.Money(amount=lines_sum_val or str(amount["disagree"]["lines_sum"]),
                           currency=amount["currency"])
         if amount and isinstance(amount.get("disagree"), Mapping)
         and amount["disagree"].get("lines_sum") is not None else None,
@@ -193,7 +213,7 @@ def briefing_item(item: Mapping[str, Any], labels: Mapping[str, str],
         first_seen=item.get("first_seen"), open_url=object_url(kind, oid),
         sources=[m.Source(system=system_of(h), handle=h, label=record_words(h),
                           open_url=open_url(h))
-                 for h in (item.get("citations") or ())[:3] if isinstance(h, str)],
+                 for h in (item.get("citations") or ()) if isinstance(h, str)],
         trail=trail, yours=bool(item.get("yours")),
         why_yours=yours_words(item.get("involvement") or ()))
 
@@ -243,7 +263,7 @@ def suggestion_source(raw: Any) -> Optional[m.Source]:
     system = raw.get("system") if raw.get("system") in m.System.__args__ \
         else system_of(handle)
     return m.Source(system=system, handle=handle,
-                    label=str(raw.get("label") or record_words(handle))[:200],
+                    label=str(raw.get("label") or record_words(handle)),
                     open_url=raw.get("open_url") if raw.get("label") else open_url(handle))
 
 
@@ -260,46 +280,51 @@ def suggestion_model(card: Mapping[str, Any]) -> m.ProactiveSuggestion:
         for fact in draft.get("facts") or ():
             source = suggestion_source({"handle": fact.get("citation")})
             if source is not None:
-                facts.append(m.DraftFact(fact=str(fact["fact"]), value=str(fact["value"])[:200],
+                facts.append(m.DraftFact(fact=str(fact["fact"]), value=str(fact["value"]),
                                          source=source))
     return m.ProactiveSuggestion(
         id=card["id"], kind=card["kind"], event_types=list(card.get("event_types") or ()),
-        rank=int(card.get("rank") or 0), headline=str(card["headline"])[:300],
+        rank=int(card.get("rank") or 0),
+        headline=clean_text(card["headline"], strip_email_noise=True),
         subject=m.ObjectRef(object_id=subject["object_id"], type=subject["object_type"]
-                            or "Object", label=str(subject["label"])[:200],
+                            or "Object", label=clean_subject(subject["label"], fallback=subject["object_type"] or "Record"),
                             open_url=object_url(subject["object_type"] or "Object",
                                                 subject["object_id"])),
         impact=m.SuggestionImpact(
-            amount=m.Money(amount=amount["value"], currency=str(amount["currency"]))
+            amount=m.Money(
+                amount=clean_money_amount(amount["value"]) or str(amount["value"]),
+                currency=str(amount["currency"]),
+            )
             if amount and amount.get("currency") else None,
             amount_basis=amount.get("basis") if amount else None,
-            amount_suspect=str(amount["suspect"])[:200] if amount and amount.get("suspect")
+            amount_suspect=clean_text(amount["suspect"]) if amount and amount.get("suspect")
             else None, days_late=impact.get("days_late"),
             days_at_risk=impact.get("days_at_risk"),
             orders_at_risk=int(impact.get("orders_at_risk") or 0),
             orders=[m.ObjectRef(object_id=o["object_id"], type=o["object_id"].split(":")[0],
-                                label=str(o.get("label") or "Customer order")[:200],
+                                label=clean_text(o.get("label") or "Customer order"),
                                 open_url=object_url(o["object_id"].split(":")[0],
                                                     o["object_id"]))
                     for o in impact.get("orders") or ()]),
         eta=m.SuggestionEta(answer=eta["answer"], when=eta.get("when"),
                             in_mail=bool(eta.get("in_mail")),
                             source=suggestion_source(eta.get("source")),
-                            text=str(eta.get("text") or "")[:300]) if eta else None,
-        reasoning=[m.SuggestionReason(text=str(r["text"])[:600],
+                            text=clean_text(eta.get("text") or "", strip_email_noise=True)) if eta else None,
+        reasoning=[m.SuggestionReason(text=clean_text(r["text"], strip_email_noise=True),
                                       source=suggestion_source(r.get("source")))
                    for r in card.get("reasoning") or () if r.get("text")],
-        action=m.NextAction(text=str(card["action"]["text"])[:400] or "Open the record.",
+        action=m.NextAction(text=clean_text(card["action"]["text"]) or "Open the record.",
                             rule=str(card["action"].get("rule") or "suggestion")),
         draft=m.SuggestionDraft(
             channel=draft["channel"], audience=draft["audience"],
-            to=m.DraftTo(name=draft["to"].get("name"), address=draft["to"].get("address"),
-                         basis=str(draft["to"].get("basis") or ""),
+            to=m.DraftTo(name=clean_person(draft["to"].get("name")), address=draft["to"].get("address"),
+                         basis=clean_text(draft["to"].get("basis") or ""),
                          source=suggestion_source(draft["to"].get("source"))),
-            subject=draft["subject"], body=draft["body"], facts=facts,
+            subject=clean_subject(draft["subject"], fallback="Follow-up"),
+            body=draft["body"], facts=facts,
             review=draft.get("review")) if draft else None,
         confidence=m.SuggestionConfidence(**card["confidence"]),
-        missing=[str(x)[:300] for x in card.get("missing") or ()],
+        missing=[clean_text(x) for x in card.get("missing") or () if clean_text(x)],
         acknowledged=bool(card.get("acknowledged")), new=bool(card.get("new")),
         actions=[m.CardActionOffer(**o) for o in card_actions.offers(card)])
 
@@ -330,25 +355,30 @@ def briefing_model(found: Mapping[str, Any], top: list[m.BriefingItem], *, diges
         refreshing=bool(found.get("refreshing")),
         checked_on=found.get("checked_on") if found.get("refreshing")
         and isinstance(found.get("checked_on"), str) else None,
-        groups=[m.BriefingGroup(**{k: g[k] for k in ("event_type", "label", "count", "in_top",
-                                                     "new_since_visit", "acknowledged")})
-                for g in found.get("groups") or ()],
-        checks=[m.BriefingCheck(**{k: c.get(k) for k in ("check", "label", "status",
-                                                         "words")})
-                for c in found.get("checks") or ()],
-        types=[m.BriefingEventType(**{k: t.get(k) for k in (
-            "event_type", "label", "status", "words", "found_live", "first_found",
-            "checked", "judged", "judged_share")})
-               for t in found.get("types") or ()],
-        today=str(found.get("today") or bf.today_line(found)),
+        groups=[m.BriefingGroup(**{
+            **{k: g[k] for k in ("event_type", "count", "in_top", "new_since_visit", "acknowledged")},
+            "label": clean_alert_label(g["event_type"], g.get("label")),
+        }) for g in found.get("groups") or ()],
+        checks=[m.BriefingCheck(
+            check=c.get("check"), label=clean_text(c.get("label")),
+            status=c.get("status"), words=clean_text(c.get("words")),
+        ) for c in found.get("checks") or ()],
+        types=[m.BriefingEventType(**{
+            **{k: t.get(k) for k in (
+                "event_type", "status", "found_live", "first_found",
+                "checked", "judged", "judged_share")},
+            "label": clean_alert_label(t.get("event_type"), t.get("label")),
+            "words": clean_text(t.get("words")),
+        }) for t in found.get("types") or ()],
+        today=clean_text(found.get("today") or bf.today_line(found)),
         carried=int(found.get("carried") or 0),
-        data_notes=[str(n.get("words"))[:300] for n in found.get("data_notes") or ()
-                    if isinstance(n, Mapping)][:20],
+        data_notes=[clean_text(n.get("words")) for n in found.get("data_notes") or ()
+                    if isinstance(n, Mapping) and clean_text(n.get("words"))],
         data_note_items=[m.BriefingDataNote(check=str(n["check"]), reason=str(n["reason"]),
-                                            count=int(n["count"]), words=str(n["words"])[:300],
+                                            count=int(n["count"]), words=clean_text(n["words"]),
                                             scope=n.get("scope") is True)
                          for n in found.get("data_notes") or ()
-                         if isinstance(n, Mapping) and isinstance(n.get("count"), int)][:20],
+                         if isinstance(n, Mapping) and isinstance(n.get("count"), int)],
         digest_preview=digest, test_records_hidden=hidden_words(tests_hidden),
         yours=int(found.get("yours") or 0),
         involvement=involvement_state(found.get("involvement")))

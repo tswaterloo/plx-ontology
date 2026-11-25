@@ -80,12 +80,10 @@ export function FeedbackButton() {
       type="button"
       onClick={open}
       title={`Give feedback (F, or ${mod === "⌘" ? "⌘⇧F" : "Ctrl+Shift+F"})`}
-      className="flex h-8 w-full items-center gap-2.5 rounded-md px-2 text-left text-[13px] text-fg/90 hover:bg-hover max-xl:justify-center max-xl:px-0 cursor-pointer"
+      className="group flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-fg/80 hover:bg-hover hover:text-fg max-xl:justify-center max-xl:px-0 cursor-pointer"
       data-testid="feedback-open"
     >
-      <span className="flex size-5 shrink-0 items-center justify-center" aria-hidden>
-        <MessageSquareText className="size-[15px] text-muted" strokeWidth={2} />
-      </span>
+      <MessageSquareText className="size-4 shrink-0 text-muted group-hover:text-fg" strokeWidth={1.75} aria-hidden />
       <span className="flex-1 truncate max-xl:sr-only">Give feedback</span>
       <kbd className="font-sans text-[11px] leading-4 text-faint max-xl:hidden" aria-hidden>
         F

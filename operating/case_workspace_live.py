@@ -408,7 +408,7 @@ def portal_upstream(state_dir: str | Path) -> list[str] | None:
             "SELECT error, served_from FROM source_state WHERE source = 'portal' AND "
             "configured = 1")) or []) if host.is_file() else ():
         if error or served != "live":
-            code = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(error or served))[:79]
+            code = re.sub(r"[^A-Za-z0-9_.:-]", "_", str(error or served))[:79]  # guard-ok: slug-shaped derived error code, fixed shape, not content
             reasons.add(f"host_error:{code}")
     return sorted(reasons) or None
 
@@ -735,7 +735,7 @@ class _Recorder:
             try:
                 self.call("plx.case_add_finding", {
                     "case_id": self.case_id, "kind": "interpretation", "status": attempt[0],
-                    "statement": statement[:4000], "citations": list(citations),
+                    "statement": statement[:4000], "citations": list(citations),  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
                     **attempt[1]})
             except RuntimeError:
                 continue
@@ -761,8 +761,8 @@ class _Recorder:
         why = str(conflict.get("note") or "The cited sources disagree; nothing here picks "
                   "one or adds them up.")
         self.gap("unknown", str(conflict.get("kind") or "value_disagreement"),
-                 f"Evidence conflict: {subject}", detail=why, citations=handles[:20],
-                 claims=claims[:40])
+                 f"Evidence conflict: {subject}", detail=why, citations=handles,
+                 claims=claims)
 
     def lead(self, lead: Mapping[str, Any]) -> None:
         """One ``missing_in_record`` lead of ``plx.object`` (a value a machine-read
@@ -814,8 +814,8 @@ class _Recorder:
         try:
             self.call("plx.case_add_finding", {
                 "case_id": self.case_id, "kind": "fact", "status": "unknown",
-                "statement": statement[:4000],
-                "citations": ((pages or [document]) + rows)[:MAX_CITATIONS]})
+                "statement": statement[:4000],  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
+                "citations": ((pages or [document]) + rows)})
         except RuntimeError:
             self._lead_gap("lead_not_recordable", f"{subject}: a missing-in-record lead the "
                            "tools cite that this case host cannot cite", [document, *rows])
@@ -894,12 +894,12 @@ class _Recorder:
             self.skipped["gaps"] += 1
             self.skipped["gap_cap"] += 1
             return
-        arguments = {"case_id": self.case_id, "missing": subject[:4000],
-                     "why": (why + absent)[:4000], "who_can_answer": WHO, "state": state,
+        arguments = {"case_id": self.case_id, "missing": subject[:4000],  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
+                     "why": (why + absent)[:4000], "who_can_answer": WHO, "state": state,  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
                      "citations": list(citations)}
         dates = {str(claim.get("value")) for claim in claims}
-        claimed = {"missing": _unnumbered(given, dates)[:4000], "why": (reason + (
-            f": {_unnumbered(said, dates)}" if said else "") + absent)[:4000]}
+        claimed = {"missing": _unnumbered(given, dates)[:4000], "why": (reason + (  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
+            f": {_unnumbered(said, dates)}" if said else "") + absent)[:4000]}  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
         for attempt in ([{"value_claims": list(claims), **claimed}] if claims else []) + [{}]:
             try:
                 self.call("plx.case_record_gap", {**arguments, **attempt})
@@ -916,7 +916,7 @@ class _Recorder:
         only."""
         documents = list(dict.fromkeys(
             handle for found in leads or () if isinstance(found, Mapping)
-            for value in (found.get("values") or [])[:1] if isinstance(value, Mapping)
+            for value in (found.get("values") or []) if isinstance(value, Mapping)
             for handle in [_l1_handle(value)] if handle))
         for gap in gaps or []:
             if not isinstance(gap, Mapping) or not isinstance(gap.get("subject"), str):
@@ -955,7 +955,7 @@ class _Recorder:
                     detail = _OBJECT_ID.sub(typed, detail) if detail else None
             self.gap(str(gap.get("state") or "unknown"),
                      f"{origin}:{gap.get('reason') or 'gap'}", subject, detail=detail,
-                     citations=citations, claims=claims[:40])
+                     citations=citations, claims=claims)
 
     def citations(self, entry: Mapping[str, Any],
                   everything: Callable[[], list[str] | None] | None) -> list[str] | None:
@@ -1033,7 +1033,7 @@ class _Recorder:
         if completeness.get("truncated"):
             # The family answered a page of what it reached: the cut is named.
             self.gap("unknown", "answer_truncated", f"{title}: the answer is truncated",
-                     detail=str(completeness.get("reason") or "truncated")[:60])
+                     detail=str(completeness.get("reason") or "truncated"))
         state = (answer.get("answerability") or {}).get("state")
         if state in ("partial", "blocked"):
             reasons = ", ".join(str(r) for r in (answer.get("answerability") or {})
@@ -1196,7 +1196,7 @@ def _unconfigured(db: sqlite3.Connection, object_type: str) -> str | None:
 def _root_record(object_id: str, object_type: str) -> dict[str, Any]:
     """The root's object id and type, binding, and (a mirror binding) its relation and
     row key, read from the object id (``Type:binding:{key}``)."""
-    _type, binding, key = (object_id.split(":", 2) + ["", ""])[:3]
+    _type, binding, key = (object_id.split(":", 2) + ["", ""])[:3]  # guard-ok: fixed tuple unpack, not content
     spec = _binding(binding) or {}
     try:
         parsed = json.loads(key)
@@ -1310,7 +1310,7 @@ class CaseOpener:
             "ingestion_run": _last_ingestion_run(self.state_dir),
             "audience": _audience_digest(self.audience),
             "decisions": decisions},
-            sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+            sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]  # guard-ok: fixed-length derived identifier, not content
         return f"{actor_label(self.actor)}|{kind}={identifier.strip().upper()}|{options}"
 
     def projection(self) -> Path:
@@ -1412,7 +1412,7 @@ class CaseOpener:
 
     def _find(self, call: Callable[[str, dict], dict], identifier: str,
               object_type: str | None) -> Mapping[str, Any]:
-        arguments: dict[str, Any] = {"query": identifier[:200]}
+        arguments: dict[str, Any] = {"query": identifier[:200]}  # guard-ok: search-query input shape, not content
         if object_type is not None:
             arguments["object_type"] = object_type
         found = call("plx.find", arguments)
@@ -1503,7 +1503,7 @@ class CaseOpener:
         if missing in getattr(self, "capture_gaps", {}):
             self.__dict__.setdefault("gap_blocked", {})[missing] = self.capture_gaps[missing]
             raise OpenError(f"blocked_upstream:{missing}")
-        for object_id in fallback[:PICK_SCAN]:
+        for object_id in fallback[:PICK_SCAN]:  # guard-ok: capture-scan budget, uncovered objects surface through the capture-gap machinery above
             card = call("plx.object", {"object_id": object_id})
             if "error" in card:
                 continue
@@ -1824,7 +1824,7 @@ class CaseOpener:
                 column = _column_path(str(cite.get("field_path") or ""))
                 for carrier in direct:
                     if carrier["to_binding"] == binding and carrier["to_field"] == column:
-                        wanted[(str(text).strip()[:200], carrier["identifier_kind"],
+                        wanted[(str(text).strip()[:200], carrier["identifier_kind"],  # guard-ok: dedup-key shape for folded identifier compare, not carried content
                                 carrier["property"])] = None
             for text, kind, prop in wanted:
                 # BC compares Code fields case-insensitively: one ask per folded value.
@@ -2088,7 +2088,7 @@ class CaseOpener:
         ``cross_scope``, never a silent join."""
         from ontology.resolve import only_sources
 
-        arguments = {"query": value[:200], "object_type": find_type}
+        arguments = {"query": value[:200], "object_type": find_type}  # guard-ok: search-query input shape, not content
         targets = {b for c in group for b in (c["to_binding"], (c["then"] or {}).get("binding"))
                    if b is not None}
         families = frozenset(str((_binding(b) or {}).get("source")) for b in targets)
@@ -2217,7 +2217,7 @@ class CaseOpener:
         # links): each card's own cited values, never merged into the root's.
         twins = [edge["to"] if edge["from"] == root_id else edge["from"]
                  for edge in card.get("identity") or []
-                 if edge.get("tier") in _IDENTITY_TIERS][:MAX_TWINS]
+                 if edge.get("tier") in _IDENTITY_TIERS][:MAX_TWINS]  # guard-ok: identity-twin walk budget, twins beyond it are reachable through plx.around
         cards = [(root_type, card)]
         self.root = _root_record(root_id, root_type)
         # The record a join pick started from is cited beside the root it joined.
@@ -2237,8 +2237,8 @@ class CaseOpener:
         answers = [(plan, call("plx.investigate", {"family": plan["family"], "root": start}))
                    for start in starts for plan in plans]
         titles = [str(plan["title"]) for plan in plans] or [f"{root_type} record"]
-        question = f"{'; '.join(titles)}: {root_type} {asked}"[:4000]
-        case_id = call("plx.case_open", {"question": question, "roots": [asked[:200]]})["case_id"]
+        question = f"{'; '.join(titles)}: {root_type} {asked}"[:4000]  # guard-ok: contract-schema statement bound (maxLength 4000), schema-shaped not a silent cut
+        case_id = call("plx.case_open", {"question": question, "roots": [asked[:200]]})["case_id"]  # guard-ok: case-root input shape, not content
         record = _Recorder(call, case_id, upstream=self.upstream)
         for object_type, each in cards:
             # A join pick's start record is joined by a text match: a lead.
@@ -2302,7 +2302,7 @@ class CaseOpener:
                        "Records the question families reached beyond those one case cites",
                        detail="the case cites the first of them; read the rest with plx.around "
                               "or plx.investigate", own=True)
-        for ref in reached[:MAX_REACHED]:
+        for ref in reached[:MAX_REACHED]:  # guard-ok: stated in output — the case cites the first, the rest read with plx.around (detail text above)
             other = call("plx.object", {"object_id": ref["object_id"]})
             if "error" in other:
                 continue
@@ -2625,11 +2625,11 @@ def _main(argv: Sequence[str] | None, *, environ: Mapping[str, str] | None,
             except (ValueError, OSError) as error:
                 # As the console and the MCP host: a typed refusal, never a traceback
                 # (the runtime still closes).
-                parser.error("approver roster is invalid: " + str(error)[:200])
+                parser.error("approver roster is invalid: " + str(error)[:200])  # guard-ok: terminal diagnostic quote hygiene, not content
             try:
                 audiences = load_bucket_audiences(tenant=args.tenant)
             except (ValueError, OSError) as error:
-                parser.error("mc bucket audiences are invalid: " + str(error)[:200])
+                parser.error("mc bucket audiences are invalid: " + str(error)[:200])  # guard-ok: terminal diagnostic quote hygiene, not content
             action_path = ActionPath(actions_file, runtime.cases, **approvers.path_options(),
                                      mc_follow_up_audience=audiences)
         opener = CaseOpener(runtime, investigator, args.state_dir, audience=audience,

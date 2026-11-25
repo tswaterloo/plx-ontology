@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageCircle } from "lucide-react";
+import { Check, ChevronDown, Loader2, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { saveMemory } from "@/lib/api";
@@ -29,16 +29,19 @@ export function AddContext({ brief, onSaved }: { brief: Brief; onSaved: () => vo
   const [text, setText] = useState("");
   const [about, setAbout] = useState(targets[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   if (targets.length === 0) return null;
   const ask = askAboutBriefHref(brief);
   async function save() {
     if (!text.trim() || busy) return;
     setBusy(true);
+    setSaved(false);
     setProblem(null);
     try {
       await saveMemory({ kind: "fact", text: text.trim(), records: [about] });
       setText("");
+      setSaved(true);
       onSaved();
     } catch (e) {
       setProblem(plainError(e));
@@ -49,24 +52,66 @@ export function AddContext({ brief, onSaved }: { brief: Brief; onSaved: () => vo
   return (
     <div className="space-y-2 border-t border-border pt-3" data-testid="add-context">
       <label className="block text-meta text-muted" htmlFor="brief-note">Add context (private to you; used in this brief, in Ask and in Assist)</label>
-      <textarea id="brief-note" value={text} onChange={(e) => setText(e.target.value)} rows={2} maxLength={1000} className="w-full rounded-lg border border-border bg-transparent p-2 text-[13px]" placeholder="What you know that the records do not: a decision, a promise, something already handled" />
-      <div className="flex flex-wrap items-center gap-3">
+      <textarea
+        id="brief-note"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          if (saved) setSaved(false);
+        }}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && text.trim() && !busy) {
+            e.preventDefault();
+            void save();
+          }
+        }}
+        rows={2}
+        maxLength={1000}
+        className="w-full rounded-md border border-border bg-bg p-2.5 text-[13px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-ring/50 placeholder:text-faint"
+        placeholder="What you know that the records do not: a decision, a promise, something already handled"
+      />
+      <div className="flex flex-wrap items-center gap-2.5">
         {targets.length > 1 && (
-          <select aria-label="About" value={about} onChange={(e) => setAbout(e.target.value)} className="h-8 rounded-lg border border-border bg-transparent px-2 text-[13px]">
-            {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-          </select>
+          <span className="relative inline-flex items-center">
+            <select
+              aria-label="About"
+              value={about}
+              onChange={(e) => setAbout(e.target.value)}
+              className="h-8 appearance-none rounded-md border border-border bg-bg pl-2.5 pr-7 text-[13px] text-fg transition-colors hover:border-border-strong focus:border-accent focus:outline-none cursor-pointer"
+            >
+              {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted" aria-hidden />
+          </span>
         )}
-        <button type="button" onClick={save} disabled={busy || !text.trim()} className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium disabled:opacity-50" data-testid="add-context-save">
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={busy || !text.trim()}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-bg px-3 text-[13px] font-medium text-fg transition-[background-color,border-color,transform] hover:border-control hover:bg-hover active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 cursor-pointer"
+          data-testid="add-context-save"
+        >
+          {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
           {busy ? "Saving" : "Add context"}
         </button>
+        {saved && (
+          <span role="status" className="inline-flex items-center gap-1 text-[12px] text-ok">
+            <Check className="size-3.5" strokeWidth={2.2} aria-hidden />
+            Saved
+          </span>
+        )}
         {ask && (
-          <Link href={ask} className="inline-flex h-8 items-center gap-1.5 text-[13px] font-medium underline underline-offset-2" data-testid="ask-about-brief">
+          <Link
+            href={ask}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+            data-testid="ask-about-brief"
+          >
             <MessageCircle className="size-[15px]" strokeWidth={2} aria-hidden />
             Ask about this brief
           </Link>
         )}
       </div>
-      {problem && <p role="alert" className="text-[12px] text-muted">{problem}</p>}
+      {problem && <p role="alert" className="text-[12px] text-late">{problem}</p>}
     </div>
   );
 }

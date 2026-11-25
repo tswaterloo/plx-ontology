@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, BellRing } from "lucide-react";
+import { Bell, BellRing, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getWatchlist, setFollowing } from "@/lib/api";
 import { afterReady } from "@/lib/ready";
@@ -43,9 +43,16 @@ export function FollowButton({ objectId }: { objectId: string }) {
   };
   const Icon = on ? BellRing : Bell;
   return (
-    <ToolbarButton aria-pressed={on} disabled={busy} onClick={toggle} className={cn(on && "text-fg")} title={problem ?? (on ? "Following: you get alerts when this changes" : "Follow: get alerts when this changes")}>
-      <Icon className={cn(on && "fill-current")} strokeWidth={2} aria-hidden />
-      <span className="max-sm:sr-only">{on ? "Following" : "Follow"}</span>
+    <ToolbarButton
+      aria-pressed={on}
+      aria-busy={busy || undefined}
+      disabled={busy}
+      onClick={toggle}
+      className={cn(problem ? "text-late" : on && "text-fg")}
+      title={problem ?? (on ? "Following: you get alerts when this changes" : "Follow: get alerts when this changes")}
+    >
+      {busy ? <Loader2 className="animate-spin" aria-hidden /> : <Icon className={cn(on && "fill-current")} strokeWidth={2} aria-hidden />}
+      <span className="max-sm:sr-only">{busy ? (on ? "Updating" : "Following") : on ? "Following" : "Follow"}</span>
     </ToolbarButton>
   );
 }

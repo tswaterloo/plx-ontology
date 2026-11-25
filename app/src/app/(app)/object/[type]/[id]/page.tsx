@@ -23,7 +23,13 @@ function safeDecode(s: string): string {
  */
 /** An item's, a batch's or a supplier invoice's page over the business tables (stock, batches, QC readings, what is owed). */
 type ItemKind = "product" | "batch" | "supplier_invoice";
-const ITEM_KINDS: Readonly<Record<string, ItemKind>> = { Product: "product", Batch: "batch", RelSageApOpenDocument: "supplier_invoice" };
+const ITEM_KINDS: Readonly<Record<string, ItemKind>> = {
+  Product: "product",
+  Batch: "batch",
+  SupplierInvoice: "supplier_invoice",
+  PurchaseInvoice: "supplier_invoice",
+  RelSageApOpenDocument: "supplier_invoice",
+};
 function itemKey(type: string, record: string): { kind: ItemKind; record: string } | null {
   const kind = ITEM_KINDS[type];
   return kind && record.startsWith(`${type}:`) && record.length <= 700 ? { kind, record } : null;

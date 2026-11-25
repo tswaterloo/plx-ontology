@@ -156,7 +156,7 @@ def _clip(text: str, limit: int = MAX_TEXT) -> str:
 
 def _key(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False, default=str)
-                          .encode("utf-8")).hexdigest()[:16]
+                          .encode("utf-8")).hexdigest()[:16]  # guard-ok: fixed-length derived identifier, not content
 
 
 def _meeting_day(transcript: Mapping[str, Any]) -> date:
@@ -272,7 +272,7 @@ def extract(transcript: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
             if sig not in seen:
                 seen.add(sig)
                 kept.append(row)
-        out[kind] = kept[:MAX_ITEMS]
+        out[kind] = kept
     return out
 
 
@@ -300,7 +300,7 @@ class ModelExtractor:
         said = [{**c, "text": mask_served(c["text"])} for c in transcript.get("cues") or ()]
         lines = [{"i": c["i"], "speaker": c.get("speaker"), "text": c["text"]} for c in said]
         cues = {c["i"]: c for c in said}
-        found = understander(self.RULES, {"lines": lines[:2000]}, self.timeout)
+        found = understander(self.RULES, {"lines": lines[:2000]}, self.timeout)  # guard-ok: model context budget — a typed resource bound on the understander input
         items = (found or {}).get("items") if isinstance(found, Mapping) else None
         out = []
         for raw in items or ():
@@ -351,7 +351,7 @@ _NOT_PARTY = frozenset(_WEEKDAYS) | {"january", "february", "march", "april", "m
 
 
 def _find(call: Call, query: str, kind: str | None = None) -> Mapping[str, Any]:
-    args: dict[str, Any] = {"query": query[:200], "limit": 5}
+    args: dict[str, Any] = {"query": query, "limit": 5}
     if kind:
         args["identifier_kind"] = kind
     try:
@@ -410,7 +410,7 @@ def link_records(call: Call | None, text: str, citation: str,
                 out.append({"value": value, "status": "not_found", "citations": [citation]})
             continue
         if len(cands) > 1:
-            out.append({"value": value, "status": "ambiguous", "candidates": cands[:5],
+            out.append({"value": value, "status": "ambiguous", "candidates": cands,
                         "citations": [citation]})
             continue
         c = cands[0]
@@ -457,20 +457,20 @@ def plan_work(action: Mapping[str, Any]) -> dict[str, Any]:
     links = action.get("records") or []
     if _ANSWER.search(text) and _linked(links, *ANSWERABLE):
         return {"kind": "answer", "object_ids": [lk["object_id"] for lk in
-                                                  _linked(links, *ANSWERABLE)][:3]}
+                                                  _linked(links, *ANSWERABLE)]}
     if _PO_CREATE.search(text):
         party = _linked(links, "Supplier", "Vendor")
         qty = _QTY.search(text)
         return {"kind": "write_intent", "operation": "purchase_order_create",
                 "party": party[0]["object_id"] if len(party) == 1 else None,
-                "items": [lk["object_id"] for lk in _linked(links, "Item")][:5],
+                "items": [lk["object_id"] for lk in _linked(links, "Item")],
                 "quantity": _decimal_text(qty.group("n")) if qty else None,
                 "unit": qty.group("u").lower() if qty else None}
     if _SO_CREATE.search(text):
         party = _linked(links, "Customer")
         return {"kind": "write_intent", "operation": "sales_order_create",
                 "party": party[0]["object_id"] if len(party) == 1 else None,
-                "items": [lk["object_id"] for lk in _linked(links, "Item")][:5]}
+                "items": [lk["object_id"] for lk in _linked(links, "Item")]}
     if _PO_CHANGE.search(text) and _linked(links, "PurchaseOrder"):
         return {"kind": "write_intent", "operation": "purchase_order_line_update",
                 "record": _linked(links, "PurchaseOrder")[0]["object_id"]}
@@ -481,8 +481,7 @@ def plan_work(action: Mapping[str, Any]) -> dict[str, Any]:
                 "families": sorted({k for k, _l, rx in dp.FAMILIES if rx.search(text)})}
     if _MESSAGE.search(text):
         return {"kind": "message", "channel": "teams" if _TEAMS.search(text) else "email",
-                "object_ids": [lk["object_id"] for lk in links if lk.get("status") == "linked"
-                               ][:3]}
+                "object_ids": [lk["object_id"] for lk in links if lk.get("status") == "linked"]}
     return {"kind": "planner_task"}
 
 
@@ -508,7 +507,7 @@ def _values(found: Mapping[str, Any] | None, held: frozenset[str]) -> list[dict[
         prop, value, handle = row.get("property"), ap._text(row.get("value")), ap._cited(row)
         if isinstance(prop, str) and value and handle and _ANSWER_PROPS.search(prop):
             out.append({"property": prop, "value": value, "citation": handle})
-    return out[:12]
+    return out
 
 
 def prepare(meeting: Mapping[str, Any], action: Mapping[str, Any], call: Call | None,
@@ -557,7 +556,7 @@ def prepare(meeting: Mapping[str, Any], action: Mapping[str, Any], call: Call | 
             needs.append("the line and the new value")
         return {**base, "operation": plan["operation"], "label": op["label"],
                 "spec": {"system": "bc", "operation": plan["operation"], "payload": payload,
-                         "reason": f"Meeting action: {title}", "citations": cite[:20],
+                         "reason": f"Meeting action: {title}", "citations": cite,
                          "party_object_id": plan.get("party"),
                          "record_object_id": plan.get("record")},
                 "needs": needs, "status": "spec_for_write_desk",
@@ -600,7 +599,7 @@ def prepare(meeting: Mapping[str, Any], action: Mapping[str, Any], call: Call | 
         drafted = drafts.compose("meeting_followup", [
             f"Following up from {meeting.get('title') or 'our meeting'}"
             + (f" on {say_date(day)}" if day else "") + f": {title}"],
-            subject=f"Follow-up: {meeting.get('title') or 'meeting'}"[:60],
+            subject=f"Follow-up: {meeting.get('title') or 'meeting'}",
             facts=[("day", day), ("action", title)], specific=False)
         body = drafted["body"] or ""
         if not drafted["body"]:
@@ -608,7 +607,7 @@ def prepare(meeting: Mapping[str, Any], action: Mapping[str, Any], call: Call | 
         card = {"id": "meeting:" + action["id"], "headline": title,
                 "subject": {"label": title}, "action": {"text": title},
                 "draft": {"channel": "email", "to": to,
-                          "subject": f"Follow-up: {meeting.get('title') or 'meeting'}"[:200],
+                          "subject": f"Follow-up: {meeting.get('title') or 'meeting'}",
                           "body": body, "copy_check": drafted["copy_check"], "facts": []},
                 "teams_draft": {"body": f"Following up from {meeting.get('title')}: {title}"},
                 "playbook": True}
@@ -665,7 +664,7 @@ def summary(record: Mapping[str, Any]) -> str:
     parts = [f"{m.get('title')} on {str(m.get('start'))[:10]}",
              count(len(record['decisions']), "decision"), count(len(record['actions']), "action item"),
              count(len(record['questions']), "open question"), count(len(record['risks']), "risk")]
-    lead = record["decisions"][:2]
+    lead = record["decisions"]
     return "; ".join(parts) + (". Decided: " + " | ".join(d["text"] for d in lead) if lead
                                else ".")
 
@@ -799,7 +798,7 @@ class FollowUps:
         self.withheld = 0
 
     def _path(self, meeting_id: str) -> Path:
-        return self.dir / (re.sub(r"[^A-Za-z0-9_.-]", "_", meeting_id)[:150] + ".json")
+        return self.dir / (re.sub(r"[^A-Za-z0-9_.-]", "_", meeting_id)[:150] + ".json")  # guard-ok: filesystem-safe file name bound, not content
 
     def put(self, record: Mapping[str, Any]) -> None:
         self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1158,7 +1157,7 @@ def carried_items(store: FollowUps, meeting: Mapping[str, Any], viewer: Viewer
             continue
         for action in record.get("actions") or ():
             if action.get("status") != "done":
-                out.append({"label": f"Action item: {action['text']}"[:300],
+                out.append({"label": f"Action item: {action['text']}",
                             "detail": f"{(action.get('owner') or {}).get('name') or 'no owner'}"
                                       + (f", due {action['due']}" if action.get("due") else "")
                                       + f" ({action.get('status')})",
@@ -1245,7 +1244,7 @@ def ask(store: FollowUps, viewer: Viewer, question: str, today: date | None = No
                                   "date": str(r["meeting"].get("start"))[:10],
                                   "citations": d["citations"]})
         return {"status": "answered" if lines else "nothing_found", "kind": "decisions",
-                "lines": lines[:20]}
+                "lines": lines}
     m = _OPEN_FROM.search(question.strip())
     if m:
         when, want = m.group("when").lower(), _words(m.group("what"))

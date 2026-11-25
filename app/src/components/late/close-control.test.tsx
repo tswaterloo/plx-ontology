@@ -41,4 +41,20 @@ describe("closing a purchase order", () => {
     await waitFor(() => expect(document.body.textContent).toMatch(/Couldn't find that, or you don't have access to it/));
     expect(screen.queryByTestId("po-closed")).toBeNull();
   });
+
+  it("supports popover mode with quick-pick reasons, Enter to submit, and Escape to dismiss", async () => {
+    api.get.mockResolvedValue({ closed: false, new_since: [] });
+    api.close.mockResolvedValue({ closed: true, by: "Sam", at: "2026-11-24T15:00:00Z", reason: "Received", new_since: [] });
+    render(<CloseControl order={{ object_id: "po2" }} popover />);
+    fireEvent.click(await screen.findByTestId("po-close-open"));
+    expect(screen.getByTestId("po-close-popover")).toBeInTheDocument();
+    // Escape dismisses
+    fireEvent.keyDown(screen.getByPlaceholderText("Why (optional)"), { key: "Escape" });
+    expect(screen.queryByTestId("po-close-popover")).toBeNull();
+    // Reopen, pick quick reason chip, press Enter
+    fireEvent.click(screen.getByTestId("po-close-open"));
+    fireEvent.click(screen.getByRole("button", { name: "Received" }));
+    fireEvent.keyDown(screen.getByPlaceholderText("Why (optional)"), { key: "Enter" });
+    await waitFor(() => expect(api.close).toHaveBeenCalledWith({ object_id: "po2" }, "Received"));
+  });
 });

@@ -432,6 +432,10 @@ def build():
     so(s, "portal.sage_oe_order_header", "c903", "OR-903", beta, sage="1", po="PO903",
        required="2026-10-01")
     sinv(s, "s1", "IN-1", "2025-11-05", "113.00", "CAD", acme_s, sub="100.00", order=o2)
+    sh1 = obj(s, "Shipment", "portal.sage_oe_shipment_header", "sh1", {
+        "sage_shipment_number": "SH-1", "ship_date": "2025-11-04", "customer_po": "PO-1"})
+    s.link("sh1-o2", "Shipment.ships", sh1, o2, "verified")
+    s.link("sh1-cust", "Shipment.shipped_to", sh1, acme_s, "verified")
     sinv(s, "s2", "IN-2", "2025-11-20", "250.00", "USD", beta, rate="1.2500000")
     s3 = sinv(s, "s3", "IN-GONE", "2025-11-21", "999.00", "CAD", beta)
     sinv(s, "s4", "IN-FIN", "2025-11-22", "4444.44", "CAD", beta, markings='["finance"]')
@@ -560,6 +564,31 @@ def build():
     base_s = obj(s, "Product", "portal.sage_ic_item", "sb", {"name": "SHAMPOO BASE",
                                                              "code": "SB-1"})
     s.link("tw-sb", "Product.same_record_as", base, base_s, "verified")
+    rcp1 = obj(s, "Receipt", "portal.sage_po_receipt_header", "r1", {
+        "sage_receipt_number": "RCP-1", "received_date": "2026-10-12", "currency": "CAD"})
+    s.link("r1-po", "Receipt.receives", rcp1, p1, "corroborated")
+    s.link("r1-sup", "Receipt.supplied_by", rcp1, sup, "verified")
+    ao1 = obj(s, "AssemblyOrder", "portal.app_manufacturing_order", "ao1", {
+        "code": "AO-1", "status": "Realized", "scheduled_date": "2026-10-10"})
+    s.link("ao1-makes", "AssemblyOrder.makes", ao1, base, "verified")
+    lot1 = obj(s, "Lot", "portal.fm_receipt_raw_material.lotnoqc", "lot1", {
+        "lot_number": "LOT-1", "qc_status": "Released", "expiry_date": "2027-07-07"})
+    s.link("lot1-item", "Lot.of_item", lot1, base, "verified")
+    s.link("lot1-rcp", "Lot.received_in", lot1, rcp1, "verified")
+    rl_base = obj(s, "ReceiptLine", "portal.sage_po_receipt_detail", "rl-base", {
+        "received_quantity": "10"})
+    s.link("rl-base-rcp", "ReceiptLine.line_of", rl_base, rcp1, "verified")
+    s.link("rl-base-item", "ReceiptLine.for_item", rl_base, base, "verified")
+    q_base = obj(s, "Quote", "portal.app_quote", "q-base", {
+        "quote_number": "QT-BASE-1", "status": "DRAFT", "issue_date": "2026-10-15",
+        "currency": "CAD", "total_amount": ("250.00", "CAD")})
+    s.link("q-base-cust", "Quote.for_customer", q_base, acme_p, "verified")
+    fb_base = "FreightBill:graph_mail.freight_bills:fb-base"
+    s.obj(fb_base, "mail:freight-base",
+          "graph-mail://freight-base/msg-base@0000000000000001-1", "mail")
+    s.val(fb_base, "invoice_number", "text", "FB-BASE-1")
+    s.val(fb_base, "carrier", "text", "Base Freight")
+    s.val(fb_base, "tier", "text", "lead")
     label = obj(s, "Product", "portal.app_product", "lb", {"name": "Label", "code": "L-1"})
     # copies only a LEAD link joins: the same code and name are one item; a different name
     # stays two, and two Sage items never join

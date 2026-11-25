@@ -76,12 +76,16 @@ export function RoleGuide({ guide }: { guide: Guide }) {
             <li key={s}>{s}</li>
           ))}
         </ul>
-        <p className="text-[12px] text-muted">Workflows that prepare routine items for this role:</p>
-        <ul className={list}>
-          {guide.autopilots.map((a) => (
-            <li key={a}>{autopilotName(a)}</li>
-          ))}
-        </ul>
+        {guide.autopilots.length > 0 && (
+          <>
+            <p className="text-[12px] text-muted">Workflows that prepare routine items for this role:</p>
+            <ul className={list}>
+              {guide.autopilots.map((a) => (
+                <li key={a}>{autopilotName(a)}</li>
+              ))}
+            </ul>
+          </>
+        )}
         <p className="text-[12px] text-muted">
           A workflow shows a Turn on switch only once it has passed its check for you. See{" "}
           <Link href="/assist?show=switches" className="underline">

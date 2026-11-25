@@ -1860,6 +1860,64 @@
         "title": "AsOfValue",
         "type": "object"
       },
+      "AskActiveRun": {
+        "additionalProperties": false,
+        "description": "An in-flight Ask run still executing on the server for this conversation.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "simple": {
+            "default": false,
+            "title": "Simple",
+            "type": "boolean"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "streamed": {
+            "default": "",
+            "title": "Streamed",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "conversation_id",
+          "question",
+          "started_at"
+        ],
+        "title": "AskActiveRun",
+        "type": "object"
+      },
       "AskAttachment": {
         "additionalProperties": false,
         "description": "A file or image attached to one question (``operating.ask_attachments``): read for that\nanswer only; a Word, Excel or PowerPoint file is also kept as your own file (yours only),\nso the Ask can edit it and give you the edited copy. A file arrives by ``upload`` (the id\n``POST /api/ask/files`` answered: streamed to disk, no size limit); ``data`` (base64 in the\nbody, as every JSON body is held in memory) is for a small file a client sends inline.",
@@ -1968,6 +2026,18 @@
         "additionalProperties": false,
         "description": "A chart drawn from one query result: ``labels`` are the x column's values in the\nresult's row order (a histogram's bins, a pie's slices), each series one numeric\ncolumn (or one split value) of the same rows.",
         "properties": {
+          "aggregation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plain-English disclosure when a high-point time-series chart was aggregated into coarser buckets (e.g. '240 daily points shown as 35 weekly totals').",
+            "title": "Aggregation"
+          },
           "as_of": {
             "anyOf": [
               {
@@ -2386,6 +2456,11 @@
           "questions": {
             "title": "Questions",
             "type": "integer"
+          },
+          "running": {
+            "default": false,
+            "title": "Running",
+            "type": "boolean"
           },
           "title": {
             "description": "The name you gave it, else its first question.",
@@ -2940,6 +3015,26 @@
           "question"
         ],
         "title": "AskRequest",
+        "type": "object"
+      },
+      "AskRunStop": {
+        "additionalProperties": false,
+        "description": "Result of explicitly stopping an in-flight Ask run.",
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "stopped": {
+            "title": "Stopped",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stopped",
+          "conversation_id"
+        ],
+        "title": "AskRunStop",
         "type": "object"
       },
       "AskUpload": {
@@ -9674,6 +9769,83 @@
         "title": "ChartSpec",
         "type": "object"
       },
+      "ChartsEvent": {
+        "additionalProperties": false,
+        "description": "Validated charts drawn from the answer's read results, sent as soon as ready\n(before the covering-read check finishes).",
+        "properties": {
+          "charts": {
+            "items": {
+              "$ref": "#/components/schemas/AskChart"
+            },
+            "title": "Charts",
+            "type": "array"
+          }
+        },
+        "title": "ChartsEvent",
+        "type": "object"
+      },
+      "CitedProfile": {
+        "additionalProperties": false,
+        "description": "Structured result profile and coverage metadata for one cited source (GG2):\nrows read, time range covered, views/sources consulted, and any partial or\nuncaptured coverage note in plain English.",
+        "properties": {
+          "coverage_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plain-English note when coverage is partial, truncated, or uncaptured.",
+            "title": "Coverage Note"
+          },
+          "exact": {
+            "default": true,
+            "description": "Whether rows_read covers the full result.",
+            "title": "Exact",
+            "type": "boolean"
+          },
+          "rows_read": {
+            "description": "Total rows or matches read by this source.",
+            "minimum": 0,
+            "title": "Rows Read",
+            "type": "integer"
+          },
+          "rows_shown": {
+            "description": "Rows or matches shown in the preview table.",
+            "minimum": 0,
+            "title": "Rows Shown",
+            "type": "integer"
+          },
+          "time_range": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Earliest to latest date covered by the result or search window.",
+            "title": "Time Range"
+          },
+          "views": {
+            "description": "Views or source systems consulted.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Views",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows_read",
+          "rows_shown"
+        ],
+        "title": "CitedProfile",
+        "type": "object"
+      },
       "CitedTable": {
         "additionalProperties": false,
         "description": "One result the simple Ask read (a query's rows, or the mail, Teams and document hits\nof a search), as the reader's own session got it: what the answer's Sources line opens.",
@@ -9712,6 +9884,17 @@
               }
             ],
             "description": "The named measure the rows answer, when they come from one."
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CitedProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Structured result profile and coverage metadata for the Sources panel."
           },
           "query": {
             "anyOf": [
@@ -13972,6 +14155,18 @@
             "title": "Action Label",
             "type": "string"
           },
+          "alert_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typed alert kind from operating/alert_kinds.json when known.",
+            "title": "Alert Kind"
+          },
           "amount": {
             "anyOf": [
               {
@@ -13994,6 +14189,18 @@
             ],
             "description": "The question only this person can answer, when one is prepared.",
             "title": "Ask"
+          },
+          "badge": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Short typed badge for the item inside a grouped section (e.g. QC hold, Batch hold, Below cost, Verify unit cost).",
+            "title": "Badge"
           },
           "basis_at": {
             "anyOf": [
@@ -14047,6 +14254,26 @@
             ],
             "title": "Due At"
           },
+          "event_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Typed alert or trigger event type when known (e.g. price_below_cost, customer_price_drop, lot_on_hold, qc_hold).",
+            "title": "Event Type"
+          },
+          "facts": {
+            "description": "Concrete structured facts for this item (affected orders, customers, reasons).",
+            "items": {
+              "type": "string"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
           "href": {
             "description": "Where the item opens in the app.",
             "title": "Href",
@@ -14076,6 +14303,14 @@
             "description": "What needs doing next, in plain words.",
             "title": "Line",
             "type": "string"
+          },
+          "links": {
+            "description": "Canonical record links (/object/<Type>/<id>) associated with this item.",
+            "items": {
+              "$ref": "#/components/schemas/HomeNeedLink"
+            },
+            "title": "Links",
+            "type": "array"
           },
           "matter_id": {
             "anyOf": [
@@ -14172,6 +14407,18 @@
             "title": "Rank Reasons",
             "type": "array"
           },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Compact Home section this item groups into (financials or holds), if any.",
+            "title": "Section"
+          },
           "source": {
             "enum": [
               "mail",
@@ -14244,6 +14491,26 @@
           "rank"
         ],
         "title": "HomeNeedItem",
+        "type": "object"
+      },
+      "HomeNeedLink": {
+        "additionalProperties": false,
+        "description": "A canonical record link surfaced on a Home Needs-you item.",
+        "properties": {
+          "href": {
+            "title": "Href",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "href"
+        ],
+        "title": "HomeNeedLink",
         "type": "object"
       },
       "HomeNeedPart": {
@@ -14709,6 +14976,266 @@
         "title": "ImpactPanel",
         "type": "object"
       },
+      "InsightAnswerItem": {
+        "additionalProperties": false,
+        "description": "One chart, query, or catalogue measure from an Ask answer to save into an Insights page.",
+        "properties": {
+          "against": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Against"
+          },
+          "by": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional breakdown dimension (or pair) for measure.",
+            "title": "By"
+          },
+          "chart": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChartSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "compare": {
+            "default": false,
+            "title": "Compare",
+            "type": "boolean"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional rolling days for measure.",
+            "title": "Days"
+          },
+          "filter": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter"
+          },
+          "measure": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Catalogue measure id (operating/measures.json), used when sql is omitted.",
+            "title": "Measure"
+          },
+          "notify": {
+            "default": "never",
+            "enum": [
+              "never",
+              "rows",
+              "new_rows",
+              "every_run"
+            ],
+            "title": "Notify",
+            "type": "string"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameters"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "question": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Question",
+            "type": "string"
+          },
+          "schedule": {
+            "default": "",
+            "enum": [
+              "",
+              "hourly",
+              "daily",
+              "weekly"
+            ],
+            "title": "Schedule",
+            "type": "string"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Read-only SQL statement over the business views.",
+            "title": "Sql"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "InsightAnswerItem",
+        "type": "object"
+      },
+      "InsightAnswerPage": {
+        "additionalProperties": false,
+        "description": "A cohesive saved Insights page created from one Ask answer, strictly scoped to its owner.",
+        "properties": {
+          "created_at": {
+            "default": "",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Saved page id ('p<12 hex chars>').",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InsightInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "question": {
+            "default": "",
+            "title": "Question",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "items"
+        ],
+        "title": "InsightAnswerPage",
+        "type": "object"
+      },
+      "InsightAnswerPageList": {
+        "additionalProperties": false,
+        "properties": {
+          "pages": {
+            "items": {
+              "$ref": "#/components/schemas/InsightAnswerPage"
+            },
+            "title": "Pages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "pages"
+        ],
+        "title": "InsightAnswerPageList",
+        "type": "object"
+      },
+      "InsightAnswerSave": {
+        "additionalProperties": false,
+        "description": "One-step request to save a whole Ask answer (title, summary, charts, and queries/measures)\nas a cohesive Insights page owned by the authenticated reader.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InsightAnswerItem"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "question": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Question",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "maxLength": 4000,
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "items"
+        ],
+        "title": "InsightAnswerSave",
+        "type": "object"
+      },
       "InsightChecked": {
         "additionalProperties": false,
         "description": "Whether a measure tile's rows add up to the measure's own figure for the same window,\nread through the same door when the tile was stored (``status``: reconciles, differs or\nnot_checked, with ``says`` in words and the totals compared).",
@@ -14817,6 +15344,30 @@
             ],
             "title": "Notify",
             "type": "string"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved answer page id when saved as part of a whole Ask answer.",
+            "title": "Page Id"
+          },
+          "page_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved answer page title when saved as part of a whole Ask answer.",
+            "title": "Page Title"
           },
           "question": {
             "anyOf": [
@@ -15179,6 +15730,30 @@
             ],
             "title": "Notify",
             "type": "string"
+          },
+          "page_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved answer page id when saved as part of a whole Ask answer.",
+            "title": "Page Id"
+          },
+          "page_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Saved answer page title when saved as part of a whole Ask answer.",
+            "title": "Page Title"
           },
           "people": {
             "description": "Per row: the Team key of the person it is about (open /team), or null.",
@@ -18607,6 +19182,18 @@
           "definition": {
             "title": "Definition",
             "type": "string"
+          },
+          "denominator": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What a ratio measure divides by.",
+            "title": "Denominator"
           },
           "dimensions": {
             "description": "What it can be broken down by.",
@@ -28538,6 +29125,17 @@
       "WorkLogResume": {
         "additionalProperties": false,
         "properties": {
+          "active_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskActiveRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "In-flight Ask run for this conversation, when still running."
+          },
           "href": {
             "title": "Href",
             "type": "string"
@@ -29981,7 +30579,7 @@
     },
     "/api/ask": {
       "post": {
-        "description": "Ask a question; the answer streams as server-sent events.",
+        "description": "Ask a question; the answer streams as server-sent events.\n\nUser runs execute decoupled from the HTTP connection so a page reload or tab close\nnever drops an in-flight answer; only an explicit Stop request cancels it.",
         "operationId": "ask_api_ask_post",
         "requestBody": {
           "content": {
@@ -30002,6 +30600,9 @@
                   "x-sse-events": {
                     "answer": {
                       "$ref": "#/components/schemas/AnswerPayload"
+                    },
+                    "charts": {
+                      "$ref": "#/components/schemas/ChartsEvent"
                     },
                     "error": {
                       "$ref": "#/components/schemas/ErrorBody"
@@ -30296,6 +30897,150 @@
           }
         },
         "summary": "Ask Upload Remove",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/ask/runs/{conversation_id}/stop": {
+      "post": {
+        "description": "Explicitly stop an in-flight Ask run for one of your conversations.",
+        "operationId": "ask_run_stop_api_ask_runs__conversation_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{1,80}$",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskRunStop"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ask Run Stop",
+        "tags": [
+          "ask"
+        ]
+      }
+    },
+    "/api/ask/runs/{conversation_id}/stream": {
+      "get": {
+        "description": "Reattach to an in-flight (or just-finished) Ask run for one of your conversations.",
+        "operationId": "ask_run_stream_api_ask_runs__conversation_id__stream_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{1,80}$",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "x-sse-events": {
+                    "answer": {
+                      "$ref": "#/components/schemas/AnswerPayload"
+                    },
+                    "charts": {
+                      "$ref": "#/components/schemas/ChartsEvent"
+                    },
+                    "error": {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    },
+                    "sources": {
+                      "$ref": "#/components/schemas/SourcesEvent"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/StatusEvent"
+                    },
+                    "token": {
+                      "$ref": "#/components/schemas/TokenEvent"
+                    },
+                    "understanding": {
+                      "$ref": "#/components/schemas/UnderstandingEvent"
+                    },
+                    "verdict": {
+                      "$ref": "#/components/schemas/VerdictEvent"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Server-sent events. Each event's `event:` is its name and `data:` one JSON object: understanding (UnderstandingEvent), status (StatusEvent: a plain-words progress step), sources (SourcesEvent), verdict (VerdictEvent: the answer's first line once the answer gate accepts it), token (TokenEvent), answer (AnswerPayload, last), error (ErrorBody, last)."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Ask Run Stream",
         "tags": [
           "ask"
         ]
@@ -30866,6 +31611,77 @@
       }
     },
     "/api/assist/workflows/{workflow_id}": {
+      "delete": {
+        "description": "Delete a workflow from your list and stop any run currently in progress.",
+        "operationId": "workflow_delete_api_assist_workflows__workflow_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistWorkflow"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Workflow Delete",
+        "tags": [
+          "actions"
+        ]
+      },
       "patch": {
         "description": "Edit a workflow's name, instruction or trigger.",
         "operationId": "workflow_update_api_assist_workflows__workflow_id__patch",
@@ -34165,7 +34981,7 @@
     },
     "/api/data-health": {
       "get": {
-        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named). An Admin page: the owner and the\nTeam readers only, as its menu entry (403 for every other reader). ``check``: one\ncheck's findings from ``offset`` (a page of them), cut from the page's one read.",
+        "description": "Every data-health check: the findings you may see, and how many more it found on\nrecords you may not open (counted, never named). An Admin page: the owner and the\nTeam readers only, as its menu entry (403 for every other reader). ``check``: one\ncheck's findings from ``offset`` (a page of them), cut from the page's one read;\noptional ``q`` and ``object_type`` filter across all rows before slicing.",
         "operationId": "data_health_api_data_health_get",
         "parameters": [
           {
@@ -34207,6 +35023,40 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "object_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Object Type"
             }
           }
         ],
@@ -34278,6 +35128,40 @@
                 }
               ],
               "title": "Check"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "object_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Object Type"
             }
           }
         ],
@@ -35979,6 +36863,316 @@
           }
         },
         "summary": "Insight Layout",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/pages": {
+      "get": {
+        "description": "List saved Ask answer pages owned by the signed-in reader.",
+        "operationId": "insight_pages_list_api_insights_pages_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightAnswerPageList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          }
+        },
+        "summary": "Insight Pages List",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/pages/{page_id}": {
+      "delete": {
+        "description": "Remove one of your saved Ask answer pages and all of its tiles.",
+        "operationId": "insight_page_delete_api_insights_pages__page_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "page_id",
+            "required": true,
+            "schema": {
+              "pattern": "^p[a-f0-9]{12}$",
+              "title": "Page Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightDeleted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Page Delete",
+        "tags": [
+          "insights"
+        ]
+      },
+      "get": {
+        "description": "Read one saved Ask answer page owned by the signed-in reader.",
+        "operationId": "insight_page_get_api_insights_pages__page_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "page_id",
+            "required": true,
+            "schema": {
+              "pattern": "^p[a-f0-9]{12}$",
+              "title": "Page Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightAnswerPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Page Get",
+        "tags": [
+          "insights"
+        ]
+      }
+    },
+    "/api/insights/save-answer": {
+      "post": {
+        "description": "Save a whole Ask answer (title, summary, charts, and queries or catalogue measures)\nas one cohesive Insights page strictly scoped to the signed-in reader.",
+        "operationId": "insight_save_answer_api_insights_save_answer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InsightAnswerSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InsightAnswerPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Insight Save Answer",
         "tags": [
           "insights"
         ]

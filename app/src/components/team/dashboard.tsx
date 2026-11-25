@@ -1,8 +1,12 @@
 "use client";
 
+import { CalendarClock, ChevronDown, MessageCircle, Search, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { LoadProblem } from "@/components/ui/notice";
 import { Sheet } from "@/components/ui/sheet";
+import { Pending } from "@/components/ui/skeleton";
 import { getInsight, getTeamPerson } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
@@ -36,9 +40,9 @@ const CHANNELS: { key: Channel; short: string; head: string; title: string; syst
 const GROUPS: Record<string, { label: string; tone: string }> = {
   mail: { label: "Mail", tone: "var(--sys-mail)" },
   teams: { label: "Teams", tone: "var(--sys-teams)" },
-  meetings: { label: "Calendar", tone: "var(--place-meetings)" },
+  meetings: { label: "Calendar", tone: "var(--sys-portal)" },
   mc: { label: "Mission Control", tone: "var(--sys-mc)" },
-  planner: { label: "Planner", tone: "var(--place-team)" },
+  planner: { label: "Planner", tone: "var(--sys-sage)" },
   sharepoint: { label: "SharePoint", tone: "var(--sys-file)" },
   bc: { label: "BC", tone: "var(--sys-bc)" },
   portal: { label: "Portal", tone: "var(--sys-portal)" },
@@ -137,14 +141,28 @@ function Hours({ hours, tall }: { hours: number[] | undefined; tall?: boolean })
 
 function Select({ label, value, onChange, options, testId }: { label: string; value: string; onChange: (v: string) => void; options: [string, string][]; testId: string }) {
   return (
-    <label className="flex items-center gap-1.5 text-[12px] text-muted">
-      {label}
-      <select value={value} onChange={(e) => onChange(e.target.value)} data-testid={testId}
-        className="h-7 rounded-md border border-control bg-bg px-1.5 text-[12px] text-fg">
-        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-      </select>
+    <label className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted">
+      <span>{label}</span>
+      <span className="relative inline-flex items-center">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          data-testid={testId}
+          className="h-8 appearance-none rounded-md border border-border bg-bg pl-2.5 pr-7 text-[12.5px] font-medium text-fg transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong focus:border-accent focus:outline-none dark:bg-surface cursor-pointer"
+        >
+          {options.map(([v, l]) => <option key={v} value={v} className="bg-bg text-fg">{l}</option>)}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 size-3.5 text-muted" strokeWidth={2} aria-hidden />
+      </span>
     </label>
   );
+}
+
+/** Capitalize all-lowercase display names like "glenn" -> "Glenn" without mutating email addresses. */
+function displayName(name: string): string {
+  const s = name.trim();
+  if (!s || s.includes("@") || s !== s.toLowerCase()) return name;
+  return s.replace(/\b([a-z])/g, (m) => m.toUpperCase());
 }
 
 // the channels a row shows with no system picked: the rest are one System filter away (the
@@ -240,16 +258,37 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "total", desc: true });
   const [open, setOpen] = useState<string | null>(null);
-  // /team?person=<Team key or name> (a person row on Insights): opens them when exactly one row you
-  // can see has that key or name, else narrows the list to it
+  const handledPerson = useRef<string>("");
+  // /team?person=<Team key or name> (a person row on Insights or Ctrl+K): opens them when
+  // exactly one row you can see has that key or name, else narrows the list to it
   useEffect(() => {
-    const want = person.trim().toLowerCase();
-    if (!want) return;
-    const byKey = people.filter((p) => p.key === person.trim());
-    const hits = byKey.length ? byKey : people.filter((p) => p.name.toLowerCase() === want);
+    const raw = person.trim();
+    const want = raw.toLowerCase();
+    if (!want) {
+      handledPerson.current = "";
+      return;
+    }
+    if (handledPerson.current === want) return;
+    const allPeople = [...people, ...accounts];
+    const byKey = allPeople.filter((p) => p.key === raw);
+    const byExact = byKey.length ? byKey : allPeople.filter((p) => p.name.toLowerCase() === want);
+    const hits = byExact.length ? byExact : people.filter((p) => p.name.toLowerCase().includes(want));
+    handledPerson.current = want;
     if (hits.length === 1) setOpen(hits[0].key);
-    else setQuery(person.trim());
-  }, [person, people]);
+    else setQuery(raw);
+  }, [person, people, accounts]);
+
+  const closeSheet = () => {
+    setOpen(null);
+    if (typeof window !== "undefined") {
+      const q = new URLSearchParams(window.location.search);
+      if (q.has("person")) {
+        q.delete("person");
+        const qs = q.toString();
+        window.history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`);
+      }
+    }
+  };
 
   const teams = useMemo(() => [...new Set(people.map((p) => cleanCsv(p.team)).filter(Boolean))].sort(), [people]);
   const roles = useMemo(() => [...new Set(people.flatMap((p) => formatRoleList(p.roles)))].sort(), [people]);
@@ -274,7 +313,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         case "week": return thisWeek(p)?.done ?? 0;
         case "saved": return thisWeek(p)?.saved_minutes ?? -1;
         case "awaiting_reply": return p.awaiting_reply;
-        case "tasks": return tasksOf(p);
+        case "tasks": return planner?.get(p.key)?.open ?? 0;
         case "alerts": return p.alerts + p.tasks;
         case "reply": return replyOf(p, period) ?? (sort.desc ? -1 : Number.MAX_SAFE_INTEGER);
         default: return counts(p, period)[sort.key] ?? 0;
@@ -285,7 +324,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
       const c = x < y ? -1 : x > y ? 1 : a.name.localeCompare(b.name);
       return sort.desc ? -c : c;
     });
-  }, [people, team, role, system, query, period, sort]);
+  }, [people, team, role, system, query, period, sort, planner]);
 
   // a column nobody has a figure in (for this period) is left out, so the table carries no rows of zeros
   const shown = CHANNELS.filter((c) => (system ? c.system === system : FIRST.has(c.key)) && people.some((p) => (counts(p, period)[c.key] ?? 0) > 0));
@@ -335,12 +374,12 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
   }
 
   return (
-    <div className="space-y-3" data-testid="team-dashboard">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div role="radiogroup" aria-label="Period" className="flex h-7 overflow-hidden rounded-md border border-control text-[12px] max-sm:h-10">
+    <div className="space-y-4" data-testid="team-dashboard">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <div role="radiogroup" aria-label="Period" className="inline-flex h-8 items-center rounded-md border border-border bg-surface/60 p-0.5 text-[12.5px] max-sm:h-10">
           {([7, 28] as Period[]).map((p) => (
             <button key={p} type="button" role="radio" aria-checked={period === p} onClick={() => setPeriod(p)} data-testid={`period-${p}`}
-              className={cn("px-2.5 cursor-pointer", period === p ? "bg-accent-soft text-fg font-medium" : "text-muted hover:text-fg")}>
+              className={cn("h-full rounded-[4px] px-2.5 font-medium transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.98] cursor-pointer", period === p ? "bg-bg text-fg shadow-xs" : "text-muted hover:text-fg")}>
               {p} days
             </button>
           ))}
@@ -350,8 +389,36 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             {teams.length > 0 && <Select label="Team" value={team} onChange={setTeam} testId="filter-team" options={[["", "All"], ...teams.map((t) => [t, t] as [string, string]), ["-", "No team"]]} />}
             {roles.length > 0 && <Select label="Role" value={role} onChange={setRole} testId="filter-role" options={[["", "All"], ...roles.map((r) => [r, r] as [string, string])]} />}
             <Select label="System" value={system} onChange={setSystem} testId="filter-system" options={[["", "All"], ...[...new Set(CHANNELS.map((c) => c.system))].map((s) => [s, GROUPS[s].label] as [string, string])]} />
-            <input type="search" placeholder="Find a person" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Find a person"
-              className="h-7 w-44 rounded-md border border-control bg-bg px-2 text-[12px]" />
+            <label className="relative inline-flex items-center">
+              <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" strokeWidth={2} aria-hidden />
+              <input type="search" placeholder="Find a person" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Find a person"
+                className="h-8 w-48 rounded-md border border-border bg-bg pl-8 pr-7 text-[12.5px] text-fg outline-none transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong focus:border-accent placeholder:text-faint dark:bg-surface" />
+              {query && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setQuery("")}
+                  className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                >
+                  <X className="size-3" aria-hidden />
+                </button>
+              )}
+            </label>
+            {(team || role || system || query.trim()) && (
+              <button
+                type="button"
+                data-testid="team-clear-filters"
+                onClick={() => {
+                  setTeam("");
+                  setRole("");
+                  setSystem("");
+                  setQuery("");
+                }}
+                className="h-8 rounded-md px-2 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+              >
+                Clear filters
+              </button>
+            )}
           </>
         )}
         <span className="ml-auto truncate text-[12px] text-muted" data-testid="team-note">
@@ -359,7 +426,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         </span>
       </div>
 
-      <dl className="flex flex-wrap gap-x-6 gap-y-1 border-y border-border py-2 text-[12px] text-muted" data-testid="team-totals">
+      <dl className="grid grid-cols-2 divide-y divide-border border-y border-border sm:grid-cols-4 lg:grid-cols-7 lg:divide-x lg:divide-y-0" data-testid="team-totals">
         {([
           ["People", rows.length],
           ["Mail sent", sum((p) => counts(p, period).mail_sent ?? 0)],
@@ -367,30 +434,36 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
           ["Meetings", sum((p) => counts(p, period).meetings ?? 0)],
           ["Awaiting reply", sum((p) => p.awaiting_reply)],
         ] as [string, number][]).map(([k, v]) => (
-          <div key={k} className="flex items-baseline gap-1.5"><dt>{k}</dt><dd className="num text-[15px] text-fg">{v.toLocaleString("en-US")}</dd></div>
+          <div key={k} className="px-3.5 py-3 odd:pl-0 sm:odd:pl-3.5 lg:first:pl-0 lg:last:pr-0">
+            <dt className="truncate text-[11.5px] font-medium text-faint">{k}</dt>
+            <dd className="mt-0.5 text-[20px] leading-6 font-semibold tracking-[-0.02em] text-fg tabular-nums">{v.toLocaleString("en-US")}</dd>
+          </div>
         ))}
-        <div className="flex items-baseline gap-1.5" title="Microsoft Planner tasks not completed, assigned to the people listed (the same count as the Open Planner tasks per person chart)">
-          <dt>Open Planner tasks</dt><dd className="num text-[15px] text-fg" data-testid="team-planner-total">{planner ? sum(tasksOf).toLocaleString("en-US") : "·"}</dd>
+        <div className="px-3.5 py-3 odd:pl-0 sm:odd:pl-3.5 lg:first:pl-0 lg:last:pr-0" title="Microsoft Planner tasks not completed, assigned to the people listed (the same count as the Open Planner tasks per person chart)">
+          <dt className="truncate text-[11.5px] font-medium text-faint">Open Planner tasks</dt>
+          <dd className="mt-0.5 text-[20px] leading-6 font-semibold tracking-[-0.02em] text-fg tabular-nums" data-testid="team-planner-total">{planner ? sum(tasksOf).toLocaleString("en-US") : "·"}</dd>
         </div>
-        <div className="flex items-baseline gap-1.5"><dt>Median reply</dt><dd className="num text-[15px] text-fg">{minutes(medianReply) || "·"}</dd></div>
+        <div className="px-3.5 py-3 odd:pl-0 sm:odd:pl-3.5 lg:first:pl-0 lg:last:pr-0">
+          <dt className="truncate text-[11.5px] font-medium text-faint">Median reply</dt>
+          <dd className="mt-0.5 text-[20px] leading-6 font-semibold tracking-[-0.02em] text-fg tabular-nums">{minutes(medianReply) || "·"}</dd>
+        </div>
       </dl>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto rounded-md border border-border bg-bg">
         <table className="w-full border-collapse text-[12.5px]" data-testid="team-table">
-          <thead className="sticky top-0 z-10 bg-bg text-left text-[11.5px] text-muted">
-            <tr className="text-[11px] uppercase tracking-[0.04em] text-faint">
+          <thead className="sticky top-0 z-10 bg-surface text-left text-[11.5px] text-muted">
+            <tr className="border-b border-border/70 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-faint">
               {/* person, team (when any is on record), all, this week and saved (when shown) */}
-              <th colSpan={(teams.length > 0 ? 2 : 1) + (has.week ? 1 : 0) + 1 + (savedShown ? 1 : 0)} />
+              <th colSpan={(teams.length > 0 ? 2 : 1) + (has.week ? 1 : 0) + 1 + (savedShown ? 1 : 0)} className="px-3 py-1.5" />
               {groups.map((g) => (
                 <th
                   key={g.system}
                   colSpan={g.span}
                   scope="colgroup"
                   className={cn(
-                    "whitespace-nowrap border-b-2 px-2 pt-1 font-normal",
+                    "whitespace-nowrap border-l border-border/70 px-2.5 py-1.5 font-semibold",
                     g.span === 1 ? "text-right" : "text-center",
                   )}
-                  style={{ borderColor: GROUPS[g.system].tone }}
                 >
                   {GROUPS[g.system].label}
                 </th>
@@ -400,28 +473,28 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                   colSpan={openSpan}
                   scope="colgroup"
                   className={cn(
-                    "whitespace-nowrap border-b-2 border-dot-risk px-2 pt-1 font-normal",
+                    "whitespace-nowrap border-l border-border/70 px-2.5 py-1.5 font-semibold",
                     openSpan === 1 ? "text-right" : "text-center",
                   )}
                 >
                   Open
                 </th>
               )}
-              {tailSpan > 0 && <th colSpan={tailSpan} />}
+              {tailSpan > 0 && <th colSpan={tailSpan} className="border-l border-border/70 px-2.5 py-1.5" />}
             </tr>
-            <tr className="border-b border-border">
-              {head("name", "Person", "Name", "min-w-[150px]")}
+            <tr className="border-b border-border bg-bg">
+              {head("name", "Person", "Name", "min-w-[160px] pl-3")}
               {teams.length > 0 && head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
               {head("total", "All", "Everything they did in the period except mail received", "text-right")}
               {has.week && head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
               {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
-              {shown.map((c) => head(c.key, c.head, c.title, cn("text-right", system === c.system && "text-fg")))}
-              {has.awaiting_reply && head("awaiting_reply", "Reply", "Threads awaiting their reply", "text-right")}
-              {has.tasks && head("tasks", "Tasks", "Open Planner tasks assigned to them", "text-right")}
-              {has.alerts && head("alerts", "Alerts", "Other open alerts on them, stuck or overdue tasks among them", "text-right")}
-              {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
-              {has.trend && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Everything they did per day, last 28 days">28-day trend</th>}
-              {has.hours && <th scope="col" className="whitespace-nowrap px-2 py-1.5 font-normal" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
+              {shown.map((c, idx) => head(c.key, c.head, c.title, cn("text-right", idx === 0 && "border-l border-border/60", system === c.system && "text-fg")))}
+              {has.awaiting_reply && head("awaiting_reply", "Reply", "Threads awaiting their reply", "border-l border-border/60 text-right")}
+              {has.tasks && head("tasks", "Tasks", "Open Planner tasks assigned to them", cn("text-right", !has.awaiting_reply && "border-l border-border/60"))}
+              {has.alerts && head("alerts", "Alerts", "Other open alerts on them, stuck or overdue tasks among them", cn("text-right", !has.awaiting_reply && !has.tasks && "border-l border-border/60"))}
+              {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "border-l border-border/60 text-right")}
+              {has.trend && <th scope="col" className={cn("whitespace-nowrap px-2 py-1.5 font-normal", !has.reply && "border-l border-border/60")} title="Everything they did per day, last 28 days">28-day trend</th>}
+              {has.hours && <th scope="col" className="whitespace-nowrap px-2 py-1.5 pr-3 font-normal" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
             </tr>
           </thead>
           <tbody>
@@ -429,15 +502,15 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
               const c = counts(p, period);
               return (
                 <tr key={p.key} data-testid="team-row" onClick={() => setOpen(p.key)} onPointerEnter={() => readAhead(p.key)} onPointerLeave={readAheadStop} onFocus={() => readAhead(p.key)}
-                  className="cursor-pointer border-b border-border hover:bg-hover">
-                  <td className="px-2 py-1.5">
-                    <button type="button" data-tap="inline" className="text-left font-medium hover:underline" onClick={(e) => { e.stopPropagation(); setOpen(p.key); }}>
-                      {p.name}
+                  className="cursor-pointer border-b border-border/70 last:border-0 hover:bg-hover/70">
+                  <td className="py-2 pl-3 pr-2">
+                    <button type="button" data-tap="inline" className="text-left font-medium text-fg hover:text-accent hover:underline" onClick={(e) => { e.stopPropagation(); setOpen(p.key); }}>
+                      {displayName(p.name)}
                     </button>
-                    {p.self && <span className="ml-1.5 text-[11px] text-muted">you</span>}
+                    {p.self && <span className="ml-1.5 rounded bg-accent-soft px-1 py-0.5 text-[10.5px] font-medium text-accent">you</span>}
                     {(() => {
                       const pr = formatRoleList(p.roles, p.team);
-                      return pr.length > 0 ? <div className="truncate text-[11px] text-muted" data-testid="team-roles">{pr.join(", ")}</div> : null;
+                      return pr.length > 0 ? <div className="mt-0.5 truncate text-[11px] text-muted" data-testid="team-roles">{pr.join(", ")}</div> : null;
                     })()}
                   </td>
                   {teams.length > 0 && <td className="whitespace-nowrap px-2 py-1.5 text-muted">{cleanCsv(p.team) || <span className="text-faint">·</span>}</td>}
@@ -463,40 +536,61 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             })}
           </tbody>
         </table>
-        {rows.length === 0 && <p className="py-4 text-[13px] text-muted">{people.length === 0 ? "No one has activity counted yet." : "Nobody matches these filters."}</p>}
+        {rows.length === 0 && (
+          <div className="px-4 py-6 text-center text-[13px] text-muted">
+            <p>{people.length === 0 ? "No one has activity counted yet." : "Nobody matches these filters."}</p>
+            {people.length > 0 && (team || role || system || query.trim()) && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2.5"
+                onClick={() => {
+                  setTeam("");
+                  setRole("");
+                  setSystem("");
+                  setQuery("");
+                }}
+              >
+                Clear filters
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       {data.scope === "everyone" && accounts.length > 0 && (
         <section className="space-y-1.5 pt-4" aria-label="Shared mailboxes and accounts" data-testid="team-accounts">
           <h2 className="text-[13px] font-semibold">Shared mailboxes and accounts <span className="num font-normal text-muted">{accounts.length}</span></h2>
           <p className="max-w-[80ch] text-[12px] text-muted">Named only by their address, with no manager, department or title on record: not counted as people, not ranked.</p>
-          <table className="w-full max-w-3xl border-collapse text-[12.5px]">
-            <thead className="text-left text-[11.5px] text-muted">
-              <tr className="border-b border-border">
-                <th scope="col" className="px-2 py-1 font-normal">Account</th>
-                <th scope="col" className="px-2 py-1 text-right font-normal">All</th>
-                <th scope="col" className="px-2 py-1 text-right font-normal">Mail sent</th>
-                <th scope="col" className="px-2 py-1 text-right font-normal">Mail received</th>
-                <th scope="col" className="px-2 py-1 text-right font-normal">Teams</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((a) => {
-                const c = counts(a, period);
-                return (
-                  <tr key={a.key} className="cursor-pointer border-b border-border hover:bg-hover" data-testid="team-account-row" onClick={() => setOpen(a.key)}>
-                    <td className="px-2 py-1.5 font-medium">{a.name}</td>
-                    <td className="px-2 py-1.5 text-right"><Figure n={total(a, period)} strong /></td>
-                    <td className="px-2 py-1.5 text-right"><Figure n={c.mail_sent} /></td>
-                    <td className="px-2 py-1.5 text-right"><Figure n={c.mail_received} /></td>
-                    <td className="px-2 py-1.5 text-right"><Figure n={c.teams} /></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full max-w-3xl border-collapse text-[12.5px]">
+              <thead className="text-left text-[11.5px] text-muted">
+                <tr className="border-b border-border">
+                  <th scope="col" className="px-2 py-1 font-normal">Account</th>
+                  <th scope="col" className="px-2 py-1 text-right font-normal">All</th>
+                  <th scope="col" className="px-2 py-1 text-right font-normal">Mail sent</th>
+                  <th scope="col" className="px-2 py-1 text-right font-normal">Mail received</th>
+                  <th scope="col" className="px-2 py-1 text-right font-normal">Teams</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accounts.map((a) => {
+                  const c = counts(a, period);
+                  return (
+                    <tr key={a.key} className="cursor-pointer border-b border-border hover:bg-hover" data-testid="team-account-row" onClick={() => setOpen(a.key)}>
+                      <td className="px-2 py-1.5 font-medium">{a.name}</td>
+                      <td className="px-2 py-1.5 text-right"><Figure n={total(a, period)} strong /></td>
+                      <td className="px-2 py-1.5 text-right"><Figure n={c.mail_sent} /></td>
+                      <td className="px-2 py-1.5 text-right"><Figure n={c.mail_received} /></td>
+                      <td className="px-2 py-1.5 text-right"><Figure n={c.teams} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
-      {open && <PersonSheet key={open} personKey={open} onClose={() => setOpen(null)} onOpen={setOpen} />}
+      {open && <PersonSheet key={open} personKey={open} onClose={closeSheet} onOpen={setOpen} />}
     </div>
   );
 }
@@ -552,18 +646,54 @@ function dayLabel(iso: string): string {
 function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClose: () => void; onOpen: (key: string) => void }) {
   const [data, setData] = useState<TeamPersonDetail | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [round, setRound] = useState(0);
   useEffect(() => {
     const ctl = new AbortController();
+    setData(null);
+    setError(null);
     getTeamPerson(personKey, ctl.signal).then(setData, (e) => { if (!ctl.signal.aborted) setError(e); });
     return () => ctl.abort();
-  }, [personKey]);
+  }, [personKey, round]);
   const p = data?.person;
+  const shownName = p ? displayName(p.name) : "Person";
   return (
-    <Sheet open onOpenChange={(o) => !o && onClose()} title={p?.name ?? "Person"} className="sm:w-[min(720px,calc(100vw-16px))]">
-      {error ? <p className="text-[13px]">{plainError(error)}</p> : !data || !p ? <p className="text-[13px] text-muted">Loading</p> : (
-        <div className="space-y-6" data-testid="team-person">
+    <Sheet
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={shownName}
+      className="sm:w-[min(720px,calc(100vw-16px))]"
+      bodyClassName="pb-14"
+      footer={
+        p ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/ask?q=${encodeURIComponent(`What is ${shownName} working on right now?`)}`}
+              onClick={onClose}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-bg px-3 text-[12.5px] font-medium text-fg transition-colors hover:border-control hover:bg-hover active:scale-[0.98]"
+            >
+              <MessageCircle className="size-3.5 text-muted" aria-hidden />
+              Ask about {shownName}
+            </Link>
+            <Link
+              href={`/meetings?view=follow-ups&person=${encodeURIComponent(p.name)}`}
+              onClick={onClose}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[12.5px] text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg active:scale-[0.98]"
+            >
+              <CalendarClock className="size-3.5" aria-hidden />
+              Meeting follow-ups
+            </Link>
+          </div>
+        ) : undefined
+      }
+    >
+      {error ? (
+        <LoadProblem message={plainError(error)} onRetry={() => setRound((n) => n + 1)} />
+      ) : !data || !p ? (
+        <Pending label="Reading activity" />
+      ) : (
+        <div className="space-y-6 pb-8" data-testid="team-person">
           <div>
-            <div className="text-[15px] font-semibold">{p.name}</div>
+            <div className="text-[15px] font-semibold">{shownName}</div>
             <div className="text-[12px] text-muted">{[cleanCsv(p.team), ...formatRoleList(p.roles, p.team)].filter(Boolean).join(" · ") || "No team or role on record"}</div>
           </div>
 
@@ -600,11 +730,17 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
                       <li key={it.id} className="flex items-baseline gap-3 py-1.5" data-testid="team-item">
                         <span className="num w-9 shrink-0 text-right text-muted">{it.age_days == null ? "" : `${it.age_days}d`}</span>
                         <span className="min-w-0 flex-1">
-                          <span className="font-medium">{it.title}</span>
+                          <span className="block truncate font-medium" title={it.title}>{it.title}</span>
                           <span className="block truncate text-[11.5px] text-muted">{[it.counterpart, it.channel === "teams" ? "Teams" : it.channel === "mail" ? "Mail" : null, b.key === "awaiting_reply" ? null : `answered by ${it.waiting_on}`].filter(Boolean).join(" · ")}</span>
                         </span>
                         {it.record_id && it.record_type && (
-                          <Link className="shrink-0 text-[12px] text-accent hover:underline" href={`/object/${encodeURIComponent(it.record_type)}/${encodeURIComponent(it.record_id)}`}>Open</Link>
+                          <Link
+                            className="shrink-0 font-medium text-[12px] text-accent hover:underline"
+                            href={`/object/${encodeURIComponent(it.record_type)}/${encodeURIComponent(it.record_id)}`}
+                            onClick={onClose}
+                          >
+                            Open
+                          </Link>
                         )}
                       </li>
                     ))}
@@ -617,24 +753,36 @@ function PersonSheet({ personKey, onClose, onOpen }: { personKey: string; onClos
           {data.withheld > 0 && <p className="text-[12px] text-muted" data-testid="team-withheld">{data.withheld} more not shown: marked, or not open to you.</p>}
 
           <div className="grid gap-6 sm:grid-cols-2">
-            <section className="space-y-1.5">
+            <section className="min-w-0 space-y-1.5">
               <h3 className="text-[12px] font-medium text-muted">Works most with</h3>
               {(data.partners ?? []).length === 0 ? <p className="text-[12px] text-faint">Nobody on record.</p> : (
                 <ul className="space-y-1 text-[12.5px]">
                   {(() => {
                     const top = Math.max(1, ...(data.partners ?? []).map((x) => x.n));
                     return (data.partners ?? []).map((x) => (
-                      <li key={x.name} className="flex items-center gap-2">
-                        {x.key ? <button type="button" data-tap="inline" className="w-36 truncate text-left hover:underline" onClick={() => onOpen(x.key!)}>{x.name}</button> : <span className="w-36 truncate">{x.name}</span>}
-                        <span className="h-1.5 rounded-sm bg-accent/60" style={{ width: `${Math.max(4, (x.n / top) * 120)}px` }} />
-                        <span className="num text-[11.5px] text-muted">{x.n}</span>
+                      <li key={x.name} className="flex min-w-0 items-center gap-2">
+                        {x.key ? (
+                          <button
+                            type="button"
+                            data-tap="inline"
+                            title={x.name}
+                            className="min-w-0 flex-1 max-w-[160px] truncate text-left text-fg hover:text-accent hover:underline cursor-pointer"
+                            onClick={() => onOpen(x.key!)}
+                          >
+                            {displayName(x.name)}
+                          </button>
+                        ) : (
+                          <span className="min-w-0 flex-1 max-w-[160px] truncate" title={x.name}>{displayName(x.name)}</span>
+                        )}
+                        <span className="h-1.5 shrink-0 rounded-sm bg-accent/60" style={{ width: `${Math.max(4, (x.n / top) * 96)}px` }} />
+                        <span className="num shrink-0 text-[11.5px] text-muted">{x.n}</span>
                       </li>
                     ));
                   })()}
                 </ul>
               )}
             </section>
-            <section className="space-y-1.5">
+            <section className="min-w-0 space-y-1.5 overflow-x-auto">
               <h3 className="text-[12px] font-medium text-muted">Busiest hours, Eastern</h3>
               <Hours hours={p.hours} tall />
               <p className="sr-only">{busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : "No messages counted by hour."}</p>

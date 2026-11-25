@@ -19,7 +19,7 @@ export function concerns(view: WriteIntentView, match: string[]): boolean {
   return ids.some((id) => own === id || hay.some((h) => h === id || h.includes(id)));
 }
 
-const show = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+const show = (v: unknown) => (v === null || v === undefined || v === "" ? "–" : String(v));
 
 /** One entry: preview (field by field), approve with a second confirm click, then run: a
  * dry run (saying what a live write still lacks) unless the preview says it writes live,
@@ -60,7 +60,7 @@ function WriteEntry({ view, onChange, onStale }: { view: WriteIntentView; onChan
   const live = !!preview && preview.live_missing.length === 0;
 
   return (
-    <li className="rounded-xl bg-bg p-3 shadow-lift" data-testid="write-entry">
+    <li className="rounded-md border border-border bg-bg p-3" data-testid="write-entry">
       <p className="text-[13px] font-medium">{(view.intent as { operation: string }).operation.replaceAll("_", " ")}</p>
       <p className="text-[12px] text-muted" data-testid="write-status">{view.text}</p>
       {!preview && (
@@ -88,7 +88,7 @@ function WriteEntry({ view, onChange, onStale }: { view: WriteIntentView; onChan
             </tbody>
           </table>
           {preview.problems.map((p) => <p key={p} className="text-late" data-testid="write-problem">{p}</p>)}
-          {preview.warnings.map((w) => <p key={w.code + w.text} className="text-amber-700" data-testid="write-warning">{w.text}</p>)}
+          {preview.warnings.map((w) => <p key={w.code + w.text} className="text-risk" data-testid="write-warning">{w.text}</p>)}
           {preview.warnings.length > 0 && (
             <label className="flex items-center gap-2"><input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} data-testid="write-ack" />I checked these warnings</label>
           )}

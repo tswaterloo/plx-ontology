@@ -157,7 +157,7 @@ describe("AskBox autocomplete", () => {
     const onStop = vi.fn();
     const { rerender } = render(<AskBox onSubmit={onSubmit} busy onStop={onStop} />);
     const box = screen.getByRole("combobox") as HTMLTextAreaElement;
-    expect(screen.getByRole("button", { name: "Stop answering" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
     type(box, "and the one before that?");
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onSubmit).not.toHaveBeenCalled();

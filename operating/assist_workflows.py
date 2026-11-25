@@ -135,6 +135,38 @@ TEMPLATES: tuple[dict[str, Any], ...] = (
         "trigger": {},
         "instruction": "Reconcile open supplier invoices against their purchase orders and receipts, list every quantity or price mismatch, and prepare follow-up messages.",
     },
+    {
+        "template_id": "uninvoiced-shipments-check",
+        "name": "Check shipped orders not yet invoiced",
+        "description": "Every weekday at 8:30 AM, find shipped orders with no invoice posted yet and draft billing follow-ups.",
+        "trigger_kind": "schedule",
+        "trigger": {"cadence": "weekdays", "hour": 8, "minute": 30},
+        "instruction": "Find every shipped customer order that does not have a matching posted invoice yet, list the order number, customer, ship date and dollar value, and prepare follow-up messages or billing steps.",
+    },
+    {
+        "template_id": "qa-coa-followup",
+        "name": "Follow up on missing QA Certificates of Analysis",
+        "description": "Every weekday at 9:00 AM, check open batches and shipments waiting on a COA and draft follow-up emails.",
+        "trigger_kind": "schedule",
+        "trigger": {"cadence": "weekdays", "hour": 9, "minute": 0},
+        "instruction": "Check open production batches, incoming material lots and upcoming shipments waiting on a Certificate of Analysis or lab sign-off, and draft follow-up emails to the supplier or QA contact.",
+    },
+    {
+        "template_id": "customer-order-status-digest",
+        "name": "Customer order status and backorder digest",
+        "description": "Every weekday at 8:30 AM, summarize open customer orders, backorders and upcoming ship dates with update drafts.",
+        "trigger_kind": "schedule",
+        "trigger": {"cadence": "weekdays", "hour": 8, "minute": 30},
+        "instruction": "Summarize open customer orders, backorders and orders shipping in the next 5 business days with order numbers, promised dates and open balances, and draft customer status updates where dates moved.",
+    },
+    {
+        "template_id": "ap-ar-overdue-review",
+        "name": "Weekly AP and AR overdue review",
+        "description": "Every Monday at 9:00 AM, review past-due receivables and overdue payables and prepare follow-up messages.",
+        "trigger_kind": "schedule",
+        "trigger": {"cadence": "weekly", "weekday": "monday", "hour": 9, "minute": 0},
+        "instruction": "List overdue customer invoices and past-due supplier bills grouped by account with invoice numbers, due dates and balances, and prepare payment follow-up drafts for my review.",
+    },
 )
 
 
@@ -307,7 +339,13 @@ def parse_plain_language(text: str) -> dict[str, Any]:
         elif token in ("week", "weekly"):
             trig = {"cadence": "weekly", "weekday": "monday", "hour": hour, "minute": minute}
         else:
-            trig = {"cadence": "monthly", "day": 1, "hour": hour, "minute": minute}
+            day = 1
+            m_dom = re.match(r"^\s*(?:on\s+(?:the\s+|day\s+)?)?(\d{1,2})(?:st|nd|rd|th)?\b\s*(.*)$", m_sched.group(3) or "", re.I)
+            if m_dom and 1 <= int(m_dom.group(1)) <= 28:
+                day = int(m_dom.group(1))
+                hour, minute, rest = _parse_clock(m_dom.group(2) or "")
+                instr = _clean_instruction(rest, raw)
+            trig = {"cadence": "monthly", "day": day, "hour": hour, "minute": minute}
         summary = describe_trigger("schedule", trig)
         return {"name": f"{summary}: {instr}", "trigger_kind": "schedule", "trigger": trig,
                 "instruction": instr, "trigger_summary": summary}
@@ -587,8 +625,8 @@ def rows_of(pg: Any, workflow_id: str) -> list[dict[str, Any]]:
     return [dict(zip(("seq", "workflow_id", "person", "at", "what", "detail"), r)) for r in cur.fetchall()]
 
 
-def workflows_of(pg: Any, person_ids: Sequence[str]) -> list[dict[str, Any]]:
-    """Every workflow of the given person(s), newest first. No cap."""
+def workflows_of(pg: Any, person_ids: Sequence[str], *, include_deleted: bool = False) -> list[dict[str, Any]]:
+    """Every workflow of the given person(s), newest first. No cap. Excludes deleted workflows by default."""
     ids = [r[0] for r in pg.execute(
         f"SELECT workflow_id FROM {TABLE} WHERE what = 'created' AND person = ANY(%s) ORDER BY seq DESC",
         (list(person_ids),),
@@ -602,7 +640,8 @@ def workflows_of(pg: Any, person_ids: Sequence[str]) -> list[dict[str, Any]]:
     by: dict[str, list[dict[str, Any]]] = {i: [] for i in ids}
     for r in cur.fetchall():
         by[r[1]].append(dict(zip(("seq", "workflow_id", "person", "at", "what", "detail"), r)))
-    return [fold(by[i]) for i in ids if by[i]]
+    folded = [fold(by[i]) for i in ids if by[i]]
+    return folded if include_deleted else [w for w in folded if not w.get("deleted")]
 
 
 def all_workflows(pg: Any) -> list[dict[str, Any]]:
@@ -647,6 +686,7 @@ def fold(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "source_kind": str(d0.get("source_kind") or "plain_language"),
         "source_ref": str(d0.get("source_ref") or ""),
         "status": "active",
+        "deleted": False,
         "pause_reason": "",
         "created_at": created_at,
         "updated_at": created_at,
@@ -698,7 +738,11 @@ def fold(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 out["last_error"] = ""
         elif w == "stopped":
             out["status"] = "stopped"
-            out["pause_reason"] = "stopped_by_person"
+            if d.get("deleted") is True:
+                out["deleted"] = True
+                out["pause_reason"] = "deleted_by_person"
+            elif not out["deleted"]:
+                out["pause_reason"] = "stopped_by_person"
             out["updated_at"] = at
         elif w in ("fired", "run_now"):
             jid = str(d.get("job_id") or "")
@@ -791,15 +835,54 @@ def _insert_job(pg: Any, job_id: str, person: str, what: str, detail: Optional[M
     )
 
 
-def stop_workflow(pg: Any, wf: Mapping[str, Any]) -> list[str]:
-    """Stop the workflow permanently and append ``stop`` to any live job belonging to it, serialized
-    against concurrent ``tick`` fires in one transaction. Returns the live job ids asked to stop."""
+def update_workflow(
+    pg: Any,
+    wf: Mapping[str, Any],
+    *,
+    name: Optional[str] = None,
+    instruction: Optional[str] = None,
+    trigger_kind: Optional[str] = None,
+    trigger: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Atomically edit a non-stopped, non-deleted workflow under its advisory lock."""
+    wid, person = str(wf["workflow_id"]), str(wf["person"])
+    with _tx(pg):
+        _lock_workflow(pg, wid)
+        fresh = fold(rows_of(pg, wid))
+        if fresh.get("deleted") or fresh["status"] == "stopped":
+            raise ValueError("A stopped workflow cannot be edited.")
+        clean_name = mask_served(" ".join((name if name is not None else fresh["name"]).split()))
+        clean_instr = mask_served(" ".join((instruction if instruction is not None else fresh["instruction"]).split()))
+        if not clean_instr:
+            raise ValueError("A workflow needs an instruction.")
+        if len(clean_instr) > aj.TEXT_CHARS:
+            raise ValueError(f"A workflow instruction is at most {aj.TEXT_CHARS} characters.")
+        t_kind = trigger_kind or fresh["trigger_kind"]
+        t_val = trigger if trigger is not None else fresh["trigger"]
+        clean_trig = validate_trigger(t_kind, t_val)
+        _insert_wf(pg, wid, person, "updated", {
+            "name": clean_name or clean_instr,
+            "instruction": clean_instr,
+            "trigger_kind": t_kind,
+            "trigger": clean_trig,
+        })
+    if not callable(getattr(pg, "transaction", None)) and not getattr(pg, "autocommit", True):
+        pg.commit()
+
+
+def stop_workflow(pg: Any, wf: Mapping[str, Any], *, deleted: bool = False) -> list[str]:
+    """Stop the workflow permanently (and optionally mark it deleted so it leaves the list) and append
+    ``stop`` to any live job belonging to it, serialized against concurrent ``tick`` fires in one transaction.
+    Returns the live job ids asked to stop."""
     wid, person = str(wf["workflow_id"]), str(wf["person"])
     stopped_jobs: list[str] = []
     with _tx(pg):
         _lock_workflow(pg, wid)
         fresh = fold(rows_of(pg, wid))
-        if fresh["status"] != "stopped":
+        if deleted:
+            if not fresh.get("deleted"):
+                _insert_wf(pg, wid, person, "stopped", {"by": "person", "deleted": True})
+        elif fresh["status"] != "stopped":
             _insert_wf(pg, wid, person, "stopped", {"by": "person"})
         for run in fresh.get("runs") or ():
             jid = run["job_id"]
@@ -813,6 +896,11 @@ def stop_workflow(pg: Any, wf: Mapping[str, Any]) -> list[str]:
     if not callable(getattr(pg, "transaction", None)) and not getattr(pg, "autocommit", True):
         pg.commit()
     return stopped_jobs
+
+
+def delete_workflow(pg: Any, wf: Mapping[str, Any]) -> list[str]:
+    """Delete a workflow cleanly (append-only ``stopped`` with ``deleted: true``) and stop any live jobs."""
+    return stop_workflow(pg, wf, deleted=True)
 
 
 def trigger_run_now(pg: Any, wf: Mapping[str, Any]) -> str:
@@ -999,6 +1087,17 @@ def _match_alert_events(
     return out
 
 
+def _table_columns(pg: Any, schema: str, table: str) -> set[str]:
+    try:
+        rows = pg.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
+            (schema, table),
+        ).fetchall()
+        return {str(r[0]) for r in rows}
+    except Exception:  # noqa: BLE001 - non-pg fixture falls back to base columns
+        return set()
+
+
 def _match_events(
     pg: Any,
     wf: Mapping[str, Any],
@@ -1016,16 +1115,38 @@ def _match_events(
             sender = str(trig.get("sender") or "").strip()
             subject = str(trig.get("subject") or "").strip()
             mailboxes = _person_mailboxes(pg, str(wf["person"]))
-            sql = ("SELECT handle, sender, coalesce(subject, ''), received_at FROM biz.emails "
-                   "WHERE lower(mailbox) = ANY(%s) AND received_at >= %s AND NOT coalesce(is_bulk, false)")
+            cols = _table_columns(pg, "biz", "emails")
+            sql = (
+                "SELECT e.handle, e.sender, coalesce(e.subject, ''), e.received_at FROM biz.emails e "
+                "WHERE lower(e.mailbox) = ANY(%s) AND e.received_at >= %s AND NOT coalesce(e.is_bulk, false)"
+            )
+            if "ai_ok" in cols:
+                sql += " AND e.ai_ok IS TRUE"
+            if "excluded" in cols:
+                sql += " AND e.excluded IS FALSE"
+            if "rec_marks" in cols:
+                sql += (
+                    " AND e.rec_marks IS NOT NULL "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM unnest(e.rec_marks) rm WHERE rm IS NULL OR btrim(rm) NOT IN ('', '[]')"
+                    ")"
+                )
+            if "object_ids" in cols:
+                sql += (
+                    " AND e.object_ids IS NOT NULL AND cardinality(e.object_ids) > 0 "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM unnest(e.object_ids) o(id) "
+                    "JOIN ontology.people_excluded_objects p ON p.object_id = o.id"
+                    ")"
+                )
             params: list[Any] = [mailboxes, since]
             if sender:
-                sql += " AND lower(coalesce(sender, '')) LIKE %s ESCAPE '\\'"
+                sql += " AND lower(coalesce(e.sender, '')) LIKE %s ESCAPE '\\'"
                 params.append(_like_contains(sender))
             if subject:
-                sql += " AND lower(coalesce(subject, '')) LIKE %s ESCAPE '\\'"
+                sql += " AND lower(coalesce(e.subject, '')) LIKE %s ESCAPE '\\'"
                 params.append(_like_contains(subject))
-            sql += " ORDER BY received_at ASC"
+            sql += " ORDER BY e.received_at ASC"
             for handle, frm, subj, _at in pg.execute(sql, params).fetchall():
                 dk = f"mail:{handle}"
                 note = f"New email from {frm}" + (f" ({subj})" if subj else "")

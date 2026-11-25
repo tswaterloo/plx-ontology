@@ -118,6 +118,14 @@ describe("access-link ticket", () => {
     expect(window.location.hash).toBe("#main");
     expect(takeTicket()).toBeNull();
   });
+
+  it("captures and strips a ?ticket= query parameter while keeping other query params", () => {
+    window.history.replaceState(null, "", "/?foo=1&ticket=q%20tok&bar=2");
+    captureTicket();
+    expect(window.location.search).toBe("?foo=1&bar=2");
+    expect(takeTicket()).toBe("q tok");
+    expect(takeTicket()).toBeNull();
+  });
 });
 
 describe("saved items", () => {

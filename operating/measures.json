@@ -20,6 +20,7 @@
     "customer_chain",
     "item_code",
     "item_name",
+    "category",
     "line_type"
    ],
    "days": 30,
@@ -66,7 +67,8 @@
     "customer_party",
     "customer_chain",
     "item_code",
-    "item_name"
+    "item_name",
+    "category"
    ],
    "days": 30,
    "ask": "What was our gross margin percent each month this year, per currency?",
@@ -112,7 +114,8 @@
     "customer_party",
     "customer_chain",
     "item_code",
-    "item_name"
+    "item_name",
+    "category"
    ],
    "days": 30,
    "ask": "Which products sold the most units in the last 90 days?",
@@ -346,12 +349,12 @@
   },
   {
    "id": "receivables_open",
-   "name": "Receivables open",
+   "name": "Receivables open, net",
    "owner": "Finance",
-   "version": "v312e777c",
-   "defined_on": "2026-11-22",
+   "version": "v75a976b5",
+   "defined_on": "2026-11-25",
    "unit": "money",
-   "definition": "What each customer account owes now: the sum of every open ledger document on the account, net. Unpaid invoices count positive; unapplied payments (receipts), prepayments and credit notes on the same account count negative and are part of the balance, not a separate figure. An account whose net is negative is owed money by us. Never net one account against another, even for the same parent company.",
+   "definition": "What each customer account owes now, net: the sum of every open ledger document on the account. Unpaid invoices count positive; unapplied payments (receipts), prepayments and credit notes on the same account count negative and are part of the balance, not a separate figure. For gross unpaid invoices alone (before credits, receipts and prepayments), use receivables_open_gross. An account whose net is negative is owed money by us. Never net one account against another, even for the same parent company.",
    "view": "customer_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -376,6 +379,39 @@
      "min_fill": 0.5
     }
    ]
+  },
+  {
+   "id": "receivables_open_gross",
+   "name": "Receivables open, gross (invoices)",
+   "owner": "Finance",
+   "unit": "money",
+   "definition": "What customers owe now on open invoices alone, gross: unpaid invoices only (unapplied payments/receipts, prepayments and credit notes are not netted). For the net account balance including credits and unapplied payments, use receivables_open.",
+   "view": "customer_balances",
+   "value": "sum(amount_due)",
+   "per": "amount_due_currency",
+   "date": "",
+   "where": "document_type = 'invoice'",
+   "dimensions": [
+    "customer",
+    "customer_party",
+    "customer_chain",
+    "aging_bucket",
+    "document_type"
+   ],
+   "ask": "How much do customers owe us in open invoices (gross, before credits) per currency?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "amount_due",
+     "min_fill": 0.5
+    },
+    {
+     "column": "amount_due_currency",
+     "min_fill": 0.5
+    }
+   ],
+   "version": "v4c695fa9",
+   "defined_on": "2026-11-25"
   },
   {
    "id": "receivables_overdue_net",
@@ -447,10 +483,10 @@
    "id": "payables_open",
    "name": "Payables open",
    "owner": "Finance",
-   "version": "v5bcbf794",
-   "defined_on": "2026-11-23",
+   "version": "v0a24a7fd",
+   "defined_on": "2026-11-25",
    "unit": "money",
-   "definition": "Amount PLX owes on open Sage AP ledger documents: every payee, not only trade suppliers (card issuers, the tax body, payroll and individuals' expenses are payees too). payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to: trade (inventory and cost of sales suppliers: raw materials, packaging, freight in, product testing), expense (services, freight out, rent, IT, consulting), capital, tax_payroll, finance (cards, lenders) or unknown (no default account in Sage). vendor_group (DEF, USD, PAY ...) is how Sage pays the vendor.",
+   "definition": "Amount PLX owes on open Sage AP ledger documents: every payee, not only trade suppliers (card issuers, the tax body, payroll and individuals' expenses are payees too). payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to (default account, or Sage AP distribution set when no single default account is set): trade (inventory and cost of sales suppliers: raw materials, packaging, freight in, product testing), expense (services, freight out, rent, IT, consulting), capital, tax_payroll, finance (cards, lenders) or unknown (no default account or unambiguous distribution set in Sage). vendor_group (DEF, USD, PAY ...) is how Sage pays the vendor.",
    "view": "supplier_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -825,7 +861,8 @@
     "customer_party",
     "customer_chain",
     "item_code",
-    "item_name"
+    "item_name",
+    "category"
    ],
    "days": 30,
    "ask": "Which customers did we sell to below cost last month?",
@@ -870,7 +907,8 @@
     "customer",
     "customer_party",
     "item_code",
-    "item_name"
+    "item_name",
+    "category"
    ],
    "days": 365,
    "ask": "Which invoice lines have a cost that looks wrong?",
@@ -1003,10 +1041,10 @@
    "id": "batch_reject_rate",
    "name": "Batch reject rate",
    "owner": "Quality",
-   "version": "v62851654",
-   "defined_on": "2026-11-23",
+   "version": "vb04f1b1a",
+   "defined_on": "2026-11-25",
    "unit": "percent",
-   "definition": "Of the batches made (status Realized), by the day they were made, the percent whose quality status is Rejected (numerator: rejected batches; denominator: batches made). Unmade batches carry On-Hold by default and are left out.",
+   "definition": "Of the batches made (status Realized), by the day they were made, the percent whose quality status is Rejected (numerator: rejected realized batches; denominator: all realized batches made). Unmade batches carry On-Hold by default and are left out.",
    "view": "batches",
    "value": "count(DISTINCT handle)",
    "per": "",
@@ -1030,16 +1068,17 @@
      "column": "realized_date",
      "min_fill": 0.5
     }
-   ]
+   ],
+   "denominator": "Realized (made) batches (status = 'Realized') by realized_date, counted as distinct handles"
   },
   {
    "id": "batch_hold_rate",
    "name": "Batch QC hold rate",
    "owner": "Quality",
-   "version": "v12337fe8",
-   "defined_on": "2026-11-23",
+   "version": "v27b76584",
+   "defined_on": "2026-11-25",
    "unit": "percent",
-   "definition": "Of the batches made (status Realized), by the day they were made, the percent still on quality hold (quality status On-Hold). Unmade batches carry On-Hold by default and are left out.",
+   "definition": "Of the batches made (status Realized), by the day they were made, the percent still on quality hold (numerator: realized batches with quality status On-Hold; denominator: all realized batches made). Unmade batches carry On-Hold by default and are left out.",
    "view": "batches",
    "value": "count(DISTINCT handle)",
    "per": "",
@@ -1063,16 +1102,17 @@
      "column": "realized_date",
      "min_fill": 0.5
     }
-   ]
+   ],
+   "denominator": "Realized (made) batches (status = 'Realized') by realized_date, counted as distinct handles"
   },
   {
    "id": "batch_yield",
    "name": "Batch yield",
    "owner": "Production",
-   "version": "vbccd5920",
-   "defined_on": "2026-11-21",
+   "version": "vbbe288c1",
+   "defined_on": "2026-11-25",
    "unit": "percent",
-   "definition": "Produced quantity over planned quantity, in percent, of the batches made (status Realized) that state both (planned above 0), by the day they were made: over 100 means more was made than planned.",
+   "definition": "Produced quantity over planned quantity, in percent, of the batches made (status Realized) that state both with planned above 0, by the day they were made (numerator: sum of produced_quantity; denominator: sum of planned_quantity): over 100 means more was made than planned.",
    "view": "batches",
    "value": "sum(planned_quantity)",
    "per": "",
@@ -1100,7 +1140,8 @@
      "column": "realized_date",
      "min_fill": 0.5
     }
-   ]
+   ],
+   "denominator": "Sum of planned_quantity on realized batches where planned_quantity > 0 and produced_quantity IS NOT NULL"
   },
   {
    "id": "open_orders_not_live",
@@ -1135,10 +1176,10 @@
    "id": "late_order_share",
    "name": "Share of open orders that are late",
    "owner": "Operations",
-   "version": "v139f5b93",
-   "defined_on": "2026-11-23",
+   "version": "vd973843c",
+   "defined_on": "2026-11-25",
    "unit": "percent",
-   "definition": "Of the open customer orders that are still going (quotes left out; not those that owe nothing or that nobody has worked for longer than closed orders take), the percent past their required date (days_late above 0), as they stand now.",
+   "definition": "Of the open customer orders that are still going (quotes left out; not those that owe nothing or that nobody has worked for longer than closed orders take), the percent past their required date as they stand now (numerator: open live sales orders with days_late > 0; denominator: all open live sales orders).",
    "view": "sales_orders",
    "value": "count(DISTINCT handle)",
    "per": "",
@@ -1159,16 +1200,17 @@
      "column": "handle",
      "min_fill": 0.5
     }
-   ]
+   ],
+   "denominator": "Open live sales orders (status = 'open', open_state = 'live', excluding quotes, of_record IS NOT NULL), counted as distinct handles"
   },
   {
    "id": "receivables_overdue_share",
    "name": "Share of receivables overdue",
    "owner": "Finance",
-   "version": "v9b88bc26",
-   "defined_on": "2026-11-21",
+   "version": "v3ab64a3c",
+   "defined_on": "2026-11-25",
    "unit": "percent",
-   "definition": "Of what customers owe (open receivable documents, net of credits), the percent past due (days_overdue above 0), per currency, as it stands now.",
+   "definition": "Of what customers owe (open receivable documents, net of credits), the percent past due per currency as it stands now (numerator: net open receivables with days_overdue > 0; denominator: total net open receivables, per currency).",
    "view": "customer_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -1192,16 +1234,17 @@
      "column": "amount_due_currency",
      "min_fill": 0.5
     }
-   ]
+   ],
+   "denominator": "Total net open receivables (sum of amount_due across all open customer_balances documents, per currency)"
   },
   {
    "id": "payables_overdue",
    "name": "Payables overdue",
    "owner": "Finance",
-   "version": "v2fe97554",
-   "defined_on": "2026-11-23",
+   "version": "va83fd524",
+   "defined_on": "2026-11-25",
    "unit": "money",
-   "definition": "What PLX owes now on supplier documents past their due date, gross: invoices only. Credit notes, prepayments and other non-invoice documents are not netted unless the credits parameter counts them in. payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to (trade, expense, capital, tax_payroll, finance or unknown).",
+   "definition": "What PLX owes now on supplier documents past their due date, gross: invoices only. Credit notes, prepayments and other non-invoice documents are not netted unless the credits parameter counts them in. payee_class says who it is owed to by the GL account Sage posts the vendor's invoices to (default account, or Sage AP distribution set when no single default account is set: trade, expense, capital, tax_payroll, finance or unknown).",
    "view": "supplier_balances",
    "value": "sum(amount_due)",
    "per": "amount_due_currency",
@@ -1432,7 +1475,7 @@
    "name": "Shipments on time",
    "owner": "Operations",
    "unit": "percent",
-   "definition": "Of the shipments whose sales order states a required date, the share shipped on or before it, by the declared ship date.",
+   "definition": "Of the shipments whose sales order states a required date, the share shipped on or before it, by the declared ship date (numerator: shipments with shipped <= required_date; denominator: shipments whose sales order states a required_date).",
    "source": {
     "type": "Shipment",
     "columns": {
@@ -1474,8 +1517,9 @@
      "min_fill": 0.5
     }
    ],
-   "version": "v319e6b2a",
-   "defined_on": "2026-11-24"
+   "version": "v3818d143",
+   "defined_on": "2026-11-25",
+   "denominator": "Shipments linked to a sales order that states a required_date (required IS NOT NULL), by declared ship date"
   },
   {
    "id": "quotes_issued",
@@ -1593,6 +1637,140 @@
    ],
    "version": "v477711c6",
    "defined_on": "2026-11-24"
+  },
+  {
+   "id": "awaiting_reply_by_person",
+   "name": "Threads awaiting reply per person",
+   "owner": "Customer Service",
+   "unit": "count",
+   "definition": "Email threads in the last 30 days where the latest message is addressed to a staff member (to, non-bulk, unreplied for over 1 day, from someone else) on a thread that person has previously written on, grouped by person and department. Runs through the reader's own email door (emails and staff).",
+   "view": "emails",
+   "value": "",
+   "per": "",
+   "date": "",
+   "where": "",
+   "dimensions": [],
+   "sql": "WITH st AS MATERIALIZED (SELECT person_id, name, department, email FROM staff), last AS MATERIALIZED (SELECT DISTINCT ON (mailbox, thread) mailbox, thread, sender, received_at, owner_role, is_bulk, owner_replied_at FROM emails WHERE thread IS NOT NULL AND received_at >= now() - interval '30 days' AND mailbox IN (SELECT person_id FROM st) ORDER BY mailbox, thread, received_at DESC, message_id DESC), cand AS MATERIALIZED (SELECT l.mailbox, l.thread, l.sender, l.received_at FROM last l WHERE l.owner_role = 'to' AND NOT l.is_bulk AND l.owner_replied_at IS NULL AND l.received_at < now() - interval '1 day'), wrote AS MATERIALIZED (SELECT DISTINCT mailbox, thread, sender FROM emails WHERE thread = ANY (ARRAY(SELECT thread FROM cand)) AND received_at >= now() - interval '91 days') SELECT s.name AS person, s.department, count(*) AS threads_waiting, count(*) FILTER (WHERE l.received_at < now() - interval '3 days') AS waiting_over_3_days, round((max(extract(epoch FROM now() - l.received_at)) / 86400)::numeric, 1) AS oldest_days, count(*) FILTER (WHERE split_part(l.sender, '@', 2) <> split_part(s.email, '@', 2)) AS from_outside FROM cand l JOIN st s ON s.person_id = l.mailbox WHERE l.sender <> s.email AND (l.mailbox, l.thread, s.email) IN (SELECT mailbox, thread, sender FROM wrote) GROUP BY s.name, s.department ORDER BY threads_waiting DESC",
+   "ask": "How many email threads are awaiting reply per person right now?",
+   "grain": "person",
+   "version": "v4a0b3bd6",
+   "defined_on": "2026-11-25",
+   "requires": [
+    {
+     "column": "thread",
+     "min_fill": 0.5
+    },
+    {
+     "column": "mailbox",
+     "min_fill": 0.5
+    },
+    {
+     "column": "received_at",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "open_alerts_by_person",
+   "name": "Open operational alerts per person",
+   "owner": "Operations",
+   "unit": "count",
+   "definition": "Open operational items needing attention per person, computed through the reader's door over emails, staff, sales_orders, and purchase_orders: combines unreplied threads awaiting reply (reply_owed), open late sales orders by salesperson (counted by distinct handle), and late purchase orders by purchaser (excluding BC-only pilot, counted by distinct handle).",
+   "view": "emails",
+   "value": "",
+   "per": "",
+   "date": "",
+   "where": "",
+   "dimensions": [],
+   "sql": "WITH st AS MATERIALIZED (SELECT person_id, name, department, email FROM staff), last AS MATERIALIZED (SELECT DISTINCT ON (mailbox, thread) mailbox, thread, sender, received_at, owner_role, is_bulk, owner_replied_at FROM emails WHERE thread IS NOT NULL AND received_at >= now() - interval '30 days' AND mailbox IN (SELECT person_id FROM st) ORDER BY mailbox, thread, received_at DESC, message_id DESC), cand AS MATERIALIZED (SELECT l.mailbox, l.thread, l.sender, l.received_at FROM last l WHERE l.owner_role = 'to' AND NOT l.is_bulk AND l.owner_replied_at IS NULL AND l.received_at < now() - interval '1 day'), wrote AS MATERIALIZED (SELECT DISTINCT mailbox, thread, sender FROM emails WHERE thread = ANY (ARRAY(SELECT thread FROM cand)) AND received_at >= now() - interval '91 days'), reply AS (SELECT s.name AS person, count(*) AS n FROM cand l JOIN st s ON s.person_id = l.mailbox WHERE l.sender <> s.email AND (l.mailbox, l.thread, s.email) IN (SELECT mailbox, thread, sender FROM wrote) GROUP BY s.name), late_so AS (SELECT coalesce(nullif(salesperson, ''), '(unassigned)') AS person, count(DISTINCT handle) AS n FROM sales_orders WHERE status = 'open' AND days_late > 0 AND order_type IS DISTINCT FROM 'quote' AND of_record IS NOT NULL GROUP BY 1), late_po AS (SELECT coalesce(nullif(purchaser, ''), '(unassigned)') AS person, count(DISTINCT handle) AS n FROM purchase_orders WHERE verdict = 'late' AND NOT (coalesce(source_systems, '') = 'bc') GROUP BY 1), people AS (SELECT person FROM reply UNION SELECT person FROM late_so UNION SELECT person FROM late_po) SELECT p.person, coalesce(r.n, 0) + coalesce(so.n, 0) + coalesce(po.n, 0) AS open_alerts, coalesce(r.n, 0) AS reply_owed, coalesce(so.n, 0) AS late_sales_orders, coalesce(po.n, 0) AS late_purchase_orders FROM people p LEFT JOIN reply r ON r.person = p.person LEFT JOIN late_so so ON so.person = p.person LEFT JOIN late_po po ON po.person = p.person ORDER BY open_alerts DESC, p.person",
+   "ask": "How many open operational alerts does each person have right now?",
+   "grain": "person",
+   "version": "v3f4304e1",
+   "defined_on": "2026-11-25",
+   "requires": [
+    {
+     "column": "thread",
+     "min_fill": 0.5
+    },
+    {
+     "column": "mailbox",
+     "min_fill": 0.5
+    },
+    {
+     "column": "received_at",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "po_count_and_value_by_supplier",
+   "name": "Purchase order count and value by supplier",
+   "owner": "Purchasing",
+   "unit": "money",
+   "definition": "Purchase order count (one per purchase order handle, never raw PO number) and total order value per supplier and currency, drafts left out. Currencies are kept separate and never added across.",
+   "view": "purchase_orders",
+   "value": "",
+   "per": "",
+   "date": "",
+   "where": "",
+   "dimensions": [],
+   "sql": "SELECT supplier, total_currency AS currency, count(DISTINCT handle) AS po_count, sum(total) AS po_value FROM purchase_orders WHERE status IS DISTINCT FROM 'draft' GROUP BY supplier, total_currency ORDER BY po_value DESC NULLS LAST, po_count DESC",
+   "ask": "What is our purchase order count and total value by supplier?",
+   "grain": "supplier",
+   "version": "vd469f160",
+   "defined_on": "2026-11-25",
+   "requires": [
+    {
+     "column": "handle",
+     "min_fill": 0.5
+    },
+    {
+     "column": "supplier",
+     "min_fill": 0.5
+    },
+    {
+     "column": "total",
+     "min_fill": 0.5
+    },
+    {
+     "column": "total_currency",
+     "min_fill": 0.5
+    }
+   ]
+  },
+  {
+   "id": "ar_trend",
+   "name": "Receivables open over time",
+   "owner": "Finance",
+   "version": "v15e3bdf0",
+   "defined_on": "2026-11-25",
+   "unit": "money",
+   "definition": "Daily snapshot of net open accounts receivable (from ar_daily_snapshots, snapshotted daily from customer_balances), per currency, by snapshot_date, aging_bucket and document_type. Credits, receipts and prepayments are negative. Each snapshot_date is a point-in-time balance: sum across buckets/types for one day, never across multiple days.",
+   "view": "ar_daily_snapshots",
+   "value": "sum(net_amount_due)",
+   "per": "currency",
+   "date": "snapshot_date",
+   "where": "",
+   "dimensions": [
+    "aging_bucket",
+    "document_type"
+   ],
+   "ask": "How has open accounts receivable trended over time by currency and aging bucket?",
+   "grain": "row",
+   "requires": [
+    {
+     "column": "snapshot_date",
+     "min_fill": 0.99
+    },
+    {
+     "column": "currency",
+     "min_fill": 0.99
+    },
+    {
+     "column": "net_amount_due",
+     "min_fill": 0.99
+    }
+   ]
   }
  ]
 }

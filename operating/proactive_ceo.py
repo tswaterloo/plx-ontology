@@ -368,12 +368,19 @@ def customer_demand_drop(st: Any, as_of: date, *, gap: Callable, cites: Callable
         counts["drops"] += 1
         down = ((rate - now) / rate * 100).quantize(Decimal("1"))
         name_row = names.get(customer)
-        summary = (f"Orders down {down}%: {_text(now)} {currency} on "
-                   f"{_plural(len(recent), 'order')} in the last {DEMAND_RECENT_DAYS} days "
-                   f"against a run-rate of {_text(rate.quantize(Decimal('0.01')))} {currency} "
-                   f"per {DEMAND_RECENT_DAYS} days ({_text(base)} {currency} on "
-                   f"{_plural(len(before), 'order')} in the {DEMAND_BASELINE_DAYS} days "
-                   "before)")
+        if now <= 0:
+            summary = (f"No orders in the last {DEMAND_RECENT_DAYS} days "
+                       f"(down from a run-rate of {_text(rate.quantize(Decimal('0.01')))} {currency} "
+                       f"per {DEMAND_RECENT_DAYS} days; {_text(base)} {currency} on "
+                       f"{_plural(len(before), 'order')} in the {DEMAND_BASELINE_DAYS} days "
+                       "before)")
+        else:
+            summary = (f"Orders down {down}%: {_text(now)} {currency} on "
+                       f"{_plural(len(recent), 'order')} in the last {DEMAND_RECENT_DAYS} days "
+                       f"against a run-rate of {_text(rate.quantize(Decimal('0.01')))} {currency} "
+                       f"per {DEMAND_RECENT_DAYS} days ({_text(base)} {currency} on "
+                       f"{_plural(len(before), 'order')} in the {DEMAND_BASELINE_DAYS} days "
+                       "before)")
         made = gap(
             DEMAND, DEMAND, customer, CUSTOMER, currency,
             summary=_named(summary, name_row),

@@ -186,6 +186,194 @@ class CoverTests(unittest.TestCase):
         self.assertNotIn("cover_retry", ran2.usage)
         self.assertEqual(len(prompts2), 2)
 
+    def test_single_flagged_sentence_triggers_targeted_patch_and_preserves_chart(self):
+        """PLAN-A2: a flagged sentence (even containing {{refs}} and beside a chart block)
+        must trigger ONLY a targeted 1-sentence patch, never a whole-answer rewrite."""
+        from dataclasses import dataclass, field
+        from types import SimpleNamespace
+        from unittest import mock
+        from operator_api import ask_check, simple_ask as sa
+
+        rid = "sql://0123456789abcdef0123"
+        chart_block = (
+            '```chart\n'
+            f'{{"type": "bar", "title": "2026 Monthly Revenue (CAD)", "result": "{rid}", '
+            '"x": "month", "y": ["total"]}\n'
+            '```'
+        )
+        sql_ev = {
+            "type": "tool_call",
+            "name": "plx.sql",
+            "arguments": {"sql": "SELECT month, total FROM rev WHERE currency = 'CAD'"},
+            "result": json.dumps({
+                "result": rid,
+                "columns": ["month", "total"],
+                "rows": [
+                    {"cite": "c1", "cells": ["2026-01", 100.0]},
+                    {"cite": "c2", "cells": ["2026-02", 200.0]},
+                ],
+                "row_count": 2,
+                "profile": {"rows": 2, "limit_hit": False, "columns": []},
+            }),
+        }
+        written = (
+            f"Monthly revenue for 2026 in CAD totals {{{{sum({rid}.total, CAD)}}}}. "
+            f"All {{{{count({rid})}}}} months of 2026 are complete.\n\n{chart_block}"
+        )
+
+        @dataclass
+        class FakeRun:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        emitted: list[tuple[str, dict]] = []
+        cover_json = json.dumps({
+            "flags": [{
+                "kind": "A",
+                "sentence": "All 2 months of 2026 are complete.",
+                "why": "only Jan and Feb are in the read",
+                "would_settle": "count distinct months in 2026",
+            }]
+        })
+        asker = SimpleNamespace(_cover_call=lambda _prompt: cover_json)
+        checking = sa.Checking(asker, "Plot monthly revenue for 2026 in CAD",
+                               lambda k, d: emitted.append((k, dict(d))))
+        first = FakeRun(final_text=written, events=[sql_ev], usage={"subtype": "success"})
+
+        with mock.patch.dict("os.environ", {ask_check.ENABLE_ENV: "cover"}):
+            got = checking.hook(first)
+
+        self.assertIsNotNone(got)
+        msg, join = got
+        # Must use targeted sentence patch, NOT whole-answer rewrite
+        self.assertIn('Reply with one line per number', msg)
+        self.assertNotIn("write the complete answer again", msg)
+        self.assertIn("Do not rewrite the rest of your answer or any charts", msg)
+        # Validated chart event must be emitted BEFORE check starts (never starved by repair)
+        event_kinds = [k for k, _ in emitted]
+        self.assertIn("charts", event_kinds)
+        self.assertLess(event_kinds.index("charts"), event_kinds.index("check"))
+        chart_ev = next(d for k, d in emitted if k == "charts")
+        self.assertEqual(len(chart_ev["charts"]), 1)
+        self.assertEqual(chart_ev["charts"][0]["title"], "2026 Monthly Revenue (CAD)")
+
+        # Apply targeted 1-sentence reply: only the flagged sentence changes; chart stays intact
+        patched = join(
+            first,
+            FakeRun(final_text=f"1. Revenue covers {{{{count({rid})}}}} months of 2026 in CAD."),
+        )
+        self.assertIn("Monthly revenue for 2026 in CAD totals {{sum(", patched.final_text)
+        self.assertIn("Revenue covers {{count(", patched.final_text)
+        self.assertNotIn("All {{count(", patched.final_text)
+        self.assertIn(chart_block, patched.final_text)
+        self.assertEqual(patched.usage["cover_repair"], "patched")
+        self.assertEqual(patched.usage["cover_patch"]["replaced"], 1)
+
+    def test_patched_cover_handles_stands_meta_framing_and_timeout(self):
+        from dataclasses import dataclass, field
+        from operator_api import simple_ask as sa
+
+        @dataclass
+        class FakeRun:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        written = "Intro. All items are shipped. Tail."
+        p = [ask_patch.Patch(7, 29, "All items are shipped.", "limit hit")]
+        first = FakeRun(final_text=written, usage={"subtype": "success"})
+
+        # Bare "stands" keeps original text cleanly
+        kept = sa.patched_cover(first, FakeRun("stands. All rows were checked."), p, written)
+        self.assertEqual(kept.final_text, written)
+        self.assertEqual(kept.usage["cover_repair"], "stands")
+
+        # Meta-framing in a numbered replacement is rejected (original sentence kept)
+        meta = sa.patched_cover(first, FakeRun("1. Updated answer: Two items shipped."), p, written)
+        self.assertEqual(meta.final_text, written)
+        self.assertEqual(meta.usage["cover_repair"], "stands")
+
+        # Timeout preserves original answer without modification
+        timed = sa.patched_cover(first, FakeRun("", usage={"subtype": "timeout"}), p, written)
+        self.assertEqual(timed.final_text, written)
+        self.assertEqual(timed.usage["cover_repair"], "timeout")
+
+    def test_warm_turn_bounds_cover_repair_timeout_and_keeps_answer(self):
+        """A hung cover_repair turn must time out at cover_repair_seconds and preserve the
+        already-complete answer instead of stalling for 60 s."""
+        import threading
+        from dataclasses import dataclass, field
+        from types import SimpleNamespace
+        from unittest import mock
+        from operator_api import simple_ask as sa
+
+        @dataclass
+        class FakeRun:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        closed_proc = threading.Event()
+
+        class HungRepairSession:
+            alive = True
+
+            def __init__(self):
+                self.calls = 0
+                self.state = {"process": SimpleNamespace(close=closed_proc.set)}
+
+            def turn(self, prompt, on_line, cancel):
+                self.calls += 1
+                if self.calls == 1:
+                    return FakeRun("Initial answer with chart.", usage={"subtype": "success"})
+                # Simulate a hung repair turn waiting for timeout cancellation
+                closed_proc.wait(timeout=2.0)
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeError("repair timed out")
+                return FakeRun("Late rewrite")
+
+            def close(self):
+                self.alive = False
+
+        warm = sa.WarmSessions()
+        sess = HungRepairSession()
+        host = SimpleNamespace(close=lambda: None)
+        asker = SimpleNamespace(
+            _reader_key=lambda s: "r1",
+            _scope_digest=lambda s: "d1",
+            _start_digest=lambda s: "s1",
+            _host_for=lambda s: host,
+            _agent_for=lambda on: SimpleNamespace(open_session=lambda h: sess),
+        )
+        with mock.patch.object(sa, "spares_per_reader", return_value=0), \
+                mock.patch.dict("os.environ", {sa.COVER_REPAIR_SECONDS_ENV: "0.05"}):
+            ran = warm.turn(
+                asker, object(), "c1", "Plot revenue", (), lambda line: None, None,
+                check=lambda r, h: ("patch msg", sa.covered),
+            )
+        warm.close_all()
+        self.assertTrue(closed_proc.is_set())
+        self.assertEqual(ran.final_text, "Initial answer with chart.")
+        self.assertEqual(ran.usage["cover_repair"], "timeout")
+        self.assertIn("cover_repair_seconds", ran.usage)
+
+    def test_call_for_uses_low_effort_and_bounded_timeout(self):
+        from unittest import mock
+
+        captured = {}
+
+        def fake_rewriter(**kwargs):
+            captured.update(kwargs)
+            return lambda prompt: '{"flags": []}'
+
+        with mock.patch("operating.humanize.rewriter", side_effect=fake_rewriter):
+            ac.call_for(object())
+
+        self.assertEqual(captured["effort"], "low")
+        self.assertEqual(captured["seconds"], ac.SECONDS)
+        self.assertEqual(captured["feature"], ac.FEATURE)
+
 
 if __name__ == "__main__":
     unittest.main()

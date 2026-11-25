@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { LoadProblem } from "@/components/ui/notice";
 import { getAutopilotDrafts, setNeverSender, type DraftList, type PreparedItem } from "@/lib/api";
 import { noticeKind, plainError } from "@/lib/errors";
+import { humanizeIsoTimestamps } from "@/lib/format";
 import { useFeed } from "@/lib/feeds";
 
 export const SWITCHES_HREF = "/assist?show=switches";
@@ -75,7 +76,7 @@ export function AssistQueue({ onCount, only, except, kind, onKind }: { onCount?:
         setItems(r.items);
         setOlder(r.older ?? 0);
         // the list says when it is not current or not shown (never a silent empty list)
-        setListNote(r.status === "stale" ? "The list was last re-checked a while ago; it may be behind." : r.status === "off" || r.status === "not_run" ? (r.reason ? `Your list is not shown: ${r.reason}.` : "") : "");
+        setListNote(r.status === "stale" ? "The list was last re-checked a while ago; it may be behind." : r.status === "off" || r.status === "not_run" ? (r.reason ? `Your list is not shown: ${humanizeIsoTimestamps(r.reason)}.` : "") : "");
         setNever(r.never_senders ?? []);
         setError(null);
       },

@@ -108,7 +108,6 @@ FIRM_TIERS = ("verified", "reviewed", "corroborated")
 LEAD_TIERS = ("stored_by_text_join", "lead")
 MAX_TWINS = 32
 MAX_CHAINS = 400          # chains walked from one purchase order before the walk is cut
-MAX_STEP_CHARS = 400
 MAX_GAP_SUBJECTS = 5
 # FileMaker's words, then the Portal manufacturing order's post-production states (its
 # status transitions: COMPLETED -> RELEASED -> CLOSED, REJECTED -> CLOSED; the FM migration
@@ -244,8 +243,8 @@ BREAKS: dict[str, tuple[tuple[str, ...], str]] = {
     "component_without_assembly_order": (
         (COMPONENT_OF,), "the assembly order named on the FileMaker component"),
     "assembly_order_not_linked_to_order_line": (
-        (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN), "the Portal manufacturing order's "
-        "customer order line or the FileMaker order-entry assembly allocation"),
+        (AO_LINE, ALLOCATES, ALLOCATION_LINE, AO_TWIN),
+        "a linked customer order line or assembly allocation"),
     "allocation_without_order_line": (
         (ALLOCATION_LINE,), "the order-entry line named on the FileMaker assembly allocation"),
     "order_line_not_linked_to_order": (
@@ -272,7 +271,6 @@ NO_LATE_PO = "no_late_purchase_order"
 MISSING: dict[str, tuple[tuple[str, ...], str]] = {
     **BREAKS, NO_LATE_PO: ((), "the PO delivery date check (no PO whose links reach an "
                                "assembly order is late or slipping)")}
-MAX_MISSING = 5
 DAYS_AT_RISK_BASIS = ("days at risk is a lower bound: no assembly lead time is recorded, "
                       "so 0 days are counted from component arrival to shipment")
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -957,15 +955,15 @@ def break_gap(reasons: Mapping[str, list[Break]], reason: str, *, complete: bool
                  "proof that none is recorded")
               + "; no link is inferred from a shared code, date or amount")
     return {"state": "absent_in_source" if known else "unknown", "reason": reason,
-            "subject": subjects[:700],
-            "detail": detail[:600]}
+            "subject": subjects,
+            "detail": detail}
 
 
 def lead_time_gap(subject: str) -> dict[str, Any]:
-    return {"state": "not_ingested", "reason": LEAD_TIME_GAP, "subject": subject[:700],
+    return {"state": "not_ingested", "reason": LEAD_TIME_GAP, "subject": subject,
             "detail": (f"{LEAD_TIME_GAP}: no source the Workbench reads records the time "
                        "from component arrival to shipment, so it counts 0 days: days at "
-                       "risk is a lower bound")[:600]}
+                       "risk is a lower bound")}
 
 
 # --------------------------------------------------------------------------- the plan engine
@@ -1372,7 +1370,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         verdict = late[chain.po]
         steps = [CHAIN_STEP.format(po=chain.po, order=order.key)]
         steps += [f"crossed {e.cited()}{posted_company(e, objects)}" for e in chain.edges]
-        inputs = list(verdict.inputs) + [ref for ref in order.required_from][:20]
+        inputs = list(verdict.inputs) + list(order.required_from)
         if order.days is None:
             steps.append(f"days at risk not stated: {order.why_null}")
             gaps.append({"state": "unknown", "reason": order.why_null, "subject": order.key,
@@ -1389,11 +1387,11 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                          "the required date")
         if len(order.chains) > 1:
             steps.append(f"fed by {len(order.chains)} late PO chain(s): "
-                         + ", ".join(sorted({c.po for c in order.chains}))[:300])
-        basis = list(dict.fromkeys([*chain.records, *order.members]))[:100]
+                         + ", ".join(sorted({c.po for c in order.chains})))
+        basis = list(dict.fromkeys([*chain.records, *order.members]))
         entries.append(_digest({
-            "name": f"{name}_{n}"[:64], "kind": "computed", "value": order.days,
-            "inputs": inputs[:50], "steps": [s[:MAX_STEP_CHARS] for s in steps][:40],
+            "name": f"{name}_{n}", "kind": "computed", "value": order.days,
+            "inputs": inputs, "steps": list(steps),
             "basis": basis, "check": "not_applicable"}))
         if order.at_risk:
             amount, currency, used, why = order_value(order.members, amounts, currencies,
@@ -1401,13 +1399,13 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             if amount is not None:
                 shown += 1
                 entries.append(_digest({
-                    "name": f"{name}_value_{n}"[:64], "kind": "computed",
+                    "name": f"{name}_value_{n}", "kind": "computed",
                     "value": _dec_str(amount), "currency": currency,
-                    "inputs": [e["name"] for e in used][:50],
+                    "inputs": [e["name"] for e in used],
                     "steps": [f"value at risk of {order.key}: its cited order total "
                               f"{_dec_str(amount)} {currency}, as the source states it (tax "
                               "basis per source)"],
-                    "basis": order.members[:100], "check": "not_applicable"}))
+                    "basis": order.members, "check": "not_applicable"}))
             elif why == "order_values_disagree":
                 gaps.append({"state": "unknown", "reason": why, "subject": order.key,
                              "detail": f"{why}: the order's twins state different totals or "
@@ -1426,15 +1424,15 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     lates = sorted({o.worst for o in risky if o.worst})
     entries.append(_digest({
         "name": name, "kind": "computed", "value": len(risky),
-        "inputs": [e["name"] for e in entries][:50],
+        "inputs": [e["name"] for e in entries],
         "steps": [f"{len(risky)} customer orders at risk from {len(lates)} late POs, worst "
                   "first",
                   f"{len(found.considered)} late or slipping PO(s) walked, {found.chains} "
                   f"chain(s) found, {len(found.breaks)} stop at a missing link",
                   DAYS_AT_RISK_BASIS]
         + ([] if complete else ["the run was cut, so other orders may be at risk"]),
-        "basis": [o.key for o in risky][:100], "check": "not_applicable"}))
-    return {"entries": entries, "gaps": gaps[:50], "reasons": reasons}
+        "basis": [o.key for o in risky], "check": "not_applicable"}))
+    return {"entries": entries, "gaps": gaps, "reasons": reasons}
 
 
 def _margin_figures(entries: Sequence[Mapping[str, Any]], same: Callable[[Mapping[str, Any]], bool],
@@ -1483,24 +1481,24 @@ def _plan_margins(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mappi
         totals[margin.currency] = totals.get(margin.currency, Decimal(0)) + margin.amount
         bases.update(margin.bases)
         entries.append(_digest({
-            "name": f"{name}_margin_{index[order.key]}"[:64], "kind": "computed",
+            "name": f"{name}_margin_{index[order.key]}", "kind": "computed",
             "value": _dec_str(margin.amount), "currency": margin.currency,
-            "inputs": list(dict.fromkeys(f.ref for f in margin.figures))[:50],
-            "steps": [s[:MAX_STEP_CHARS] for s in [
+            "inputs": list(dict.fromkeys(f.ref for f in margin.figures)),
+            "steps": [
                 f"margin at stake on {order.key} over its {margin.lines} line(s)",
                 *margin.steps, f"= {_dec_str(margin.amount)} {margin.currency}",
-                f"cost basis: {margin.basis}", MARGIN_BASIS]][:40],
-            "basis": order.members[:100], "check": "not_applicable"}))
+                f"cost basis: {margin.basis}", MARGIN_BASIS],
+            "basis": order.members, "check": "not_applicable"}))
     if len(totals) == 1 and entries:
         (currency, total), = totals.items()
         entries.append(_digest({
-            "name": f"{name}_margin"[:64], "kind": "computed", "value": _dec_str(total),
-            "currency": currency, "inputs": [e["name"] for e in entries][:50],
-            "steps": [x[:MAX_STEP_CHARS] for x in (
+            "name": f"{name}_margin", "kind": "computed", "value": _dec_str(total),
+            "currency": currency, "inputs": [e["name"] for e in entries],
+            "steps": [
                 f"margin at stake on {len(entries)} of {len(risky)} order(s) at risk: "
                 f"{_dec_str(total)} {currency}", f"cost basis: {basis_label(bases)}",
-                MARGIN_BASIS)],
-            "basis": [o.key for o in risky][:100], "check": "not_applicable"}))
+                MARGIN_BASIS],
+            "basis": [o.key for o in risky], "check": "not_applicable"}))
     elif len(totals) > 1:
         gaps.append({"state": "unknown", "reason": "margin_currencies_differ", "subject": name,
                      "detail": "margin_currencies_differ: the orders' margins are in "
@@ -1509,10 +1507,10 @@ def _plan_margins(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mappi
     for reason in sorted(why):
         subjects = sorted(why[reason])
         gaps.append({"state": "unknown", "reason": reason,
-                     "subject": some_of(subjects, MAX_GAP_SUBJECTS)[:700],
+                     "subject": some_of(subjects, MAX_GAP_SUBJECTS),
                      "detail": (f"{reason}: no margin at stake is stated for "
                                 f"{len(subjects)} order(s) at risk; "
-                                + MARGIN_WHY.get(reason, "see the reason"))[:600]})
+                                + MARGIN_WHY.get(reason, "see the reason"))})
     return entries
 
 
@@ -1811,7 +1809,7 @@ def scan(st: Any, call: Callable[[str, Mapping[str, Any]], Any], *, bound: int =
             "broken_share_percent": found.broken_share,
             "broken_by_reason": dict(sorted(by_reason.items())),
             "top_missing_links": [r for r, _n in sorted(by_reason.items(),
-                                                         key=lambda p: (-p[1], p[0]))][:3],
+                                                         key=lambda p: (-p[1], p[0]))],
             "orders_affected": len(found.orders), "orders_at_risk": len(found.at_risk),
             "orders_affected_by_tier": found.by_tier(),
             "orders_at_risk_by_tier": found.by_tier(found.at_risk),
@@ -2021,7 +2019,7 @@ def object_margin_values(value: Callable[[str], Any]
 
 
 def missing_links(stopped: Mapping[str, Container[str]]) -> list[dict[str, Any]]:
-    """The links that stop most POs, most first (at most ``MAX_MISSING``), typed: the
+    """The links that stop most POs, most first, typed: the
     reason, the POs it stops (``pos``: distinct purchase orders; 0 when no PO has a recorded
     line at all), where it sits, the link types that would carry it and the source that
     would hold it. An unknown reason is kept by name with no source (fail closed: never
@@ -2035,7 +2033,7 @@ def missing_links(stopped: Mapping[str, Container[str]]) -> list[dict[str, Any]]
         out.append({"link": reason, "pos": len(members), "stage": stage,
                     "link_types": list(types), "source": source})
     out.sort(key=lambda e: (-e["pos"], e["link"]))
-    return out[:MAX_MISSING]
+    return out
 
 
 def sample(order: Order) -> dict[str, Any]:

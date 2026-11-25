@@ -15,7 +15,7 @@ milliseconds are logged (``operator_api.latency``), never its query or body.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import contextvars
 from datetime import date, datetime, timezone
@@ -42,6 +42,7 @@ from .events import EventCenter
 
 EVENTS_POLL_SECONDS = 5.0
 from .routes import page as page_routes
+from . import ask_runs as ar
 from . import work_log as wl
 from . import memory as mem
 from .ask_drafts import cited_handles
@@ -66,7 +67,8 @@ LIST_OFFSET_MOST = 10_000_000
 MEASURE_ROUTES = frozenset({
     "/api/me", "/api/home", "/api/home/bundle", "/api/home/needs", "/api/sidebar", "/api/briefing", "/api/briefing/items",
     "/api/briefing/pages", "/api/briefing/unjudged", "/api/suggestions", "/api/insights",
-    "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health", "/api/labour",
+    "/api/insight-news", "/api/alert-kinds", "/api/late", "/api/data-health",
+    "/api/data-health/export", "/api/labour",
     "/api/my-work", "/api/suggest",
     "/api/biz/page", "/api/records/list", "/api/records/views", "/api/brief/meetings", "/api/brief/weekly", "/api/team", "/api/workload",
     "/api/workload/grants", "/api/approvals", "/api/replies", "/api/autopilot",
@@ -112,7 +114,7 @@ def service_route(session: Any, method: str, path: str) -> bool:
 # (``integrations.teams_delegated.finish``)
 PUBLIC_ROUTES = frozenset({("GET", "/api/auth/config"), ("POST", "/api/auth/dev-login"),
                            ("GET", "/api/health"), ("GET", "/api/ready"),
-                           ("GET", "/api/teams/callback")})
+                           ("GET", "/api/teams/callback"), ("POST", "/graph/notify")})
 # the loopback addresses a deploy's probe of /api/ready comes from (never through Caddy,
 # which answers /api/ready itself and adds X-Forwarded-For to everything it proxies)
 LOOPBACK = frozenset({"127.0.0.1", "::1"})
@@ -275,6 +277,8 @@ WRITE_SCREENS: dict[str, frozenset[str]] = {
     "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home"})}
 # Renaming, pinning or deleting an Ask conversation changes none of the reader's screens.
 CHAT_WRITES = "/api/ask/chats/"
+# Explicitly stopping an Ask run changes none of the reader's screens.
+ASK_RUN_WRITES = "/api/ask/runs/"
 # Who besides the owner reads the reliability alarms: the Team view's readers (object ids or
 # addresses), one list for both (operator_api.team_view, 2026-11-11).
 OPS_READERS_ENV = "PLX_TEAM_VIEW_READERS"
@@ -471,6 +475,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                secure_cookie: bool = True) -> FastAPI:
     """``auth_config``: the public sign-in configuration (``AuthConfig`` fields beyond the
     authenticator's own mode and dev-login switch)."""
+    center = EventCenter(backend)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            center.shutdown()
+
     app = FastAPI(title="PLX Workbench app API", version=m.API_VERSION,
                   description="Workbench API for the web app. Every route but "
                               "auth/config, auth/dev-login and health needs a signed-in "
@@ -478,12 +491,15 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                               "operator_api/models.py by `python3 -m operator_api openapi "
                               "--write`; never edit openapi.json by hand.",
                   docs_url=None, redoc_url=None, openapi_url=None,
-                  default_response_class=JSONResponse)
+                  default_response_class=JSONResponse, lifespan=lifespan)
     app.state.backend, app.state.auth = backend, auth
-    center = EventCenter(backend)
     app.state.event_center = center
-    app.add_middleware(BodyLimit, limit=BODY_MAX, limits={"/api/ask": ASK_JSON_MAX},
+    from .graph_notify import GRAPH_NOTIFY_BODY_MAX, GRAPH_NOTIFY_PATH, register_graph_notify_route
+    app.add_middleware(BodyLimit, limit=BODY_MAX,
+                       limits={"/api/ask": ASK_JSON_MAX,
+                               GRAPH_NOTIFY_PATH: GRAPH_NOTIFY_BODY_MAX},
                        streamed=STREAMED)
+    register_graph_notify_route(app, backend)
     # a read whose connection closes cancels its work (``request_cancel``)
     from .request_cancel import CancelOnDisconnect
     app.add_middleware(CancelOnDisconnect)
@@ -504,6 +520,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     app.state.page_latency = pages
     feedback_store = getattr(backend, "feedback_store", None) \
         or fb.FeedbackStore.for_backend(backend)
+    if getattr(backend, "feedback_store", None) is None:
+        backend.feedback_store = feedback_store
     app.state.feedback = feedback_store
     from operating import measure_candidates as _mc_mod
     candidate_store = getattr(backend, "candidate_store", None) \
@@ -512,6 +530,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     # The work log (``operator_api.work_log``): every path below appends what it did.
     work = getattr(backend, "work_log", None) or wl.WorkLog.for_backend(backend)
     app.state.work_log = work
+    ask_runs = ar.AskRunRegistry()
+    app.state.ask_runs = ask_runs
     if getattr(backend, "work_log", None) is None:
         backend.work_log = work     # the Ask drafts' cards read the reader's kept Asks
     mailbox = getattr(backend, "_mailbox", None) or (lambda who: who.email)
@@ -646,7 +666,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             line["src"] = src
         latency_log.info(json.dumps(line))
         if request.method == "GET" and path.startswith("/api/") and path not in (
-                "/api/health", "/api/ready", "/api/ask") and response.status_code < 500:
+                "/api/health", "/api/ready", "/api/ask",
+                "/api/ask/runs/{conversation_id}/stream") and response.status_code < 500:
             pages.add(ms)
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -693,7 +714,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             wrote = getattr(backend, "reader_wrote", None)
             if wrote is not None:
                 screens = WRITE_SCREENS.get(request.url.path, frozenset() if request.url.path
-                                            .startswith(CHAT_WRITES) else None)
+                                            .startswith((CHAT_WRITES, ASK_RUN_WRITES)) else None)
                 wrote(who, screens)
                 request.state.plx_wrote = (who, screens)
         return who
@@ -913,16 +934,20 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             door = getattr(request.state, "plx_door", None)
             checked = beat = time.monotonic()
             try:
+                if center.stopping:
+                    return
                 yield sse("release", {"release": code_version()})
                 if door:
                     yield sse("door", {"door": door})
-                while not await request.is_disconnected():
+                while not center.stopping and not await request.is_disconnected():
                     poll_s = EVENTS_POLL_SECONDS
                     item = None
                     try:
                         item = await asyncio.wait_for(q.get(), timeout=poll_s)
                     except asyncio.TimeoutError:
                         pass
+                    if center.is_stop(item) or center.stopping:
+                        break
                     if item is not None:
                         yield sse(item[0], item[1])
                     now = time.monotonic()
@@ -959,99 +984,229 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                       for name, model in m.ASK_EVENTS.items()}}}}},
         401: {"model": m.ErrorResponse}, 422: {"model": m.ErrorResponse}}
 
+    def _run_ask_events(who: Reader, body: m.AskRequest,
+                        emit: Callable[[str, Any], None],
+                        cancelled: Callable[[], bool]) -> None:
+        """Execute one Ask turn and emit masked SSE events through ``emit``, writing the
+        finished answer (or failure) to the work log even if no HTTP stream is attached."""
+        started, steps = time.perf_counter(), []
+        failed: Optional[str] = None
+        answered = False
+        try:
+            does = body.clarified is None and (body.instruction is not None
+                                               or body.mode == "do") \
+                and not getattr(who.session, "canary", False)
+            events = (backend.instruct_ask(who, body) if does
+                      else asks_or_hands_off(who, body))
+            held: list[str] = []
+            whole: Optional[str] = None
+            sent_text: Optional[str] = None
+            for event, payload in itertools.chain(events, [("", None)]):
+                if cancelled() and not answered:
+                    break
+                if held and event != "token":
+                    for word in re.findall(r"^\s+|\S+\s*", mask_served("".join(held))):
+                        emit("token", m.TokenEvent(text=word))
+                    held = []
+                if whole is not None and event != "token":
+                    full = mask_served(whole)
+                    if full.rstrip() != (sent_text or "").rstrip():
+                        sent_text = full
+                        emit("token", m.TokenEvent(text=sent_text, whole=True))
+                    whole = None
+                if event == "token" and getattr(payload, "whole", False):
+                    held, whole = [], payload.text
+                    ended = re.match(r"(?s).*\s", whole)
+                    part = mask_served(ended.group(0)) if ended is not None else ""
+                    if part.strip() and not (sent_text or "").startswith(part):
+                        sent_text = part
+                        emit("token", m.TokenEvent(text=part, whole=True))
+                    if ended is not None and ended.group(0) == whole:
+                        whole = None
+                    continue
+                if event == "token":
+                    held.append(payload.text)
+                    continue
+                if event not in m.ASK_EVENTS:
+                    continue
+                if event == "status":
+                    steps.append({"step": payload.step, "message": payload.message,
+                                  "elapsed_ms": payload.elapsed_ms})
+                if event == "answer":
+                    answered = True
+                    from . import answer_cost
+                    spent = answer_cost.take(payload.answer_id)
+                    notes.ask(who, payload, review={
+                        "steps": steps[:40],
+                        "stream_ms": int((time.perf_counter() - started) * 1000),
+                        **({"cost": spent} if spent else {})})
+                emit(event, payload)
+            if cancelled() and not answered:
+                emit("error", m.ErrorBody(
+                    code="stopped", message="Stopped. Ask again whenever you're ready."))
+        except UserFacing as error:
+            if cancelled():
+                emit("error", m.ErrorBody(
+                    code="stopped", message="Stopped. Ask again whenever you're ready."))
+            else:
+                failed = error.code
+                emit("error", m.ErrorBody(code=error.code, message=error.message))
+        except TimeoutError:
+            failed = BUSY.code
+            emit("error", m.ErrorBody(code=BUSY.code, message=BUSY.message))
+        except (KeyError, LookupError):
+            failed = "not_found"
+            emit("error", m.ErrorBody(code="not_found",
+                                      message=MESSAGES["not_found"]))
+        except ValueError:
+            failed = "invalid_request"
+            emit("error", m.ErrorBody(code="invalid_request",
+                                      message=MESSAGES["invalid_request"]))
+        except Exception as error:  # noqa: BLE001 - plain words, never a trace
+            if cancelled():
+                emit("error", m.ErrorBody(
+                    code="stopped", message="Stopped. Ask again whenever you're ready."))
+            else:
+                incident = _incident(error, "/api/ask")
+                failed = f"internal:{incident}"
+                emit("error", m.ErrorBody(
+                    code="internal", message=MESSAGES["internal"].format(incident=incident)))
+        finally:
+            if failed and not cancelled():
+                notes.ask_failed(who, body, failed, steps=steps[:40], stream_ms=int(
+                    (time.perf_counter() - started) * 1000))
+
     @app.post("/api/ask", tags=["ask"], responses=ask_doc, response_class=StreamingResponse)
     def ask(body: m.AskRequest, request: Request,
             who: Reader = Depends(reader)) -> StreamingResponse:
-        """Ask a question; the answer streams as server-sent events."""
-        def stream() -> Iterator[str]:
-            # The steps taken and the time
-            started, steps = time.perf_counter(), []
-            failed: Optional[str] = None
-            try:
-                # one box, no text router: the person's own pick (``mode``, the "Do it"
-                # button) or a continued instruction goes to the instruction engine
-                # (``instruct_api``); every other line to the Ask, whose model gives the
-                # line to the engine itself when it asks for one of the engine's drafts
-                # (``plx.hand_off``, ``asks_or_hands_off``)
-                # a service session (the Ask canary, the page measure) is only answered:
-                # never the instruction engine, so nothing is drafted or prepared for anyone
-                does = body.clarified is None and (body.instruction is not None
-                                                   or body.mode == "do") \
-                    and not getattr(who.session, "canary", False)
-                events = (backend.instruct_ask(who, body) if does
-                          else asks_or_hands_off(who, body))
-                # the answer's words are held until the next event and masked as one text:
-                # a credential split over two words is still masked (``sse`` masks each).
-                # A whole token (the answer so far in full, ``simple_ask.Streamed``) is
-                # masked whole and sent at once, its last word held back until a later
-                # token or the next event ends it, so the reply streams as it is written
-                held: list[str] = []
-                whole: Optional[str] = None   # the last whole text, not yet sent in full
-                sent: Optional[str] = None    # the last whole text sent (masked)
-                for event, payload in itertools.chain(events, [("", None)]):
-                    if held and event != "token":
-                        for word in re.findall(r"^\s+|\S+\s*", mask_served("".join(held))):
-                            yield sse("token", m.TokenEvent(text=word))
-                        held = []
-                    if whole is not None and event != "token":
-                        full = mask_served(whole)
-                        if full.rstrip() != (sent or "").rstrip():   # a new text, not a trim
-                            sent = full
-                            yield sse("token", m.TokenEvent(text=sent, whole=True))
-                        whole = None
-                    if event == "token" and getattr(payload, "whole", False):
-                        held, whole = [], payload.text
-                        ended = re.match(r"(?s).*\s", whole)
-                        part = mask_served(ended.group(0)) if ended is not None else ""
-                        # never the same text again, nor a cut of what was already sent
-                        if part.strip() and not (sent or "").startswith(part):
-                            sent = part
-                            yield sse("token", m.TokenEvent(text=part, whole=True))
-                        if ended is not None and ended.group(0) == whole:
+        """Ask a question; the answer streams as server-sent events.
+
+        User runs execute decoupled from the HTTP connection so a page reload or tab close
+        never drops an in-flight answer; only an explicit Stop request cancels it."""
+        if getattr(who.session, "canary", False):
+            # Service sessions (canary / page measure) run inline with no registry or work log.
+            def stream() -> Iterator[str]:
+                out: list[str] = []
+                # Yield inline through kept_alive as before.
+                started, steps = time.perf_counter(), []
+                failed: Optional[str] = None
+                try:
+                    events = asks_or_hands_off(who, body)
+                    held: list[str] = []
+                    whole: Optional[str] = None
+                    sent_text: Optional[str] = None
+                    for event, payload in itertools.chain(events, [("", None)]):
+                        if held and event != "token":
+                            for word in re.findall(r"^\s+|\S+\s*", mask_served("".join(held))):
+                                yield sse("token", m.TokenEvent(text=word))
+                            held = []
+                        if whole is not None and event != "token":
+                            full = mask_served(whole)
+                            if full.rstrip() != (sent_text or "").rstrip():
+                                sent_text = full
+                                yield sse("token", m.TokenEvent(text=sent_text, whole=True))
                             whole = None
-                        continue
-                    if event == "token":
-                        held.append(payload.text)
-                        continue
-                    if event not in m.ASK_EVENTS:
-                        continue
-                    if event == "status":
-                        steps.append({"step": payload.step, "message": payload.message,
-                                      "elapsed_ms": payload.elapsed_ms})
-                    if event == "answer":
-                        from . import answer_cost
-                        spent = answer_cost.take(payload.answer_id)
-                        notes.ask(who, payload, review={
-                            "steps": steps[:40],
-                            "stream_ms": int((time.perf_counter() - started) * 1000),
-                            **({"cost": spent} if spent else {})})
-                    yield sse(event, payload)
-            except UserFacing as error:
-                failed = error.code
-                yield sse("error", m.ErrorBody(code=error.code, message=error.message))
-            except TimeoutError:
-                failed = BUSY.code
-                yield sse("error", m.ErrorBody(code=BUSY.code, message=BUSY.message))
-            except (KeyError, LookupError):
-                failed = "not_found"
-                yield sse("error", m.ErrorBody(code="not_found",
-                                               message=MESSAGES["not_found"]))
-            except ValueError:
-                failed = "invalid_request"
-                yield sse("error", m.ErrorBody(code="invalid_request",
-                                               message=MESSAGES["invalid_request"]))
-            except Exception as error:  # noqa: BLE001 - plain words, never a trace
-                incident = _incident(error, "/api/ask")
-                failed = f"internal:{incident}"
-                yield sse("error", m.ErrorBody(
-                    code="internal", message=MESSAGES["internal"].format(incident=incident)))
-            finally:
-                if failed:
-                    notes.ask_failed(who, body, failed, steps=steps[:40], stream_ms=int(
-                        (time.perf_counter() - started) * 1000))
-        sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
-        return StreamingResponse(stream_encoding(request.headers, kept_alive(stream()), sent),
-                                 media_type="text/event-stream", headers=sent)
+                        if event == "token" and getattr(payload, "whole", False):
+                            held, whole = [], payload.text
+                            ended = re.match(r"(?s).*\s", whole)
+                            part = mask_served(ended.group(0)) if ended is not None else ""
+                            if part.strip() and not (sent_text or "").startswith(part):
+                                sent_text = part
+                                yield sse("token", m.TokenEvent(text=part, whole=True))
+                            if ended is not None and ended.group(0) == whole:
+                                whole = None
+                            continue
+                        if event == "token":
+                            held.append(payload.text)
+                            continue
+                        if event not in m.ASK_EVENTS:
+                            continue
+                        if event == "status":
+                            steps.append({"step": payload.step, "message": payload.message,
+                                          "elapsed_ms": payload.elapsed_ms})
+                        yield sse(event, payload)
+                except UserFacing as error:
+                    failed = error.code
+                    yield sse("error", m.ErrorBody(code=error.code, message=error.message))
+                except TimeoutError:
+                    failed = BUSY.code
+                    yield sse("error", m.ErrorBody(code=BUSY.code, message=BUSY.message))
+                except (KeyError, LookupError):
+                    failed = "not_found"
+                    yield sse("error", m.ErrorBody(code="not_found",
+                                                   message=MESSAGES["not_found"]))
+                except ValueError:
+                    failed = "invalid_request"
+                    yield sse("error", m.ErrorBody(code="invalid_request",
+                                                   message=MESSAGES["invalid_request"]))
+                except Exception as error:  # noqa: BLE001 - plain words, never a trace
+                    incident = _incident(error, "/api/ask")
+                    failed = f"internal:{incident}"
+                    yield sse("error", m.ErrorBody(
+                        code="internal", message=MESSAGES["internal"].format(incident=incident)))
+                finally:
+                    _ = (out, failed, steps, started)
+            sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
+            return StreamingResponse(stream_encoding(request.headers, kept_alive(stream()), sent),
+                                     media_type="text/event-stream", headers=sent)
+
+        conversation_id = body.conversation_id or secrets.token_hex(8)
+        run_body = (body if body.conversation_id == conversation_id
+                    else body.model_copy(update={"conversation_id": conversation_id}))
+
+        def runner(run: ar.AskRun) -> None:
+            _run_ask_events(
+                who,
+                run_body,
+                lambda ev, pl: run.publish(ev, pl, sse(ev, pl)),
+                run.cancel.is_set,
+            )
+
+        run = ask_runs.start(who.key, conversation_id, body.question, runner)
+        sent = {
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+            "X-PLX-Conversation-Id": conversation_id,
+        }
+        return StreamingResponse(
+            stream_encoding(request.headers, run.subscribe(every=KEEP_ALIVE_SECONDS), sent),
+            media_type="text/event-stream",
+            headers=sent,
+        )
+
+    @app.get("/api/ask/runs/{conversation_id}/stream", tags=["ask"],
+             responses={**ask_doc, 404: {"model": m.ErrorResponse}},
+             response_class=StreamingResponse)
+    def ask_run_stream(request: Request,
+                       conversation_id: str = PathParam(..., pattern=r"^[A-Za-z0-9_-]{1,80}$"),
+                       who: Reader = Depends(reader)) -> Response:
+        """Reattach to an in-flight (or just-finished) Ask run for one of your conversations."""
+        run = ask_runs.get(who.key, conversation_id)
+        if run is None:
+            return problem("not_found", 404)
+        sent = {
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+            "X-PLX-Conversation-Id": conversation_id,
+        }
+        stream = run.subscribe(
+            snapshot=True,
+            every=KEEP_ALIVE_SECONDS,
+            make_token_frame=lambda text, whole: sse("token", m.TokenEvent(text=text, whole=whole)),
+        )
+        return StreamingResponse(
+            stream_encoding(request.headers, stream, sent),
+            media_type="text/event-stream",
+            headers=sent,
+        )
+
+    @app.post("/api/ask/runs/{conversation_id}/stop", response_model=m.AskRunStop, tags=["ask"],
+              responses={401: {"model": m.ErrorResponse}})
+    def ask_run_stop(conversation_id: str = PathParam(..., pattern=r"^[A-Za-z0-9_-]{1,80}$"),
+                     who: Reader = Depends(reader)) -> m.AskRunStop:
+        """Explicitly stop an in-flight Ask run for one of your conversations."""
+        stopped = ask_runs.stop(who.key, conversation_id)
+        return m.AskRunStop(stopped=stopped, conversation_id=conversation_id)
 
     def ask_files() -> Any:
         """The store of streamed uploads: the backend's own (the Ask reads from it), else one
@@ -1192,23 +1347,29 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     def data_health(who: Reader = Depends(reader),
                     check: Optional[str] = Query(None, max_length=80),
                     offset: int = Query(0, ge=0, le=LIST_OFFSET_MOST),
-                    limit: int = Query(25, ge=1, le=100)) -> m.DataHealth:
+                    limit: int = Query(25, ge=1, le=100),
+                    q: Optional[str] = Query(None, max_length=200),
+                    object_type: Optional[str] = Query(None, max_length=80)) -> m.DataHealth:
         """Every data-health check: the findings you may see, and how many more it found on
         records you may not open (counted, never named). An Admin page: the owner and the
         Team readers only, as its menu entry (403 for every other reader). ``check``: one
-        check's findings from ``offset`` (a page of them), cut from the page's one read."""
+        check's findings from ``offset`` (a page of them), cut from the page's one read;
+        optional ``q`` and ``object_type`` filter across all rows before slicing."""
         if not ops_reader(who):
             raise UserFacing("forbidden", "Only the owner and the Team readers see data "
                              "health.", 403)
         from . import data_health as dh
         if check is None:
             return backend.data_health(who)   # open counts only: findings are read per check
-        return dh.window(backend.data_health(who, check), check, offset, limit)
+        return dh.window(backend.data_health(who, check), check, offset, limit,
+                         q=q, object_type=object_type)
 
     @app.get("/api/data-health/export", tags=["home"],
              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse}})
     def data_health_export(who: Reader = Depends(reader),
-                           check: Optional[str] = Query(None, max_length=80)) -> Response:
+                           check: Optional[str] = Query(None, max_length=80),
+                           q: Optional[str] = Query(None, max_length=200),
+                           object_type: Optional[str] = Query(None, max_length=80)) -> Response:
         """The findings you may see, one check's or all, as a spreadsheet (CSV): the same
         rows the page lists, never more."""
         if not ops_reader(who):
@@ -1223,7 +1384,7 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if full.status != "read":
             raise UserFacing("page_unavailable", "The checks couldn't be read just now.", 503)
         buf = io.StringIO()
-        csv.writer(buf).writerows(dh.export_rows(full, check))
+        csv.writer(buf).writerows(dh.export_rows(full, check, q=q, object_type=object_type))
         name = "data-health" + (f"-{re.sub(r'[^a-z0-9_-]', '', check.lower())}" if check else "")
         return Response(buf.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{name}.csv"',
@@ -1735,6 +1896,40 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         sent = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"}
         return StreamingResponse(stream_encoding(request.headers, body(), sent),
                                  media_type="application/x-ndjson", headers=sent)
+
+    @app.post("/api/insights/save-answer", response_model=m.InsightAnswerPage, tags=["insights"],
+              responses=errs)
+    def insight_save_answer(body: m.InsightAnswerSave, who: Reader = Depends(reader)) -> Response:
+        """Save a whole Ask answer (title, summary, charts, and queries or catalogue measures)
+        as one cohesive Insights page strictly scoped to the signed-in reader."""
+        out = _insights().insight_save_answer(who, body)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/insights/pages", response_model=m.InsightAnswerPageList, tags=["insights"],
+             responses={401: {"model": m.ErrorResponse}})
+    def insight_pages_list(who: Reader = Depends(reader)) -> Response:
+        """List saved Ask answer pages owned by the signed-in reader."""
+        out = _insights().insight_pages_list(who)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/insights/pages/{page_id}", response_model=m.InsightAnswerPage, tags=["insights"],
+             responses=errs)
+    def insight_page_get(page_id: str = PathParam(pattern=r"^p[a-f0-9]{12}$"),
+                         who: Reader = Depends(reader)) -> Response:
+        """Read one saved Ask answer page owned by the signed-in reader."""
+        out = _insights().insight_page_get(who, page_id)
+        if out is None:
+            return problem("not_found", 404)
+        return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+    @app.delete("/api/insights/pages/{page_id}", response_model=m.InsightDeleted, tags=["insights"],
+                responses=errs)
+    def insight_page_delete(page_id: str = PathParam(pattern=r"^p[a-f0-9]{12}$"),
+                            who: Reader = Depends(reader)) -> Response:
+        """Remove one of your saved Ask answer pages and all of its tiles."""
+        if not _insights().insight_page_delete(who, page_id):
+            return problem("not_found", 404)
+        return JSONResponse(m.InsightDeleted(deleted=True).model_dump(mode="json"))
 
     @app.get("/api/insights/{insight_id}", response_model=m.InsightResult, tags=["insights"],
              responses=errs)
@@ -3093,6 +3288,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if not rows:   # kept, but not openable to this reader now (it cites a source)
             raise UserFacing("memory_refused", mem.WRITE_REFUSED["unavailable"], 503)
         item = _memory_item(rows[0])
+        from . import simple_ask
+        simple_ask.WARM.note_memory_changed()
         return JSONResponse(item.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/memory", response_model=m.MemoryItem, tags=["work-log"],
@@ -3125,6 +3322,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if store is None or getattr(who.session, "view_as", False) \
                 or not store.done(who, item_id):
             return problem("not_found", 404)
+        from . import simple_ask
+        simple_ask.WARM.note_memory_changed()
         return JSONResponse(m.MemoryForgotten(forgotten=True).model_dump(mode="json"))
 
     @app.delete("/api/memory/{item_id}", response_model=m.MemoryForgotten, tags=["work-log"],
@@ -3136,6 +3335,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if store is None or getattr(who.session, "view_as", False) \
                 or not store.forget(who, item_id):
             return problem("not_found", 404)
+        from . import simple_ask
+        simple_ask.WARM.note_memory_changed()
         return JSONResponse(m.MemoryForgotten(forgotten=True).model_dump(mode="json"))
 
     @app.get("/api/work-log", response_model=m.WorkLogPage, tags=["work-log"],
@@ -3209,7 +3410,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         if not wl.valid_thread(thread):
             return problem("not_found", 404)
         rows, total = work.events(reader=who.key, thread=thread, limit=200)
-        if not rows:
+        active_run = None
+        if thread.startswith("ask:"):
+            live = ask_runs.get(who.key, thread[len("ask:"):])
+            if live is not None and not live.done:
+                active_run = m.AskActiveRun(**live.active_summary())
+        if not rows and active_run is None:
             return problem("not_found", 404)
         ids = {r["object_id"] for e in rows for r in e["records"]}
         related: dict[int, dict] = {}
@@ -3218,13 +3424,14 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 if e["thread"] != thread:
                     related[e["seq"]] = e
         meta = work._meta(who.key, thread)
+        resumed = kept_turns(who, wl.resume(
+            thread, [{**r, "seq": r["seq"]} for r in rows]))
         out = m.WorkLogThread(
             thread=thread, name=meta["name"], pinned=meta["pinned"], case_id=meta["case_id"],
             closed_at=meta["closed_at"], events=[_work_event(r, who, False) for r in rows],
             related=[_work_event(r, who, False)
                      for r in sorted(related.values(), key=lambda e: -e["seq"])[:20]],
-            resume=m.WorkLogResume(**kept_turns(who, wl.resume(
-                thread, [{**r, "seq": r["seq"]} for r in rows]))))
+            resume=m.WorkLogResume(**resumed, active_run=active_run))
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     def kept_turns(who: Reader, resumed: dict) -> dict:
@@ -3241,6 +3448,10 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 turn["answer"] = None
                 turn["withheld"] = ("A source of this answer is no longer open to you. Ask "
                                     "again to see what you can open now.")
+            elif isinstance(turn.get("answer"), dict):
+                turn["answer"].pop("_kept", None)
+                turn["answer"].pop("_cited", None)
+                turn["answer"].pop("_review", None)
         return resumed
 
     @app.post("/api/work-log/threads/{thread:path}", response_model=m.WorkLogThread,
@@ -3276,8 +3487,36 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         from . import simple_ask
         simple_ask.ready(backend, who)   # the next question starts on a ready session
         found = work.chats(who.key, q=q, limit=limit)
+        chats_list = [dict(c) for c in (found or ())]
+        if found is not None:
+            active = ask_runs.active_for(who.key)
+            if active:
+                words = [w.lower() for w in (q or "").split()[:8]]
+                by_id = {c["conversation_id"]: c for c in chats_list}
+                for live in active:
+                    existing = by_id.get(live.conversation_id)
+                    if existing is not None:
+                        existing["running"] = True
+                        if live.started_at > existing["last_at"]:
+                            existing["last_at"] = live.started_at
+                    else:
+                        title = (live.question or "Untitled")[:120]
+                        if words and any(w not in title.lower() for w in words):
+                            continue
+                        chats_list.append({
+                            "conversation_id": live.conversation_id,
+                            "title": title,
+                            "named": False,
+                            "pinned": False,
+                            "questions": 1,
+                            "last_at": live.started_at,
+                            "running": True,
+                        })
+                chats_list.sort(key=lambda c: (bool(c.get("pinned")), str(c.get("last_at") or "")),
+                                reverse=True)
+                chats_list = chats_list[:limit]
         out = m.AskChats(available=found is not None,
-                         chats=[m.AskChat(**c) for c in found or ()])
+                         chats=[m.AskChat(**c) for c in chats_list])
         return JSONResponse(out.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
     @app.post("/api/ask/chats/{conversation_id}", response_model=m.AskChats, tags=["ask"],

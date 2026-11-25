@@ -40,6 +40,9 @@ ENTITY_TYPES = {"Customer": ("customer", ("name",)), "Supplier": ("supplier", ("
                 # documents people ask for by number: codes only, never their text
                 "Receipt": ("receipt", ()), "SalesInvoice": ("sales_invoice", ()),
                 "Shipment": ("shipment", ()), "SupplierInvoice": ("supplier_invoice", ()),
+                "SalesCreditMemo": ("credit_note", ()),
+                "PurchaseCreditMemo": ("credit_note", ()),
+                "PurchaseInvoice": ("purchase_invoice", ()),
                 "PackingSlip": ("packing_slip", ()),
                 "CertificateOfAnalysis": ("certificate_of_analysis", ()),
                 # what people call a conversation, a task or a file by: its own title.

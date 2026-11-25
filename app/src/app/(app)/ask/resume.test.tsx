@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 // /ask?c=<conversation>: a conversation whose read fails says so with a way to try again,
 // and a second try that reads it shows its turns
 const api = vi.hoisted(() => ({ getWorkThread: vi.fn(), getAskChats: vi.fn(() => Promise.resolve({ available: true, chats: [] })) }));
-const thread = vi.hoisted(() => ({ seed: vi.fn() }));
+const thread = vi.hoisted(() => ({ seed: vi.fn(), select: vi.fn(() => false) }));
 vi.mock("@/lib/api", async (orig) => ({ ...(await orig<object>()), ...api }));
 vi.mock("@/components/shell", async (orig) => ({
   ...(await orig<typeof import("@/components/shell")>()),
@@ -17,7 +17,9 @@ vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("
 vi.mock("@/lib/thread", () => ({
   askUrlKey: () => "",
   conversationOf: () => undefined,
-  useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: thread.seed }),
+  lastActiveAskId: () => null,
+  useAskRunning: () => ({ anyRunning: false, runningIds: new Set<string>(), runningChats: [], currentId: null }),
+  useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: thread.seed, select: thread.select, claimUrlKey: () => true, conversationId: null, runningIds: new Set<string>() }),
 }));
 
 import AskRoute from "./page";

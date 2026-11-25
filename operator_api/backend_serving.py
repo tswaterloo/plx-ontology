@@ -104,27 +104,42 @@ class ServingMixin:
                 type_order = "CASE e.type " + " ".join(
                     f"WHEN '{kind}' THEN {rank}" for kind, rank in SUGGEST_TYPE_RANK.items()
                 ) + " ELSE 9 END"
+                from operating.chunking.entities import fold as _fold
+                raw_words = q.strip().split()[-4:]
+                raw_by_folded: dict[str, set[str]] = {}
+                for start in range(len(raw_words)):
+                    tail = " ".join(raw_words[start:])
+                    folded_tail = _fold(tail)
+                    if len(folded_tail) >= 2:
+                        raw_by_folded.setdefault(folded_tail, set()).update(
+                            (tail, tail.upper(), tail.lower()))
                 for words, needle in phrases:
                     plain_needle = needle.replace("%", "").replace("_", "")
+                    codes = sorted({needle, needle.upper(),
+                                    *raw_by_folded.get(needle, ())})
+                    raw_lowers = sorted({c.lower() for c in codes})
                     # a near spelling of one or two words, never of a whole clause
                     fuzzy = len(needle) >= 4 and words <= 2
                     found = conn.execute(
                         "SELECT e.object_id, e.type, e.name, e.alias, e.audience_key, "
-                        "e.normalized = %(q)s AS exact, "
-                        "e.alias @> ARRAY[%(code)s]::text[] OR e.alias @> ARRAY[%(raw)s]::text[]"
-                        " AS code, e.normalized LIKE %(p)s AS prefix, "
+                        "(e.normalized = %(q)s OR lower(e.name) = ANY(%(raw_lowers)s::text[]))"
+                        " AS exact, "
+                        "(e.alias && %(codes)s::text[]) AS code, "
+                        "e.normalized LIKE %(p)s AS prefix, "
                         "e.normalized LIKE %(w)s AS word, "
                         "word_similarity(%(q)s, e.normalized) AS s "
                         "FROM search.entities e WHERE " + scope.clause("e") +
                         " AND e.object_id IS NOT NULL AND (e.normalized = %(q)s OR "
                         "e.normalized LIKE %(p)s OR e.normalized LIKE %(w)s OR "
-                        "e.alias @> ARRAY[%(code)s]::text[] OR e.alias @> ARRAY[%(raw)s]::text[]"
+                        "e.alias && %(codes)s::text[]"
                         + (" OR %(q)s <%% e.normalized" if fuzzy else "") +
-                        ") ORDER BY exact DESC, code DESC, prefix DESC, word DESC, "
+                        ") ORDER BY (e.normalized = %(q)s OR "
+                        "lower(e.name) = ANY(%(raw_lowers)s::text[]) OR "
+                        "e.alias && %(codes)s::text[]) DESC, prefix DESC, word DESC, "
                         + type_order + ", " + bc_pilot_object_sql("e.object_id")
                         + ", s DESC, length(e.name), e.name LIMIT %(n)s",
                         scope.params(q=needle, p=plain_needle + "%", w="% " + plain_needle + "%",
-                                     code=needle.upper(), raw=needle,
+                                     codes=codes, raw_lowers=raw_lowers,
                                      n=SUGGEST_ROWS)).fetchall()
                     rows += [(words, *row) for row in found]
                     strong = {r[1] for r in rows if any(r[6:10])}
@@ -455,7 +470,8 @@ class ServingMixin:
         again in the background), else the refusal. ``refresh`` False: a request that
         joined another's read (``_screen_read``), whose own refusal starts the one read
         again; the joiners start none beside it."""
-        if isinstance(error, errors.UserFacing) and error.code != errors.BUSY.code:
+        if isinstance(error, errors.UserFacing) and error.code not in (
+                errors.BUSY.code, "page_unavailable", "not_ready", "insight_not_ready"):
             before.cancel()
             raise error
         stale = self._stale_copy(key, held, before)

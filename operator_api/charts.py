@@ -43,9 +43,11 @@ ALIASES: dict[str, tuple[str, dict[str, Any]]] = {
 # ``shown`` of ``rows`` and ``omitted`` series, and the app's notes read them)
 MAX_PIE_SLICES = 8         # the rest one "All others" slice
 MAX_BINS = 40
+MAX_TIME_POINTS = 60       # daily/weekly time-series past this aggregate to weekly/monthly totals
 # kinds whose meaning is a whole: never of a result cut short
 WHOLE = frozenset({"pie", "donut", "waterfall", "histogram"})
 FACETED = frozenset({"bar", "line", "area", "waterfall", "kpi", "pie", "donut"})
+TIME_SERIES_KINDS = frozenset({"line", "area", "bar", "combo"})
 _CURRENCY_COL = re.compile(r"(^|_)(currency|currency_code|ccy)$", re.I)
 _CODE = re.compile(r"^[A-Z]{3}$")
 _NUMBER = re.compile(r"^-?[0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?$")
@@ -184,6 +186,32 @@ def draw(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         return None
 
 
+_ISO_DATE = re.compile(r"(?<![0-9-])(\d{4})-(\d{2})-(\d{2})(?![0-9T-])")
+_AMT_WORD = re.compile(r"\bAmt\b", re.I)
+
+
+def _plain_title(title: str) -> str:
+    """Format a chart title into plain English: expand abbreviated 'Amt' to 'Amount' and
+    replace bare ISO dates (2026-11-25) with '25 Nov 2026'."""
+    if not title:
+        return ""
+    from datetime import date
+
+    def _day(match: re.Match[str]) -> str:
+        try:
+            d = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return match.group(0)
+        return f"{d.day} {d.strftime('%b %Y')}"
+
+    def _amt(match: re.Match[str]) -> str:
+        word = match.group(0)
+        return "amount" if word.islower() else "Amount"
+
+    text = _AMT_WORD.sub(_amt, str(title))
+    return _ISO_DATE.sub(_day, text)
+
+
 def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
           title: str = "", as_of: Any = None, sql: Optional[str] = None,
           truncated: bool = False) -> dict[str, Any]:
@@ -211,7 +239,7 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         i = at[col]
         return row[i] if i < len(row) else None
 
-    out: dict[str, Any] = {"kind": kind, "title": str(title or "")[:200] or spec["y"][0],
+    out: dict[str, Any] = {"kind": kind, "title": _plain_title(str(title or ""))[:200] or spec["y"][0],
                            "x": spec.get("x") or "", "labels": [], "series": [],
                            "as_of": _text(as_of), "sql": sql, "spec": dict(spec),
                            "rows": len(rows), "partial": bool(truncated),
@@ -243,11 +271,132 @@ def build(spec: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]], *,
         raise NotDrawn("The value columns hold no numbers.")
     if kind == "scatter" and all(v is None for v in out.get("xs") or ()):
         raise NotDrawn("The label column of a scatter holds no numbers.")
+    if kind in TIME_SERIES_KINDS:
+        _aggregate_time_series(out)
     if kind in PERIODIC:
         labels = out["labels"] or [x for p in out.get("panels") or () for x in p["labels"]]
         out["open_period"] = open_period(labels, out["as_of"])
         out["first_period"] = first_period(labels, out["as_of"], sql)
     return out
+
+
+def _parse_iso_day(label: Any) -> Optional[Any]:
+    """Parse a strict ISO day label (YYYY-MM-DD) into a ``datetime.date``, else None."""
+    from datetime import date
+    m = _DAY.match(str(label or "").strip())
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _parse_iso_month(label: Any) -> Optional[tuple[int, int]]:
+    """Parse a strict ISO month label (YYYY-MM) into (year, month), else None."""
+    m = _MONTH.match(str(label or "").strip())
+    if not m:
+        return None
+    y, mo = int(m.group(1)), int(m.group(2))
+    return (y, mo) if 1 <= mo <= 12 else None
+
+
+def _bucket_series(labels: Sequence[str], series: Sequence[Mapping[str, Any]],
+                   bucket_fn: Any) -> tuple[list[str], list[dict[str, Any]]]:
+    """Aggregate ``labels`` and ``series`` into buckets keyed by ``bucket_fn(label)``,
+    summing non-null values with ``Decimal`` and preserving first-seen bucket order."""
+    order: dict[str, list[int]] = {}
+    for idx, lbl in enumerate(labels):
+        key = bucket_fn(lbl)
+        order.setdefault(key, []).append(idx)
+    new_labels = list(order.keys())
+    new_series: list[dict[str, Any]] = []
+    for s in series:
+        vals = s.get("values") or ()
+        agg_vals: list[Optional[float]] = []
+        for idxs in order.values():
+            present = [Decimal(repr(vals[i])) for i in idxs
+                       if i < len(vals) and vals[i] is not None]
+            agg_vals.append(float(sum(present, Decimal(0))) if present else None)
+        entry = {**s, "values": agg_vals}
+        new_series.append(entry)
+    return new_labels, new_series
+
+
+def _aggregate_one(labels: list[str], series: list[dict[str, Any]]
+                   ) -> tuple[list[str], list[dict[str, Any]], Optional[str]]:
+    """Aggregate one time-series (``labels``, ``series``) when it has more than
+    ``MAX_TIME_POINTS`` points into weekly (or monthly / yearly) totals.
+    Returns ``(labels, series, disclosure)``; unchanged with ``None`` disclosure when
+    below the cap or not a calendar time-series."""
+    from datetime import timedelta
+    n = len(labels)
+    if n <= MAX_TIME_POINTS:
+        return labels, series, None
+
+    # Case 1: ISO date labels (YYYY-MM-DD)
+    days = [_parse_iso_day(lbl) for lbl in labels]
+    if all(d is not None for d in days):
+        day_map = dict(zip(labels, days))
+        sorted_unique = sorted(set(days))
+        steps = {(b - a).days for a, b in zip(sorted_unique, sorted_unique[1:])}
+        is_weekly = len(sorted_unique) >= 2 and min(steps) == 7 and all(s % 7 == 0 for s in steps)
+
+        if not is_weekly:
+            # Try weekly buckets first (Monday start of ISO week, matching date_trunc('week', ...))
+            wk_labels, wk_series = _bucket_series(
+                labels, series,
+                lambda lbl: (day_map[lbl] - timedelta(days=day_map[lbl].weekday())).isoformat(),
+            )
+            if len(wk_labels) <= MAX_TIME_POINTS:
+                return wk_labels, wk_series, f"{n} daily points shown as {len(wk_labels)} weekly totals"
+            # Still over cap (> 60 weeks): aggregate to monthly buckets
+            mo_labels, mo_series = _bucket_series(
+                labels, series,
+                lambda lbl: f"{day_map[lbl].year:04d}-{day_map[lbl].month:02d}",
+            )
+            return mo_labels, mo_series, f"{n} daily points shown as {len(mo_labels)} monthly totals"
+
+        # Already weekly and > MAX_TIME_POINTS weeks -> aggregate to monthly totals
+        mo_labels, mo_series = _bucket_series(
+            labels, series,
+            lambda lbl: f"{day_map[lbl].year:04d}-{day_map[lbl].month:02d}",
+        )
+        return mo_labels, mo_series, f"{n} weekly points shown as {len(mo_labels)} monthly totals"
+
+    # Case 2: ISO month labels (YYYY-MM) with > MAX_TIME_POINTS months -> yearly totals
+    months = [_parse_iso_month(lbl) for lbl in labels]
+    if all(m is not None for m in months):
+        yr_labels, yr_series = _bucket_series(labels, series, lambda lbl: str(lbl).strip()[:4])
+        return yr_labels, yr_series, f"{n} monthly points shown as {len(yr_labels)} yearly totals"
+
+    return labels, series, None
+
+
+def _aggregate_time_series(out: dict[str, Any]) -> None:
+    """In-place explicit time-series aggregation for high-point charts (GG1c):
+    aggregates daily -> weekly (or monthly if > 60 weeks) and attaches a plain-English
+    disclosure in ``out['aggregation']`` with zero silent truncation."""
+    if out.get("panels"):
+        disclosures: list[str] = []
+        for panel in out["panels"]:
+            new_labels, new_series, note = _aggregate_one(panel["labels"], panel["series"])
+            if note:
+                panel["labels"] = new_labels
+                panel["series"] = new_series
+                disclosures.append(note)
+        if disclosures:
+            # If all panels share the same disclosure, show it once; else keep the first
+            unique = list(dict.fromkeys(disclosures))
+            out["aggregation"] = unique[0] if len(unique) == 1 else (
+                f"High-point series aggregated per panel ({unique[0]})"
+            )
+        return
+    new_labels, new_series, note = _aggregate_one(out["labels"], out["series"])
+    if note:
+        out["labels"] = new_labels
+        out["series"] = new_series
+        out["aggregation"] = note
 
 
 # a statement's last clause keeping only its first rows (a top-level LIMIT)
@@ -819,7 +968,8 @@ def _measure_of(args: Any) -> Optional[dict[str, Any]]:
         _sql, entry = measures.statement(args["measure"], args.get("by"), args.get("days"),
                                          args.get("compare", False), args.get("period"),
                                          args.get("against"), args.get("filter"),
-                                         args.get("unusual", False))
+                                         args.get("unusual", False),
+                                         parameters=args.get("parameters"))
         return dict(entry)
     except (ToolError, TypeError, ValueError):
         return None

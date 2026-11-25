@@ -373,6 +373,14 @@ def install(dsn: str, schema: str | None = None) -> list[str]:
         # once ``generic_records`` built them
         made += generic_views.make_views(write, schema,
                                          step=lambda f, what: step(write, f, what))
+        # daily AR snapshots (migration 0087): guarded views when the table exists
+        if write.execute("SELECT to_regclass(%s)",
+                         (f"{src}.ar_daily_snapshots",)).fetchone()[0] is not None:
+            from operating.pg import ar_daily_snapshots
+            res = step(write, lambda w: ar_daily_snapshots.ensure_views(w, schema=src),
+                       f"{dst}.ar_daily_snapshots")
+            if res and res.get("sql"):
+                made.append(f"{dst}.ar_daily_snapshots")
     if failed:
         raise InstallFailed("; ".join(failed))
     return made

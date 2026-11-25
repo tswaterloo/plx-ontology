@@ -30,7 +30,7 @@ import { readdirSync } from "node:fs";
 import { ApiError } from "@/lib/errors";
 import { join } from "node:path";
 import { PLACES } from "@/components/ui/glyphs";
-import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, NAV_SECTIONS, navFor, OpsAlarmBanner, recordOf, pageSources, personNotice, SidebarNav, TOOLBAR_PAGES } from "./shell";
+import { AccessBanner, AdminAlarm, DataAsOf, DevBanner, NAV_SECTIONS, navFor, OpsAlarmBanner, recordOf, pageSources, personNotice, SidebarNav, TabBar, TOOLBAR_PAGES } from "./shell";
 
 const me = (over: Record<string, unknown>) => ({
   status: "signed-in",
@@ -346,5 +346,35 @@ describe("the record a hovered link opens", () => {
   it("reads only a record page's own address and fails closed on anything else", () => {
     expect(recordOf("/object/PurchaseOrder/po%201?x=1")).toEqual({ type: "PurchaseOrder", id: "po 1" });
     for (const bad of [null, "", "/insights", "/object/", "/object/1bad/x", "https://x.test/object/Item/1", "/object/Item/%E0%A4%A"]) expect(recordOf(bad), String(bad)).toBeNull();
+  });
+});
+
+describe("mobile bottom tab bar", () => {
+  const origMatchMedia = window.matchMedia;
+  const mockWidth = (desktop: boolean) => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(min-width: 1024px)" ? desktop : false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+  };
+  afterEach(() => {
+    window.matchMedia = origMatchMedia;
+    auth.state = {};
+  });
+
+  it("uses a distinct accessible label for tab-more on mobile and omits the tab bar on desktop", () => {
+    auth.state = me({});
+    mockWidth(false);
+    const { unmount } = render(<TabBar />);
+    const more = screen.getByTestId("tab-more");
+    expect(more).toHaveAttribute("aria-label", "More navigation");
+    unmount();
+
+    mockWidth(true);
+    render(<TabBar />);
+    expect(screen.queryByTestId("tab-more")).toBeNull();
+    expect(screen.queryByTestId("tab-bar")).toBeNull();
   });
 });

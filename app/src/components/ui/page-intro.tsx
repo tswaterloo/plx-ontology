@@ -7,14 +7,14 @@ import { cn } from "@/lib/cn";
  * record it shows.
  */
 export const PAGE_INTROS = {
-  "/": "What needs you today.",
+  "/": "",
   "/ask": "Ask about anything you can open, or ask for a chart, a document or a quote.",
   "/?show=alerts": "Alerts from the rules you set and the records you follow.",
   "/?show=late": "Every purchase order past its due date, with the date the supplier gave, if any.",
-  "/assist": "What is prepared for you, and what to do next.",
+  "/assist": "",
   "/meetings": "",
   "/team": "What people are working on and what waits on whom.",
-  "/insights": "Live charts, including every chart you pin from an answer.",
+  "/insights": "",
   "/records": "",
   "/orders": "Purchase orders, late first, and sales orders.",
   "/customers": "Every customer. The ones you opened lately and saved come first.",
@@ -24,7 +24,7 @@ export const PAGE_INTROS = {
   "/work-log": "What you did here, newest first, and the time it saved.",
   "/activity": "Each message and task you started here, and whether it went out.",
   "/help": "How the Workbench helps in your role.",
-  "/ops": "What is broken now, and what to do about it.",
+  "/ops": "",
   "/data-health": "Is the data complete, fresh and correct, system by system, with the problems first.",
   "/feedback": "Feedback you sent, and what became of it.",
 } as const satisfies Record<string, string>;

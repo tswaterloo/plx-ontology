@@ -6,17 +6,62 @@
 // passed to a colleague (on their list too, under their own access). An item no record
 // names a person for is on the whole role's list (pooled) until one of them takes it.
 
-import { useEffect, useState } from "react";
-import { ItemActions } from "@/components/autopilot/item-actions";
+import { Fragment, useEffect, useState } from "react";
+import { ItemActions, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
 import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { Button } from "@/components/ui/button";
+import { StyledSelect } from "@/components/ui/controls";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { getAutopilotColleagues, handAutopilotItem, setFollowing, takeAutopilotItem, type PreparedItem } from "@/lib/api";
 import { plainError } from "@/lib/errors";
-import { countedWords, formatDateTime } from "@/lib/format";
+import { countedWords, formatDateTime, objectHref } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
-export function AlertCard({ item, linked, onGone, onChanged, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged?: () => void; feedback?: React.ReactNode }) {
+/** Ensure any `/object/...` link carries its explicit `<Type>` segment (`/object/<Type>/<id>`). */
+export function canonicalObjectHref(href: string): string {
+  const m = /^\/object\/([^/?#]+)\/?([?#].*)?$/.exec(href);
+  if (!m) return href;
+  let decoded = m[1];
+  try {
+    decoded = decodeURIComponent(m[1]);
+  } catch {
+    return href;
+  }
+  const sep = decoded.indexOf(":");
+  if (sep <= 0) return href;
+  return `${objectHref(decoded.slice(0, sep), decoded)}${m[2] ?? ""}`;
+}
+
+/** Extract the raw `object_id` from `/object/<Type>/<id>` or legacy `/object/<id>` for Follow. */
+export function objectIdFromHref(href: string): string | null {
+  if (!href.startsWith("/object/")) return null;
+  const pathOnly = href.slice("/object/".length).split(/[?#]/, 1)[0].replace(/\/+$/, "");
+  if (!pathOnly) return null;
+  const parts = pathOnly.split("/");
+  const raw = parts.length >= 2 ? parts.slice(1).join("/") : parts[0];
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+export function AlertCard({
+  item,
+  linked,
+  onGone,
+  onChanged,
+  onOptimistic,
+  onRestore,
+  onFeedback,
+  feedback,
+}: {
+  item: PreparedItem;
+  linked?: boolean;
+  onGone: (id: string) => void;
+  onChanged?: () => void;
+  feedback?: React.ReactNode;
+} & OptimisticCallbacks) {
   const [passing, setPassing] = useState(false);
   const card = useProblemSlot();
   const parsedNote = noteParts(item.note ?? "");
@@ -26,19 +71,22 @@ export function AlertCard({ item, linked, onGone, onChanged, feedback }: { item:
     <li
       id={`prepared-${item.item_id}`}
       className={cn(
-        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
-        linked && "border-accent/70 ring-1 ring-accent/30",
+        "w-full space-y-3 py-1 transition-colors",
+        linked && "border-l-2 border-l-accent pl-3",
       )}
       data-testid="prepared-alert"
     >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-[14px] font-semibold text-fg">{item.subject || "From the records"}</span>
         {parsedNote.labels.map((l) => (
-          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
-            {l}
-          </p>
+          <Fragment key={l}>
+            <span className="text-faint" aria-hidden>·</span>
+            <p className="text-[11.5px] leading-4 text-faint" data-testid="prepared-label">
+              {l}
+            </p>
+          </Fragment>
         ))}
-        <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
+        <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
       </div>
       {mc ? (
         <>
@@ -74,25 +122,44 @@ export function AlertCard({ item, linked, onGone, onChanged, feedback }: { item:
       )}
       {(item.links ?? []).length > 0 && (
         <div className="flex flex-wrap gap-3 text-[13px]">
-          {(item.links ?? []).map((l) => (
-            <span key={l.href} className="inline-flex items-baseline gap-2">
-              <a href={l.href} {...(l.href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
-                {l.label}
-              </a>
-              {l.href.startsWith("/object/") && <Follow objectId={decodeURIComponent(l.href.slice("/object/".length))} label={l.label} />}
-            </span>
-          ))}
+          {(item.links ?? []).map((l) => {
+            const href = canonicalObjectHref(l.href);
+            const followId = objectIdFromHref(href);
+            return (
+              <span key={l.href} className="inline-flex items-baseline gap-2">
+                <a href={href} {...(href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
+                  {l.label}
+                </a>
+                {followId && <Follow objectId={followId} label={l.label} />}
+              </span>
+            );
+          })}
         </div>
       )}
       {item.handed_from && <p className="text-[12px] text-muted" data-testid="alert-handed-from">Passed to you by {item.handed_from}. Setting it aside clears it for them too.</p>}
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
         <div className="min-w-0">
           {item.pooled ? (
-            <Take itemId={item.item_id} onTaken={() => (onChanged ? onChanged() : onGone(item.item_id))} />
+            <Take
+              itemId={item.item_id}
+              onTaken={() => {
+                onFeedback?.("Added to your list");
+                if (onChanged) onChanged();
+                else onGone(item.item_id);
+              }}
+            />
           ) : card.provide(
             <>
-              <ItemActions item={item} onGone={onGone} setAsideOnly={!!item.handed_from} entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]} />
-              <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} />
+              <ItemActions
+                item={item}
+                onGone={onGone}
+                onOptimistic={onOptimistic}
+                onRestore={onRestore}
+                onFeedback={onFeedback}
+                setAsideOnly={!!item.handed_from}
+                entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]}
+              />
+              <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} onFeedback={onFeedback} />
             </>,
           )}
         </div>
@@ -123,7 +190,7 @@ function Take({ itemId, onTaken }: { itemId: string; onTaken: () => void }) {
   return (
     <div className="space-y-1">
       <Button size="sm" disabled={busy} onClick={() => void take()} data-testid="alert-take">
-        Take it
+        {busy ? "Taking..." : "Take it"}
       </Button>
       {problem}
     </div>
@@ -154,7 +221,7 @@ function Follow({ objectId, label }: { objectId: string; label: string }) {
   );
 }
 
-function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?: string; open: boolean; onClose: () => void }) {
+function PassOn({ itemId, handedTo, open, onClose, onFeedback }: { itemId: string; handedTo?: string; open: boolean; onClose: () => void; onFeedback?: (msg: string) => void }) {
   const [people, setPeople] = useState<{ key: string; name: string }[] | null>(null);
   const [pick, setPick] = useState("");
   const [to, setTo] = useState(handedTo ?? "");
@@ -186,7 +253,9 @@ function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?
   const hand = () =>
     run(async () => {
       await handAutopilotItem(itemId, pick);
-      setTo(people?.find((p) => p.key === pick)?.name ?? "a colleague");
+      const name = people?.find((p) => p.key === pick)?.name ?? "a colleague";
+      setTo(name);
+      onFeedback?.(`Passed to ${name}`);
       onClose();
     });
   return (
@@ -196,13 +265,13 @@ function PassOn({ itemId, handedTo, open, onClose }: { itemId: string; handedTo?
         <p className="text-[12px] text-muted">Nobody to pass it to.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <select className="h-8 border border-border bg-transparent px-2 text-[13px]" aria-label="Colleague" value={pick} onChange={(e) => setPick(e.target.value)}>
-            {people.map((p) => (
-              <option key={p.key} value={p.key}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <StyledSelect
+            ariaLabel="Colleague"
+            size="md"
+            value={pick}
+            onChange={setPick}
+            options={people.map((p) => ({ value: p.key, label: p.name }))}
+          />
           <Button size="sm" disabled={busy || !pick} onClick={() => void hand()}>
             Pass on
           </Button>

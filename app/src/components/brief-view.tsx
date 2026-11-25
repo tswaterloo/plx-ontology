@@ -179,8 +179,12 @@ export function BriefView({ brief, level = 1 }: { brief: Brief; eyebrow?: string
         }
         actions={
           ask && (
-            <Link href={ask} className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium" title="Ask for a checked summary">
-              <MessageCircle className="size-[15px]" strokeWidth={2} aria-hidden />
+            <Link
+              href={ask}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-3 text-[13px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 hover:border-border-strong hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98]"
+              title="Ask for a checked summary"
+            >
+              <MessageCircle className="size-[15px] text-muted" strokeWidth={2} aria-hidden />
               Summarise
             </Link>
           )

@@ -285,12 +285,20 @@ const TYPE_LABELS: Record<string, string> = {
   Customer: "Customer",
   Supplier: "Supplier",
   Vendor: "Supplier",
+  Product: "Product",
   Item: "Item",
+  FgItem: "Product",
+  Batch: "Batch",
   Lot: "Lot",
+  InventoryLot: "Lot",
   Person: "Person",
   Employee: "Person",
   Quote: "Quote",
   Shipment: "Shipment",
+  Receipt: "Receipt",
+  SupplierInvoice: "Supplier invoice",
+  PurchaseInvoice: "Supplier invoice",
+  RelSageApOpenDocument: "Supplier invoice",
   // short forms some payloads use (AtRisk.kind)
   po: "Purchase order",
   purchase_order: "Purchase order",
@@ -298,8 +306,13 @@ const TYPE_LABELS: Record<string, string> = {
   sales_order: "Customer order",
   customer: "Customer",
   supplier: "Supplier",
+  product: "Product",
   item: "Item",
+  batch: "Batch",
   lot: "Lot",
+  shipment: "Shipment",
+  receipt: "Receipt",
+  supplier_invoice: "Supplier invoice",
 };
 
 /** Server wording in a reader's words: "sales order" is a customer order everywhere. */
@@ -351,6 +364,14 @@ export function doorKey(href: string | null | undefined, type: string, objectId:
 /** The app route that opens a cited source. */
 export function sourceHref(handle: string): string {
   return `/source?handle=${encodeURIComponent(handle)}`;
+}
+
+/** Replaces raw ISO-8601 timestamps (including microseconds + timezone) in server notices with readable ET time. */
+export function humanizeIsoTimestamps(text: string): string {
+  return text.replace(
+    /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g,
+    (iso) => eastern(iso),
+  );
 }
 
 /**
@@ -573,16 +594,28 @@ export function recordKind(handle: string | null | undefined, label?: string | n
   return kindOf(l) ?? l[0].toUpperCase() + l.slice(1);
 }
 
+const RAW_GUID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24,})$/i;
+
+/** True when text is a raw GUID or long hex hash (never a human-readable record title). */
+export function isRawGuid(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const t = text.trim().replace(/^\{|\}$/g, "");
+  return RAW_GUID.test(t);
+}
+
 /** "PurchaseOrder" + "106093" -> "PO 106093"; a label that already says what it is stays. */
 export function recordLabel(type: string | null | undefined, label: string): string {
   // "PO PO100095" (a type word before a number that already carries it) is said once
   const l = label.trim().replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^(PO|SO)(?=\d)/, "$1 "); // "PO100095" reads as "PO 100095", like the rest
+  // never show a raw GUID or hash as a record title or link label
+  if (isRawGuid(l)) return typeLabel(type);
   // a linked order whose number its source left empty arrives as the bare prefix: say so
   if (/^(?:PO|SO)$/i.test(l)) return `${l.toUpperCase()} (no number on record)`;
   if (/^\d[\w-]*$/.test(l)) {
     if (/^PurchaseOrder$|^purchase_order$/.test(type ?? "")) return `PO ${l}`;
     if (/^SalesOrder$|^sales_order$/.test(type ?? "")) return `SO ${l}`;
     if (/^Lot$|^lot$/.test(type ?? "")) return `Lot ${l}`;
+    if (/^Batch$|^batch$/.test(type ?? "")) return `Batch ${l}`;
   }
   return l.replace(/^(PO|SO) (?=\1[- ]?\d)/i, "").replace(/^AO (AO-)/, "$1").replace(/^MO (AO-)/, "MO $1");
 }

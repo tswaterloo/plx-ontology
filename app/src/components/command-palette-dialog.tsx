@@ -1,14 +1,14 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { CornerDownLeft, Search } from "lucide-react";
+import { CornerDownLeft, Search, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { suggest } from "@/lib/api";
+import { isObjectType, suggest } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useShortcut } from "@/lib/platform";
 import { VERIFIED_EXAMPLES } from "@/lib/examples";
-import { recordLabel, safeHref, typeLabel } from "@/lib/format";
+import { objectHref, recordLabel, safeHref, typeLabel } from "@/lib/format";
 import { currentPageQuery, scopedToPage } from "@/lib/page-context";
 import { stashPending } from "@/lib/pending";
 import { useAuth } from "./auth";
@@ -67,14 +67,20 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   const [unsearched, setUnsearched] = useState(false);
   const [active, setActive] = useState(0);
   const list = useRef<HTMLUListElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   // the text the records shown were looked up for
   const settledFor = useRef("");
+  const openRef = useRef(open);
+  openRef.current = open;
 
   // reset on open; records as you type (debounced, the stale request cancelled)
   useEffect(() => {
     if (open) {
       setQ("");
       setRecords([]);
+      setUnsearched(false);
+      setSearching(false);
+      settledFor.current = "";
       setActive(0);
     }
   }, [open]);
@@ -132,12 +138,31 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
+  const recordRoute = (s: Arranged): string => {
+    const raw = safeHref(s.open_url);
+    if (raw) {
+      if (raw.startsWith("/object/")) {
+        const rest = raw.slice("/object/".length).split(/[?#]/, 1)[0];
+        const segs = rest.split("/").filter(Boolean);
+        if (segs.length === 1 && segs[0].includes(":")) {
+          const decoded = decodeURIComponent(segs[0]);
+          const kind = decoded.slice(0, decoded.indexOf(":"));
+          if (isObjectType(kind)) return objectHref(kind, decoded);
+        }
+      }
+      return raw;
+    }
+    if (/^(?:person|staff|employee)$/i.test(s.type)) return `/team?person=${encodeURIComponent(s.label)}`;
+    if (s.type && s.object_id && isObjectType(s.type)) return objectHref(s.type, s.object_id);
+    return "/";
+  };
+
   const choose = useCallback(
     (it: Item | undefined) => {
       if (!it) return;
       onOpenChange(false);
       if (it.kind === "go") router.push(it.href);
-      else if (it.kind === "record") router.push(safeHref(it.s.open_url) ?? "/");
+      else if (it.kind === "record") router.push(recordRoute(it.s));
       else {
         stashPending(it.q, []);
         // the page it was typed on goes with a line about it or an instruction ("reply to
@@ -159,6 +184,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
       } catch {
         found = [];
       }
+      if (!openRef.current) return;
       const exact = found.filter((s) => s.match === "exact");
       if (exact.length === 1) choose({ kind: "record", id: `rec-${exact[0].object_id}`, s: exact[0] });
       else if (exact.length > 1) {
@@ -179,6 +205,12 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
     } else if (e.key === "ArrowUp" || (e.ctrlKey && e.key === "p")) {
       e.preventDefault();
       setActive((a) => (flat.length ? (a - 1 + flat.length) % flat.length : 0));
+    } else if (e.key === "Home" && flat.length > 0 && !q) {
+      e.preventDefault();
+      setActive(0);
+    } else if (e.key === "End" && flat.length > 0 && !q) {
+      e.preventDefault();
+      setActive(flat.length - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
       const text = q.trim();
@@ -192,16 +224,17 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.14)] animate-fade-in dark:bg-[rgb(0_0_0/0.45)]" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[rgb(0_0_0/0.18)] animate-fade-in dark:bg-[rgb(0_0_0/0.6)]" />
         <Dialog.Content
-          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-xl bg-raised shadow-[0_0_0_0.5px_rgb(0_0_0/0.14),0_24px_64px_-12px_rgb(0_0_0/0.3)] animate-fade-in focus:outline-none dark:shadow-[0_0_0_0.5px_rgb(255_255_255/0.12),0_24px_64px_-12px_rgb(0_0_0/0.7)]"
+          className="fixed top-[max(12px,12vh)] left-1/2 z-50 flex max-h-[min(540px,calc(100dvh-24px))] w-[min(660px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-border-strong bg-raised shadow-[0_24px_64px_-12px_rgb(0_0_0/0.28)] animate-fade-in focus:outline-none dark:shadow-[0_24px_64px_-12px_rgb(0_0_0/0.75)]"
           aria-describedby={undefined}
           data-testid="command-palette"
         >
           <Dialog.Title className="sr-only">Find a record, go somewhere or ask</Dialog.Title>
-          <div className="flex items-center gap-3 border-b border-[color-mix(in_srgb,var(--fg)_9%,transparent)] px-5">
-            <Search className="size-[18px] shrink-0 text-muted" strokeWidth={2} aria-hidden />
+          <div className="flex items-center gap-3 border-b border-border px-5">
+            <Search className="size-[18px] shrink-0 text-muted" strokeWidth={1.8} aria-hidden />
             <input
+              ref={inputRef}
               autoFocus
               value={q}
               onChange={(e) => {
@@ -210,7 +243,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
               }}
               onKeyDown={onKeyDown}
               placeholder="Search records or ask a question"
-              className="h-[58px] min-w-0 flex-1 bg-transparent text-[17px] tracking-[-0.01em] text-fg placeholder:text-faint focus:outline-none"
+              className="h-[54px] min-w-0 flex-1 bg-transparent text-[16px] tracking-[-0.01em] text-fg placeholder:text-faint focus:outline-none"
               role="combobox"
               aria-expanded
               aria-controls="palette-list"
@@ -219,7 +252,22 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
               data-testid="palette-input"
             />
             {searching && <span className="size-3.5 shrink-0 animate-spin rounded-full border-[1.5px] border-border-strong border-t-muted" aria-label="Searching" role="status" />}
-            <kbd className="hidden h-5 items-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1.5 font-sans text-[11px] text-muted sm:flex" aria-hidden>
+            {q.length > 0 && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => {
+                  setQ("");
+                  setActive(0);
+                  inputRef.current?.focus();
+                }}
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+                data-testid="palette-clear"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            )}
+            <kbd className="hidden h-5 items-center rounded-xs border border-border bg-surface px-1.5 font-sans text-[11px] text-muted sm:flex" aria-hidden>
               Esc
             </kbd>
           </div>
@@ -242,18 +290,16 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
                         aria-selected={on}
                         data-index={i}
                         onMouseMove={() => !on && setActive(i)}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          choose(it);
-                        }}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => choose(it)}
                         className={cn(
-                          "flex h-10 cursor-pointer items-center gap-3 rounded-lg px-3 text-[13px]",
+                          "flex h-10 cursor-pointer items-center gap-3 rounded-md px-3 text-[13px] transition-colors",
                           it.kind === "record" && "h-11",
-                          on ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] text-fg" : "text-fg/90",
+                          on ? "bg-nav-on text-fg" : "text-fg/85 hover:bg-hover",
                         )}
                         data-testid="palette-item"
                       >
-                        <Row it={it} />
+                        <Row it={it} active={on} />
                         <span className={cn("ml-auto shrink-0 pl-2 text-[12px] text-muted", on ? "flex" : "hidden")} aria-hidden>
                           {it.kind === "ask" || it.kind === "example" ? "Ask" : "Open"}
                           <CornerDownLeft className="ml-1.5 size-3.5 self-center" strokeWidth={2} />
@@ -270,7 +316,7 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
               </li>
             )}
           </ul>
-          <div className="hidden h-10 shrink-0 items-center gap-4 border-t border-[color-mix(in_srgb,var(--fg)_9%,transparent)] bg-[color-mix(in_srgb,var(--fg)_2.5%,transparent)] px-4 text-[12px] text-muted sm:flex" aria-hidden>
+          <div className="hidden h-9 shrink-0 items-center gap-4 border-t border-border bg-surface/60 px-4 text-[12px] text-muted sm:flex" aria-hidden>
             <span className="flex items-center gap-1.5">
               <Key>↑</Key>
               <Key>↓</Key>
@@ -292,16 +338,16 @@ export default function CommandPalette({ open, onOpenChange }: { open: boolean; 
 }
 
 function Key({ children }: { children: React.ReactNode }) {
-  return <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-[3px] bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] px-1 font-sans text-[11px] leading-none text-muted">{children}</kbd>;
+  return <kbd className="inline-flex h-5 min-w-5 items-center justify-center rounded-xs border border-border bg-bg px-1 font-sans text-[11px] leading-none text-muted dark:bg-surface-2">{children}</kbd>;
 }
 
-const PARTY = /^(?:supplier|vendor|customer|contact|company)$/i;
+const PARTY = /^(?:supplier|vendor|customer|contact|company|person|staff)$/i;
 
-function Row({ it }: { it: Item }) {
+function Row({ it, active }: { it: Item; active?: boolean }) {
   if (it.kind === "ask" || it.kind === "example")
     return (
       <>
-        <PlaceIcon href="/ask" />
+        <PlaceIcon href="/ask" className={active ? "text-fg" : undefined} />
         <span className="min-w-0 truncate">
           {it.kind === "ask" && <span className="text-muted">Ask </span>}
           <span className={it.kind === "ask" ? "font-medium text-fg" : "text-fg"}>{it.q}</span>
@@ -311,7 +357,7 @@ function Row({ it }: { it: Item }) {
   if (it.kind === "go")
     return (
       <>
-        <PlaceIcon href={it.href} />
+        <PlaceIcon href={it.href} className={active ? "text-fg" : undefined} />
         <span className="shrink-0 font-medium text-fg">{it.label}</span>
         <span className="hidden min-w-0 truncate text-[12px] text-muted sm:inline">{it.hint}</span>
       </>

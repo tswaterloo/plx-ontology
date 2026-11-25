@@ -139,3 +139,74 @@ class AskedFromABrief(unittest.TestCase):
         got = bc.lines(Backend(), None, NS(context=NS(kind="brief", object_type="Customer",
                                                       object_id="Customer:x:1")))
         self.assertIn("could not be read", got[0])
+
+
+class DoorMeetingBriefRouting(unittest.TestCase):
+    def test_uses_fast_postgres_door_when_available(self):
+        from types import SimpleNamespace as NS
+        from operating import meeting_brief_door as mbd
+        from operator_api.errors import UserFacing
+
+        class FakeBackend(briefs.BriefsMixin):
+            doors = NS(get=lambda r: None)
+            memory = None
+            state_dir = None
+
+            def _brief_run(self, *a, **k):
+                raise AssertionError("slow worker should not run when door succeeds")
+
+        door_raw = dict(RAW, sections=[
+            {"key": "notes", "title": "Last meeting: notes and action items",
+             "state": "not_available", "note": mbd.NO_TRANSCRIPT_NOTE,
+             "rows": [], "more": 0, "figures": []},
+        ])
+        reader = NS(key="r1", email="a@plx.test", session=NS(principals=(), identities=()))
+        with patch.object(mbd, "build_for_reader", return_value=door_raw):
+            out = FakeBackend().meeting_brief(reader, "CalendarEvent", OID)
+        self.assertEqual(out.sections[0].state, "not_available")
+        self.assertEqual(out.sections[0].note, mbd.NO_TRANSCRIPT_NOTE)
+
+        # BriefRefused from door MUST raise 404 (never fall back to leak!)
+        with patch.object(mbd, "build_for_reader", side_effect=br.BriefRefused("not_found")):
+            with self.assertRaises(UserFacing) as ctx:
+                FakeBackend().meeting_brief(reader, "CalendarEvent", OID)
+        self.assertEqual(ctx.exception.status, 404)
+
+    def test_falls_back_when_door_unavailable(self):
+        from types import SimpleNamespace as NS
+        from operating import meeting_brief_door as mbd
+
+        called = []
+
+        class FakeBackend(briefs.BriefsMixin):
+            doors = NS(get=lambda r: None)
+            memory = None
+            state_dir = None
+            data_dir = None
+
+            def _brief_run(self, reader, job, **k):
+                called.append(True)
+                return dict(RAW)
+
+        reader = NS(key="r1", email="a@plx.test", session=NS(principals=(), identities=()))
+        with patch.object(mbd, "build_for_reader", side_effect=mbd.DoorUnavailable("not ready")):
+            out = FakeBackend().meeting_brief(reader, "CalendarEvent", OID)
+        self.assertEqual(called, [True])
+        self.assertEqual(out.title, "T")
+
+    def test_with_carried_items_upgrades_not_available_notes_to_shown(self):
+        from types import SimpleNamespace as NS
+        from operating import meeting_followup as mf
+
+        brief = dict(RAW, sections=[
+            {"key": "notes", "title": "Last meeting: notes and action items",
+             "state": "not_available", "note": "No transcript captured yet; brief built from mail, Teams, and open records.",
+             "rows": [], "more": 0, "figures": []},
+        ])
+        who = NS(email="a@plx.test", session=NS(principals=(), identities=()))
+        with patch.object(briefs, "_follow_ups", return_value=object()), \
+                patch.object(mf, "carried_items", return_value=[{"label": "Send COA", "sources": []}]):
+            out = briefs.with_carried_items(brief, frozenset(), who, "/tmp")
+        self.assertEqual(out["sections"][0]["state"], "shown")
+        self.assertIsNone(out["sections"][0]["note"])
+        self.assertEqual(len(out["sections"][0]["rows"]), 1)

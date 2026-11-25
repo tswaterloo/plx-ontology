@@ -54,7 +54,6 @@ READ_BY_TRIAGE = frozenset(("asks", "closing", "quiet_sender", "engaged_or_asks"
 DONE_RULES = ("owner_replied", "approval_decided", "task_closed", "batch_released",
               "owner_mailed_attendees", "question_answered", "person_decided")
 MAX_RECORDS = 12          # business records one handler reads around its event
-MAX_LINES = 50            # order lines one availability check reads
 # a handler that failed or ran out of time on an event: the event is deferred and tried
 # again by the next cycles, at most this many tries, then left ``failed`` (shown, never
 # silently processed)
@@ -65,7 +64,7 @@ REPLY_HOURS = 72          # an answer counts within this many hours (the replay'
 TEXT_CHARS = 30000      # an event's text (the mail's own words; was 4,000, cut unsaid)
 
 EMAIL_PROPS = ("subject", "sender", "to_addresses", "cc_addresses", "received_at", "sent_at",
-               "conversation_id", "internet_message_id", "body_preview", "mailbox")
+               "conversation_id", "internet_message_id", "body_text", "body_preview", "mailbox")
 BUSINESS = ("SalesOrder", "PurchaseOrder", "SalesInvoice", "Shipment", "Receipt", "Batch",
             "CustomerPurchaseOrder")
 SIDE_LINKS = {"Email.sent_by_customer": "customer", "Email.sent_by_supplier": "supplier"}

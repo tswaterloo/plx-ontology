@@ -24,7 +24,7 @@ const isLast = (v: unknown): v is Last =>
  * It is the Ask (same engine, same access), so a question about a number reads like one asked
  * on the Ask page. */
 export function InsightsAsk({ onPinned }: { onPinned: () => void }) {
-  const { turns, run, retry, followUp, stop, reset, busy, seed } = useThread();
+  const { turns, run, retry, followUp, stop, reset, busy, seed } = useThread("insights");
   const last = turns[turns.length - 1];
   // Coming back to Insights shows the last answer (and its chart) again, kept for this tab
   const restored = useRef(false);
@@ -40,7 +40,7 @@ export function InsightsAsk({ onPinned }: { onPinned: () => void }) {
   return (
     <section className="space-y-3" aria-label="Ask about your numbers" data-testid="insights-ask">
       <AskBox
-        size="md"
+        size="sm"
         draftKey={DRAFT_KEY}
         label="Ask about your numbers"
         placeholder="Ask about a number or ask for a chart; add it to your charts from the answer"

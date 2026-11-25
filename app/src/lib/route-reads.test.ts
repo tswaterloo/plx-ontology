@@ -52,7 +52,7 @@ describe("read-ahead on a link", () => {
     const p = aheadProps("/data-health");
     p.onPointerDown();
     expect(readPath).toHaveBeenCalledTimes(1);
-    expect(readPath).toHaveBeenCalledWith("/api/trust", expect.anything());
+    expect(readPath).toHaveBeenCalledWith("/api/trust", expect.anything(), true);
     forgetKeptReads();
     readPath.mockClear();
     p.onPointerEnter();
@@ -72,6 +72,6 @@ describe("read-ahead on a link", () => {
 
   it("a link with a query or fragment finds its route", () => {
     readAheadRoute("/ops?x=1#a");
-    expect(readPath).toHaveBeenCalledWith("/api/ops/status", expect.anything());
+    expect(readPath).toHaveBeenCalledWith("/api/ops/status", expect.anything(), true);
   });
 });

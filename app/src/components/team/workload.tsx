@@ -190,7 +190,7 @@ export function GrantSheet({ sheet, onSaved }: { sheet: WorkloadGrantSheet; onSa
                   <tr key={p.oid} className="border-b border-border align-top" data-testid="grant-row">
                     <td className="px-2 py-1.5">{name}</td>
                     <td className="px-2 py-1.5">
-                      <select aria-label={`Team for ${name}`} value={row.team} onChange={(e) => set(p.oid, { team: e.target.value })} className="h-7 rounded-md bg-bg px-1.5 text-[13px] ring-1 ring-border-strong">
+                      <select aria-label={`Team for ${name}`} value={row.team} onChange={(e) => set(p.oid, { team: e.target.value })} className="h-7 cursor-pointer rounded-md border border-border bg-bg px-2 text-[13px] text-fg outline-none transition-colors hover:border-border-strong focus:border-accent">
                         <option value="">No team</option>
                         {codes.map((c) => (
                           <option key={c} value={c}>{teamName(c)}</option>
@@ -200,8 +200,8 @@ export function GrantSheet({ sheet, onSaved }: { sheet: WorkloadGrantSheet; onSa
                     <td className="px-2 py-1.5">
                       <div className="flex flex-wrap gap-x-3 gap-y-1">
                         {codes.map((c) => (
-                          <label key={c} className="inline-flex items-center gap-1.5">
-                            <input type="checkbox" checked={row.sees.includes(c)} onChange={(e) => set(p.oid, { sees: e.target.checked ? [...row.sees, c] : row.sees.filter((x) => x !== c) })} aria-label={`${name} sees ${teamName(c)}`} />
+                          <label key={c} className="inline-flex cursor-pointer items-center gap-1.5">
+                            <input type="checkbox" className="cursor-pointer accent-[var(--accent)]" checked={row.sees.includes(c)} onChange={(e) => set(p.oid, { sees: e.target.checked ? [...row.sees, c] : row.sees.filter((x) => x !== c) })} aria-label={`${name} sees ${teamName(c)}`} />
                             {teamName(c)}
                           </label>
                         ))}
@@ -216,11 +216,11 @@ export function GrantSheet({ sheet, onSaved }: { sheet: WorkloadGrantSheet; onSa
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <input value={adding} onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTeam()} placeholder="New team, e.g. Sales" aria-label="New team" maxLength={32} className="h-8 w-48 rounded-md bg-bg px-2.5 text-[13px] ring-1 ring-border-strong" />
+        <input value={adding} onChange={(e) => setAdding(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTeam()} placeholder="New team, e.g. Sales" aria-label="New team" maxLength={32} className="h-8 w-48 rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg outline-none transition-colors hover:border-border-strong focus:border-accent" />
         <Button size="sm" variant="secondary" onClick={addTeam} disabled={!adding.trim()}>Add team</Button>
         <span className="flex-1" />
-        {saved && !changed && <span className="text-[12px] text-muted" role="status">Saved</span>}
-        <Button size="sm" onClick={save} disabled={busy || !changed} data-testid="grant-save">{busy ? "Saving" : "Save teams"}</Button>
+        {saved && !changed && <span className="text-[12px] text-ok" role="status">Saved</span>}
+        <Button size="sm" loading={busy} onClick={save} disabled={busy || !changed} data-testid="grant-save">{busy ? "Saving" : "Save teams"}</Button>
       </div>
       {problem && <ErrorNotice message={problem} />}
     </div>

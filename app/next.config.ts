@@ -52,6 +52,8 @@ const config: NextConfig = {
       { source: "/autopilot", destination: "/assist?show=switches", permanent: false },
       { source: "/autopilot-log", destination: "/assist?show=log", permanent: false },
       { source: "/trust", destination: "/data-health", permanent: false },
+      { source: "/qc", destination: "/records?kind=production", permanent: false },
+      { source: "/rd-projects", destination: "/records?kind=products", permanent: false },
       { source: "/watching", destination: "/?show=alerts", permanent: false },
       { source: "/late", destination: "/?show=late", permanent: false },
       { source: "/my-work", destination: "/", permanent: false },

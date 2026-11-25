@@ -28,6 +28,7 @@ export type StatusEvent = S["StatusEvent"];
 export type SourcesEvent = S["SourcesEvent"];
 export type TokenEvent = S["TokenEvent"];
 export type VerdictEvent = S["VerdictEvent"];
+export type ChartsEvent = S["ChartsEvent"];
 export type Answer = S["AnswerPayload"];
 export type MeasureDefinition = S["MeasureCited"];
 export type QueryWork = S["QueryWork"];
@@ -140,6 +141,7 @@ export type AskEvent =
   | { event: "status"; data: StatusEvent }
   | { event: "sources"; data: SourcesEvent }
   | { event: "verdict"; data: VerdictEvent }
+  | { event: "charts"; data: ChartsEvent }
   | { event: "token"; data: TokenEvent }
   | { event: "answer"; data: Answer }
   | { event: "error"; data: ApiErrorBody };
@@ -264,6 +266,8 @@ export type TimeSavedPerson = S["TimeSavedPerson"];
 export type WorkLogThread = S["WorkLogThread"];
 export type WorkLogOrganise = S["WorkLogOrganise"];
 export type WorkLogSave = S["WorkLogSave"];
+export type AskActiveRun = S["AskActiveRun"];
+export type AskRunStop = S["AskRunStop"];
 export type AskChat = S["AskChat"];
 export type AskChats = S["AskChats"];
 export type AskChatUpdate = S["AskChatUpdate"];

@@ -12,7 +12,9 @@ vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams()
 vi.mock("@/lib/thread", () => ({
   askUrlKey: () => "",
   conversationOf: () => undefined,
-  useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: vi.fn() }),
+  lastActiveAskId: () => null,
+  useAskRunning: () => ({ anyRunning: false, runningIds: new Set<string>(), runningChats: [], currentId: null }),
+  useThread: () => ({ turns: [], run: vi.fn(), retry: vi.fn(), followUp: vi.fn(), stop: vi.fn(), reset: vi.fn(), busy: false, seed: vi.fn(), select: () => false, claimUrlKey: () => true, conversationId: null, runningIds: new Set<string>() }),
 }));
 
 import AskRoute from "./page";
@@ -29,34 +31,37 @@ const HOME = {
 };
 
 describe("Ask's start page", () => {
-  it("greets by name, offers starters from the reader's own work, and lists their last chats", async () => {
+  it("shows a minimal header, offers starters from the reader's live work without stuffing past questions, and keeps recent chats in the rail alone", async () => {
     reads.home = {
       ...HOME,
       needs_attention: { late_pos: [{ label: "PO 90412", object_id: "po:90412" }], at_risk: [] },
     };
     render(<AskRoute />);
     expect(screen.getByTestId("ask-box")).toBeInTheDocument();
-    expect(await screen.findByText(/^Good (morning|afternoon|evening), A$/)).toBeInTheDocument();
+    expect(await screen.findByTestId("ask-greeting")).toHaveTextContent("Ask Workbench");
     const starters = within(await screen.findByTestId("ask-starters")).getAllByRole("button");
     expect(starters.map((b) => b.textContent)).toEqual([
       "What do I need to do today?",
       "Why is PO 90412 late?",
-      "Landed cost of PO 90388",
+      "Which purchase orders are late?",
+      "Show monthly revenue this year",
     ]);
-    const recent = await screen.findByTestId("ask-recent");
-    // chats only (those with a conversation), each once, newest first
-    const rows = within(recent).getAllByRole("listitem");
-    expect(rows).toHaveLength(2);
-    expect(within(rows[0]).getByRole("link")).toHaveAttribute("href", "/ask?c=c1");
+    expect(screen.queryByTestId("ask-recent")).toBeNull();
     expect(reads.late).not.toHaveBeenCalled();
   });
 
-  it("shows the greeting and the day's starter when Home can't be read", async () => {
+  it("shows the greeting and 4 operational prompt chips when Home can't be read", async () => {
     reads.home = null;
     render(<AskRoute />);
     expect(screen.getByTestId("ask-box")).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 0));
-    expect(screen.getByRole("button", { name: "What do I need to do today?" })).toBeInTheDocument();
+    const starters = within(screen.getByTestId("ask-starters")).getAllByRole("button");
+    expect(starters.map((b) => b.textContent)).toEqual([
+      "What do I need to do today?",
+      "Which purchase orders are late?",
+      "Show monthly revenue this year",
+      "Which customers have overdue invoices?",
+    ]);
     expect(screen.queryByTestId("ask-recent")).toBeNull();
     expect(screen.queryByText(/didn.t load|Couldn.t read/)).toBeNull();
   });

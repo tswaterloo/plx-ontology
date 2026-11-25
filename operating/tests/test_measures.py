@@ -1150,7 +1150,7 @@ class GapListAtTheDoor(MeasureDoor):
             os.environ[gap_list.ENV] = os.path.join(d, "gaps.jsonl")
             try:
                 for args, kind in (({"measure": "ledger_spend"}, "measure"),
-                                   ({"sql": "SELECT 1 FROM receipts"}, "view"),
+                                   ({"sql": "SELECT 1 FROM missing_chain_view"}, "view"),
                                    ({"describe": "nothing_here"}, "view")):
                     out = self.call(args, FULL)
                     self.assertIn("gap", out["error"], args)
@@ -1165,3 +1165,63 @@ class GapListAtTheDoor(MeasureDoor):
 for _name in dir(MeasureDoor):          # only this class's own tests run here
     if _name.startswith("test_") and _name not in GapListAtTheDoor.__dict__:
         setattr(GapListAtTheDoor, _name, None)
+
+
+class MeasureAccuracyA8(unittest.TestCase):
+    """PLAN-P2-A8: handle counts (never raw order/PO numbers), gross vs net AR as two
+    stated measures, explicit denominators on ratio measures, and operational measures
+    (awaiting_reply_by_person, open_alerts_by_person, po_count_and_value_by_supplier)."""
+
+    def test_no_measure_counts_raw_order_or_po_numbers(self):
+        bad_agg = re.compile(r"count\(\s*DISTINCT\s+(order_number|po_number|invoice_number)\b", re.I)
+        for mid, m in measures.base_measures().items():
+            for field in ("value", "rate_value", "sql"):
+                text = str(m.get(field) or "")
+                self.assertIsNone(bad_agg.search(text), (mid, field, text))
+
+    def test_gross_and_net_ar_measures_are_both_clearly_stated(self):
+        all_m = measures.base_measures()
+        self.assertIn("receivables_open", all_m)
+        self.assertIn("receivables_open_gross", all_m)
+        net_sql, net_cite = measures.statement("receivables_open", unchecked=True)
+        gross_sql, gross_cite = measures.statement("receivables_open_gross", unchecked=True)
+        sqlt.check(net_sql, allowed_schema="")
+        sqlt.check(gross_sql, allowed_schema="")
+        self.assertIn("document_type = 'invoice'", gross_sql)
+        self.assertNotIn("document_type = 'invoice'", net_sql)
+        self.assertIn("net", net_cite["definition"].lower())
+        self.assertIn("gross", gross_cite["definition"].lower())
+        self.assertEqual(measures.version(all_m["receivables_open"]), all_m["receivables_open"]["version"])
+        self.assertEqual(measures.version(all_m["receivables_open_gross"]), all_m["receivables_open_gross"]["version"])
+
+    def test_ratio_measures_state_denominator_in_catalogue_listing_and_citation(self):
+        listed = {e["id"]: e for e in measures.listing()["measures"]}
+        prompt_text = "\n".join(measures.lines())
+        ratios = [m for m in measures.base_measures().values() if m["unit"] == "percent"]
+        self.assertGreaterEqual(len(ratios), 6)
+        for m in ratios:
+            mid = m["id"]
+            self.assertTrue(m.get("denominator"), f"{mid} missing denominator")
+            self.assertIn("denominator", m["definition"].lower(), mid)
+            self.assertEqual(listed[mid].get("denominator"), m["denominator"], mid)
+            self.assertIn(m["denominator"], prompt_text, mid)
+            _sql, cite = measures.statement(mid, unchecked=True)
+            self.assertEqual(cite.get("denominator"), m["denominator"], mid)
+            self.assertEqual(measures.version(m), m["version"], mid)
+
+    def test_operational_sql_measures_validate_and_pass_sql_check(self):
+        all_m = measures.base_measures()
+        for mid in ("awaiting_reply_by_person", "open_alerts_by_person", "po_count_and_value_by_supplier"):
+            self.assertIn(mid, all_m)
+            m = all_m[mid]
+            sql, cite = measures.statement(mid)
+            sqlt.check(sql, allowed_schema="")
+            self.assertNotIn("biz.", sql.lower())
+            self.assertEqual(cite["id"], mid)
+            self.assertEqual(measures.version(m), m["version"], mid)
+            self.assertTrue(measures.defined_on(m), mid)
+            with self.assertRaises(ToolError):
+                measures.statement(mid, by="supplier")
+        po_sql, _ = measures.statement("po_count_and_value_by_supplier")
+        self.assertIn("count(DISTINCT handle)", po_sql)
+        self.assertNotIn("po_number", po_sql)

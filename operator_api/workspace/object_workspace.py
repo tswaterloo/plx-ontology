@@ -763,7 +763,8 @@ class ObjectWorkspace:
     def gap_inbox(self, *, inbox: Any = None, limit: int | None = None,
                   kinds: Sequence[str] | None = None,
                   states: Sequence[str] | None = None,
-                  all_owners: bool = False, include_off: bool = False) -> dict[str, Any]:
+                  all_owners: bool = False, include_off: bool = False,
+                  include_hidden: bool = False) -> dict[str, Any]:
         """The gaps the scheduled engine found (``operating.proactive_engine``: set-based
         rules over the whole projection store, persisted in the inbox beside it), trimmed
         for this reader: a gap shows only when its subject and a citation of each of its
@@ -793,20 +794,26 @@ class ObjectWorkspace:
                 **({"all_owners": True} if all_owners else {}),
                 # only a page that lists off alert types on purpose (Late POs' at-risk
                 # panel) reads them; every other read leaves them out (``alert_kinds``)
-                **({"include_off": True} if include_off else {}))
+                **({"include_off": True} if include_off else {}),
+                **({"include_hidden": True} if include_hidden else {}))
             return {**base, **found}
 
     def data_health_gaps(self, kinds: Sequence[str], *, limit: int = 2000) -> dict[str, Any]:
         """The data-health checks' open findings this reader may see (``gap_inbox``'s trim:
         subject, every citation group and the grant), and per kind how many open ones they
-        may NOT see (``proactive_engine.hidden_counts``: a count, never an id, a subject or a
-        summary), so a check is never said to have none when it has some hidden from them.
-        ``not_configured`` without a grant or a store."""
+        may NOT see (a count, never an id, a subject or a summary), computed in one single
+        pass when supported so a check is never scanned twice. ``not_configured`` without
+        a grant or a store."""
         from operating import proactive_engine as pe
 
-        found = self.gap_inbox(kinds=list(kinds), limit=limit)
+        try:
+            found = self.gap_inbox(kinds=list(kinds), limit=limit, include_hidden=True)
+        except TypeError:
+            found = self.gap_inbox(kinds=list(kinds), limit=limit)
         if found.get("status") != "read":
             return {**found, "hidden": {}}
+        if "hidden" in found:
+            return found
         with self._request():
             grant = getattr(self.access, "grant", None)
             path = getattr(self.store_status, "store_path", None)
@@ -817,6 +824,23 @@ class ObjectWorkspace:
                                       may_read=may_read, held=held,
                                       decide=self.access.decide)
         return {**found, "hidden": hidden}
+
+    def data_health_gap_one(self, kind: str, gap_id: str) -> dict[str, Any] | None:
+        """Read one single data-health finding by ``gap_id`` with this reader's full grant
+        and item decision in O(1) time (never scanning every open finding of the check)."""
+        from operating import proactive_engine as pe
+
+        with self._request():
+            self._base()   # a refused store answers nothing
+            grant = getattr(self.access, "grant", None)
+            path = getattr(self.store_status, "store_path", None)
+            if grant is None or path is None:
+                return None
+            may_read, held = grant()
+            return pe.read_gap_one(
+                pe.inbox_path(path), path, gap_id=gap_id,
+                reader=pe.reader_key(self.actor), may_read=may_read,
+                held=held, decide=self.access.decide, kinds=[kind])
 
     def data_health_counts(self, kinds: Sequence[str]) -> dict[str, Any]:
         """Every open finding per check (what the reader may see plus what is hidden from
@@ -2891,6 +2915,10 @@ def host_access(runtime: Any, store_path: Any, actor: Actor, *, markings: Iterab
                        mail_capture_dir=mail_capture_dir,
                        sharepoint_capture_dir=sharepoint_capture_dir, reviews=reviews,
                        **host_options)
+    # the policy kept while what it is decided from is unchanged (``operating.kept_policy``,
+    # as the MCP server keeps it), never one decided before a change: a cold record's page
+    # reads decided the same full policy again for every section, plan and batch of it
+    host.keep_policy = True
     if reviews is None:
         return HostAccess(host, runtime, actor)
     from operating.ontology_tools_review import ReviewTools, original_pages

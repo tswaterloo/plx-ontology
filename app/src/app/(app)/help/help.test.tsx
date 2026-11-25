@@ -55,4 +55,19 @@ describe("the help page", () => {
       delete (window as unknown as { plxDesktop?: unknown }).plxDesktop;
     }
   });
+
+  it("includes Owner cleanly, gives truthful IT desktop guidance, and does not claim Microsoft sign-in is active", () => {
+    render(<HelpPage />);
+    const ownerBtn = screen.getByTestId("help-role-owner");
+    expect(ownerBtn).toHaveTextContent("Owner");
+    fireEvent.click(ownerBtn);
+    const guide = screen.getByTestId("role-guide");
+    expect(guide).toHaveTextContent("Puts what needs you first on Home");
+    // Owner has no autopilot workflows listed, so no empty "Workflows that prepare routine items" heading
+    expect(guide).not.toHaveTextContent("Workflows that prepare routine items for this role:");
+    const desktop = screen.getByTestId("help-desktop");
+    expect(desktop).toHaveTextContent("Ask IT to install it for you");
+    expect(desktop.textContent).not.toMatch(/SmartScreen|Gatekeeper|Run anyway|More info|right-click|unsigned/i);
+    expect(document.body.textContent).not.toMatch(/Microsoft/i);
+  });
 });

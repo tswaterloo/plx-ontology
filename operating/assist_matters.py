@@ -422,7 +422,9 @@ def tasks(pg: Any, people: People, questions: Optional[Callable[[], list[dict]]]
                     "sources": {"records": [q["task_id"]], "question": q["id"]},
                     "basis_at": _instant(q["asked_at"]) or dt.datetime.now(dt.timezone.utc),
                     "title": str(q["text"] or "A question in Mission Control"),
-                    "detail": f"Mission Control question on {q['task_id']}",
+                    "detail": (f"Mission Control question on {q['task_id']}"
+                               if str(q.get("task_id") or "").strip()
+                               else "Mission Control question"),
                     "next_act": "ask_person",
                     # no task object to take the audience from: the question is shown to no
                     # reader (an audience nobody holds) rather than to everyone
@@ -906,6 +908,9 @@ def ensure_items_view(pg: Any) -> str:
 _ITEMS = (f"SELECT * FROM {ITEMS_VIEW} WHERE (%(everyone)s OR owner_person = ANY(%(owners)s)) "
           "AND (kind <> 'wait' OR due_at IS NULL OR due_at <= now() OR state = 'unverified') "
           "ORDER BY basis_at DESC, matter_id")
+_ITEM_ONE = (f"SELECT * FROM {ITEMS_VIEW} WHERE matter_id = %(matter_id)s "
+             "AND (%(everyone)s OR owner_person = ANY(%(owners)s)) "
+             "AND (kind <> 'wait' OR due_at IS NULL OR due_at <= now() OR state = 'unverified')")
 
 
 def _channel(source: Optional[str]) -> str:
@@ -917,7 +922,118 @@ _PROTECTED_TOKEN = re.compile(r"(?:[a-z][a-z0-9+.-]*://\S+|\S+@\S+)", re.IGNOREC
 _COMMA_NO_SPACE = re.compile(r",([A-Za-z])")
 _PERIOD_NO_SPACE = re.compile(r"([a-z]{2,})\.([A-Z][a-z])")
 _RAW_REASON_CODE = re.compile(r"^(?:[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))$")
+_PROMPT_LABEL_PAREN = re.compile(r"\s*\(P\d{1,2}\)")
+_PROMPT_LABEL_FROM = re.compile(r"\bfrom\s+P\d{1,2}\b")
+_EM_DASH_SPACED = re.compile(r"\s*\u2014\s*")
+_MC_TRAILING_ON = re.compile(r"^Mission Control question on\s*$")
+_ROBOTIC_OPENERS = re.compile(
+    r"^(?:I have reviewed (?:the |your )?(?:records|data|thread|message|email|details)[,.:;]?\s*|"
+    r"Based on (?:the |my review of the )?(?:data|records|available records|thread|information)[,.:;]?\s*|"
+    r"Here is a summary(?: of [^:.\n]{1,60})?[:,]\s*|"
+    r"I hope this (?:email |message )?finds you well[.!,]?\s*)",
+    re.IGNORECASE,
+)
+_WAIT_FROM_NAME = re.compile(
+    r"(?:\bfrom\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,2})\b|"
+    r"^([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){0,1})\s*:)"
+)
+_WAIT_NO_HISTORY = re.compile(
+    r"\s*\(nothing in your mail says how long this usually takes:\s*when should it be looked for\?\)",
+    re.IGNORECASE,
+)
+_PLAN_SYSTEM_NAMES: dict[str, str] = {
+    "bc": "Business Central",
+    "sage": "Sage 300",
+    "portal": "Portal",
+    "mc": "Mission Control",
+    "filemaker": "FileMaker",
+    "planner": "Planner",
+    "calendar": "Calendar",
+    "sharepoint": "SharePoint",
+    "mail": "Mail",
+    "teams": "Teams",
+}
 UNKNOWN_OWNER = "another team member"  # guard-ok: display fallback for an unresolved owner id, decides nothing
+
+
+def clean_user_text(text: Any, *, strip_opener: bool = False) -> str:
+    """Clean user-facing Assist text: replace em dashes with plain hyphens, remove leaked
+    internal prompt labels like ``(P2)`` or ``from P2``, fix trailing empty MC labels, and
+    optionally strip robotic AI boilerplate openers."""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    s = _EM_DASH_SPACED.sub(" - ", raw)
+    s = _PROMPT_LABEL_PAREN.sub("", s)
+    s = _PROMPT_LABEL_FROM.sub("from them", s)
+    s = _MC_TRAILING_ON.sub("Mission Control question", s)
+    if strip_opener:
+        trimmed = s.lstrip()
+        replaced = _ROBOTIC_OPENERS.sub("", trimmed, count=1).lstrip()
+        if replaced:
+            s = replaced[0].upper() + replaced[1:] if replaced[0].islower() else replaced
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return s.strip()
+
+
+def _infer_wait_person(detail: str) -> str:
+    """Extract a concrete person or team name from a wait matter's detail when the stored
+    title says 'No answer yet from them'."""
+    cleaned = clean_user_text(detail)
+    m = _WAIT_FROM_NAME.search(cleaned)
+    if not m:
+        return ""
+    name = (m.group(1) or m.group(2) or "").strip(" .,;:")
+    if not name or name.lower() in ("them", "the", "a", "an", "someone", "whoever", "source"):
+        return ""
+    return name
+
+
+def _planned_details(plan: Mapping[str, Any], names: Optional[Mapping[str, str]] = None
+                     ) -> tuple[list[str], list[dict[str, str]], list[str]]:
+    """Extract concise human-readable facts, system to-dos, and recipients from ``plan.acts``
+    when no full draft exists yet, so planned matters show Assist's recommended next step."""
+    acts = plan.get("acts")
+    if not isinstance(acts, list) or not acts:
+        return [], [], []
+    facts: list[str] = []
+    todos: list[dict[str, str]] = []
+    recipients: list[str] = []
+    for a in acts[:3]:
+        if not isinstance(a, Mapping):
+            continue
+        act_kind = str(a.get("act") or "").strip()
+        if act_kind == "nothing":
+            continue
+        to_list = [str(t).strip() for t in (a.get("to") or ()) if str(t).strip()]
+        for t in to_list:
+            if t not in recipients:
+                recipients.append(t)
+        shown_to = [person_label(t, names) if "@" not in t and ":" in t else t for t in to_list]
+        about = clean_user_text(a.get("about") or "")
+        attach = clean_user_text(a.get("attach") or "")
+        question = clean_user_text(a.get("question") or "")
+        if act_kind == "system_write":
+            sys_info = a.get("system") if isinstance(a.get("system"), Mapping) else {}
+            sys_raw = str(sys_info.get("system") or "").strip().lower()
+            op = str(sys_info.get("operation") or "").replace("_", " ").strip()
+            rec = clean_user_text(sys_info.get("record") or "")
+            what = about or op or "Update record"
+            todos.append({
+                "system": sys_raw,
+                "record": rec,
+                "what": what,
+            })
+            continue
+        verb = ACT_WORDS.get(act_kind, "")
+        if act_kind == "ask_person" and question:
+            facts.append(f"Decision needed: {question}")
+        elif verb:
+            target = f" to {', '.join(shown_to)}" if shown_to else ""
+            doc = f" ({attach})" if attach else ""
+            detail_part = f": {about}" if about else ""
+            facts.append(f"Suggested next step: {verb}{target}{doc}{detail_part}")
+    return facts, todos, recipients
 
 
 def clean_note_spacing(text: Any) -> str:
@@ -1085,10 +1201,23 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False, theirs: bool 
     prepared = plan.get("prepared") if isinstance(plan, Mapping) else None
     draft = (prepared or {}).get("draft") if isinstance(prepared, Mapping) else None
     act = ACT_WORDS.get(row["next_act"] or "", "")
-    note = row["detail"] or act
+    raw_detail = clean_user_text(row["detail"] or "")
+    raw_title = clean_user_text(row["title"] or "")
+    if row["kind"] == "wait":
+        if raw_title.lower() == "no answer yet from them":
+            inferred = _infer_wait_person(raw_detail)
+            if inferred:
+                raw_title = f"No answer yet from {inferred}"
+        if _WAIT_NO_HISTORY.search(raw_detail):
+            raw_detail = _WAIT_NO_HISTORY.sub("", raw_detail).strip(" ;,")
+            if raw_detail:
+                raw_detail = f"{raw_detail} (no typical reply time on record yet)"
+            else:
+                raw_detail = "No typical reply time on record yet"
+    note = raw_detail or act
     drafting = False
     if row["state"] == "unverified":
-        vnote = str(row.get("verify_note") or "").strip()
+        vnote = clean_user_text(row.get("verify_note") or "")
         if vnote and not _RAW_REASON_CODE.match(vnote.split(":", 1)[0].strip()):
             note = f"This {UNVERIFIED_WORDS} ({vnote})."
         else:
@@ -1120,18 +1249,45 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False, theirs: bool 
     else:
         note = base
     note = clean_note_spacing(note)
-    body = str((draft or {}).get("body") or "") if isinstance(draft, Mapping) else ""
+    body = clean_user_text((draft or {}).get("body") or "", strip_opener=True) if isinstance(draft, Mapping) else ""
     call = (prepared or {}).get("your_call") if isinstance(prepared, Mapping) else None
-    ask = str(call.get("ask") or "") if isinstance(call, Mapping) else ""
+    ask = clean_user_text(call.get("ask") or "") if isinstance(call, Mapping) else ""
+    raw_options = (call.get("options") or []) if isinstance(call, Mapping) else []
+    options = [
+        {"label": clean_user_text(o.get("label") or ""), "reply": clean_user_text(o.get("reply") or "", strip_opener=True)}
+        for o in raw_options
+        if isinstance(o, Mapping) and str(o.get("reply") or "").strip()
+    ]
+    planned_facts: list[str] = []
+    planned_todos: list[dict[str, str]] = []
+    planned_to: list[str] = []
+    if not body and not ask and isinstance(plan, Mapping) and row["plan_status"] == "planned":
+        planned_facts, planned_todos, planned_to = _planned_details(plan, names)
+    sender = _sender(row, names)
+    if row["kind"] in ("wait", "promise"):
+        cp = clean_user_text(row.get("counterpart") or "")
+        if cp:
+            sender = cp
+        elif row["kind"] == "wait":
+            inferred = _infer_wait_person(raw_detail)
+            if inferred:
+                sender = inferred
+    to_list = ([str(t) for t in (draft or {}).get("to") or ()]
+               if isinstance(draft, Mapping) and (draft or {}).get("to")
+               else planned_to)
     return {
         "item_id": row["matter_id"], "owner": row["owner_person"], "kind_of_matter": row["kind"],
-        "sender": _sender(row, names), "channel": _channel(row["source"]),
-        "subject": str(row["subject"] or row["title"] or ""),
-        "message": str(row["quote"] or ""),
-        "kind": "reply" if body else "your_call" if ask else "todo", "ask": ask, "summary": str(row["title"] or ""),
+        "sender": sender, "channel": _channel(row["source"]),
+        "subject": clean_user_text(row["subject"] or raw_title or ""),
+        "message": clean_user_text(row["quote"] or ""),
+        "kind": "reply" if body else "your_call" if ask else "todo", "ask": ask, "summary": raw_title,
         "next_act": str(row["next_act"] or ""),
         "note": note, "body": body, "still_open": silent,
-        "to": [str(t) for t in (draft or {}).get("to") or ()] if isinstance(draft, Mapping) else [],
+        "to": to_list,
+        "facts": planned_facts,
+        "todos": planned_todos,
+        "options": options,
+        "redo": bool(body),
         # a matter made from a queue item is listed as that item's own card
         "queue_card": bool(row["legacy_item_id"]),
         "state": row["state"], "verified_at": row["verified_at"],
@@ -1148,6 +1304,7 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False, theirs: bool 
 
 def as_items(pg: Any, owners: Iterable[str], *, shown: Optional[bool], owner_view: bool = False,
              everyone: bool = False, all_ages: bool = False,
+             matter_id: Optional[str] = None,
              door: Callable[[Sequence[Mapping[str, Any]]], set] = lambda _items: set(),
              names_of: Optional[Callable[[Iterable[str]], Mapping[str, str]]] = None,
              now: Optional[dt.datetime] = None) -> dict[str, Any]:
@@ -1163,7 +1320,11 @@ def as_items(pg: Any, owners: Iterable[str], *, shown: Optional[bool], owner_vie
     if not owner_view and not shown:
         return {"items": [], "total": 0, "next": None, "older": 0,
                 "status": "off", "reason": OPT_IN_UNREADABLE if shown is None else "not_opted_in"}
-    cur = pg.execute(_ITEMS, {"everyone": everyone, "owners": sorted(set(owners))})
+    if matter_id is not None:
+        cur = pg.execute(_ITEM_ONE, {"matter_id": matter_id, "everyone": everyone,
+                                     "owners": sorted(set(owners))})
+    else:
+        cur = pg.execute(_ITEMS, {"everyone": everyone, "owners": sorted(set(owners))})
     cols = [d.name for d in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
     mine = {str(o).strip().lower() for o in owners}

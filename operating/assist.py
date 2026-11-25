@@ -156,7 +156,7 @@ def parse(text: Any, limit: int = MAX_RECORDS) -> Intent:
     topic = re.sub(r"^\s*(?::|,|;|-)?\s*(?:know\s+)?(?:that\s+)?", "", topic, flags=re.I)
     topic = " ".join(topic.split())
     from .record_reads import record_tokens as _tokens
-    return Intent(text=line, channel=channel, verb=verb, mentions=mentions[:MAX_TO],
+    return Intent(text=line, channel=channel, verb=verb, mentions=mentions[:MAX_TO],  # guard-ok: command-line parse volume guard on a typed instruction, not record data
                   team=team, side=side, topic=topic, whole=whole,
                   records=[t for t in _tokens(line) if not _YEAR.fullmatch(t)
                            and not _DAYS.fullmatch(t) and not _MEASURE.fullmatch(t)
@@ -199,9 +199,9 @@ def _named(address: str, mention: str) -> bool:
     if len(words) == 1:
         return parts[0] == words[0] or local == words[0]
     first, last = words[0], words[-1]
-    return (parts[0] == first and (len(parts) > 1 and parts[1].startswith(last[:1])
+    return (parts[0] == first and (len(parts) > 1 and parts[1].startswith(last[:1])  # guard-ok: initial-letter matching test, a check not a cut of carried data
                                    and (len(parts[1]) == 1 or parts[1] == last))) \
-        or local in (first + last, first + last[:1], first[:1] + last)
+        or local in (first + last, first + last[:1], first[:1] + last)  # guard-ok: initial-letter matching test, a check not a cut of carried data
 
 
 # shared mailboxes are greeted by no name
@@ -391,7 +391,7 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
                  and (a in mine or clear(a))]
         if shown:
             out.ask.append({"field": field_, "pick": pick, "mention": mention,
-                            "candidates": shown[:ASK_MAX], "why": why})
+                            "candidates": shown, "why": why})
         elif pick == "one" and mention:
             out.unresolved.append(mention)
 
@@ -438,11 +438,11 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
                                    if _named(a, mention)))
         if named and len(_norm(mention)) >= 3 and best < 3:
             # a person outside, by name: one of that name is them
-            return named[:1], len(named) == 1, named, "named"
+            return named[:1], len(named) == 1, named, "named"  # guard-ok: single-pick extraction with explicit cardinality checks, design not a silent cut
         if best <= 0:
             # never written with: the addresses the supplier or customer record states
             listed = sorted(a for a in stated if not a.startswith("@") and not inside(a))
-            return listed[:1], len(listed) == 1, listed, "party"
+            return listed[:1], len(listed) == 1, listed, "party"  # guard-ok: single-pick extraction with explicit cardinality checks, design not a silent cut
         domains = {d for d, f in fits.items() if f == best}
         there = [(i, row, [a for a in listed if a.rsplit("@", 1)[-1] in domains])
                  for i, row, listed in rows]
@@ -469,7 +469,7 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
         shared = [(len(topic & _topic_words(str(row.get("subject") or ""), own_names)),
                    bool(record_words & _topic_words(str(row.get("subject") or ""), own_names)),
                    -i, row, listed) for i, row, listed in there]
-        top = max(shared, default=(0, False, 0, {}, []), key=lambda x: x[:3])
+        top = max(shared, default=(0, False, 0, {}, []), key=lambda x: x[:3])  # guard-ok: tuple sort-key selection, a check not a cut
         if top[0] >= TOPIC_MIN:
             row, listed = top[3], top[4]
 
@@ -497,7 +497,7 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
             sure = (not many_domains and firsts[main] >= SURE_MIN
                     and firsts[main] >= SURE_SHARE * total)
             return [main], sure, ranked, "main"
-        return ranked[:1], False, ranked, "received"
+        return ranked[:1], False, ranked, "received"  # guard-ok: single-pick extraction with explicit cardinality checks, design not a silent cut
 
     def habit(primary: str) -> None:
         """Who else goes on a mail to ``primary`` (``resolve`` doc): filled in from the
@@ -510,13 +510,13 @@ def resolve(intent: Intent, *, me: str, people: Any, sent: Sequence[Mapping[str,
             return {str(a).lower() for a in r.get(field_) or ()} - {primary} - \
                 (mine if field_ == "to" else set())
         mine_out = [r for r in sent if not r.get("in")]
-        first = [r for r in mine_out if _first_to(r) == primary][:CONVENTION_ROWS]
+        first = [r for r in mine_out if _first_to(r) == primary][:CONVENTION_ROWS]  # guard-ok: analysis-sample resource bound for convention detection, not carried content
         with_them = [r for r in mine_out if primary in {
             str(a).lower() for a in list(r.get("to") or ()) + list(r.get("cc") or ())}
-                     ][:CONVENTION_ROWS]
+                     ][:CONVENTION_ROWS]  # guard-ok: analysis-sample resource bound for convention detection, not carried content
         away = not inside(primary)
         kind = [r for r in mine_out if r.get("to") and
-                any(not inside(str(a).lower()) for a in r.get("to") or ()) == away][:KIND_ROWS]
+                any(not inside(str(a).lower()) for a in r.get("to") or ()) == away][:KIND_ROWS]  # guard-ok: analysis-sample resource bound for convention detection, not carried content
         for field_, where in (("to", out.to), ("cc", out.cc)):
             def counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
                 seen: dict[str, int] = {}
@@ -744,7 +744,7 @@ def resolve_reply(*, sender: Any, to: Sequence[Any] = (), cc: Sequence[Any] = ()
         rest = [a for a, _w in ranked[cap:]]
         if rest:
             out.ask.append({"field": field_, "pick": "any", "mention": None,
-                            "candidates": rest[:ASK_MAX],
+                            "candidates": rest[:ASK_MAX],  # guard-ok: stated in output — the more-count names how many beyond it
                             "why": f"more on the thread than a reply keeps ({cap})",
                             **({"more": len(rest) - ASK_MAX} if len(rest) > ASK_MAX else {})})
     return out
@@ -883,7 +883,7 @@ def with_thread(intent: Intent, sent: Sequence[Mapping[str, Any]]) -> Intent:
 
 def _sentence(text: str) -> str:
     text = text.strip().rstrip(".?!")
-    return text[:1].upper() + text[1:] if text else ""
+    return text[:1].upper() + text[1:] if text else ""  # guard-ok: capitalization, a transform not a cut
 
 
 def _lead(intent: Intent) -> str:
@@ -998,7 +998,7 @@ def draft(intent: Intent, recipients: Recipients, answers: Sequence[Mapping[str,
                     + (" outside the company" if left_inside else "")
                     + ": check it and add what is needed")
         if notes and outcome != "fact":
-            note += " (the Ask: " + " ".join(notes)[:240] + ")"
+            note += " (the Ask: " + " ".join(notes) + ")"
         if note:
             gaps.append(note)
         checks.append({"record": record, "question": answer.get("question"),
@@ -1089,7 +1089,7 @@ def sent_rows(rows: Iterable[Mapping[str, Any]], own: set[str], *, until: str | 
         if not at or (until and at >= until) or not (mine or received):
             continue
         row = {"at": at, "to": _addresses(r.get("to")), "cc": _addresses(r.get("cc")),
-               "subject": str(r.get("subject") or "")[:300]}
+               "subject": str(r.get("subject") or "")}
         if not mine:
             found = _addresses(sender)
             if not found:
@@ -1157,7 +1157,7 @@ def party_addresses(reads: Any, name: str, side: Optional[str]) -> set[str]:
         with reads.request():
             for otype in PARTY_TYPES.get(side, PARTY_TYPES[None]):
                 found = reads.find(name, otype)
-                for c in _candidates(found, (otype,))[:5]:
+                for c in _candidates(found, (otype,)):
                     shown = normal_name(str(plain((c.get("object") or {}).get("display")) or ""))
                     if not shown.startswith(want):
                         continue

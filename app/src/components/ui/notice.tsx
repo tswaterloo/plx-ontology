@@ -1,6 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/cn";
 import { ACCESS_NOTES, FINAL_ERRORS } from "@/lib/errors";
+import { humanizeIsoTimestamps } from "@/lib/format";
 import { staleLine } from "@/lib/home";
 
 /** "Reference 8e081121" out of a message that carries "(incident 8e081121)" or "incident 8e081121". */
@@ -24,7 +25,8 @@ export function ErrorNotice({
   /** "notice": a server state (busy, switched off), a calm banner. "info": data age and access notes. */
   tone?: "error" | "notice" | "info";
 }) {
-  const { text, reference } = splitReference(message);
+  const { text: rawText, reference } = splitReference(message);
+  const text = humanizeIsoTimestamps(rawText);
   // a missing record or a refused access is the same on a second try: no "Try again" for those
   const retry = FINAL_ERRORS.has(text) ? undefined : onRetry;
   // viewing as someone, a page outside My work, alerts and drafts says so as a note, not an error
@@ -34,8 +36,12 @@ export function ErrorNotice({
       role={tone === "error" ? "alert" : "status"}
       data-testid={tone === "notice" ? "server-notice" : undefined}
       className={cn(
-        "flex items-start gap-3 text-row text-fg",
-        tone === "notice" ? "rounded-lg bg-risk-soft px-3.5 py-2.5" : tone === "info" ? "py-1 text-muted" : "rounded-lg bg-late-soft px-3.5 py-2.5",
+        "flex items-start gap-3 text-[12.5px] leading-5 text-fg",
+        tone === "notice"
+          ? "rounded-md border border-border border-l-2 border-l-risk/75 bg-surface/60 px-3 py-2"
+          : tone === "info"
+            ? "py-1 text-muted"
+            : "rounded-md border border-border border-l-2 border-l-late/75 bg-surface/60 px-3 py-2",
         className,
       )}
     >

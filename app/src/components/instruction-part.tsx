@@ -19,7 +19,7 @@ import { Upload } from "./upload-draft";
 import { WritePanel } from "./write-panel";
 import { Button } from "./ui/button";
 
-const show = (v: unknown) => (v === null || v === undefined || v === "" ? "—" : String(v));
+const show = (v: unknown) => (v === null || v === undefined || v === "" ? "–" : String(v));
 
 /** The fields an Ask carries to continue an instruction on its own page. */
 export type InstructAsk = Pick<AskRequest, "object_id" | "source" | "context" | "mode" | "instruction">;

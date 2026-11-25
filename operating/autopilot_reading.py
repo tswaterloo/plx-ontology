@@ -45,27 +45,83 @@ def visible(queue: Queue, *, reader: str, may_read: Callable[[str], bool],
     owners = mine | reports | pooled
     held = set(held)
 
-    def readable(item: Mapping[str, Any]) -> bool:
-        cited = item_handles(item)
-        try:
-            refused = decide(cited) if cited else {}
-        except Exception:  # noqa: BLE001 - an undecidable item is not shown
-            return False
-        return may_show(item, may_read=may_read, held=held, refused=refused, cited=cited)
-    out = []
+    candidates: list[dict[str, Any]] = []
     for item in queue.items(owners, states):
-        if readable(item):
-            item["mine"] = item["owner"] in mine
-            if item["owner"] in pooled:
-                item["pooled"] = item["owner"]
-            out.append(item)
-    seen = {i["item_id"] for i in out}
+        item["mine"] = item["owner"] in mine
+        if item["owner"] in pooled:
+            item["pooled"] = item["owner"]
+        candidates.append(item)
+    seen = {i["item_id"] for i in candidates}
     for item_id in dict.fromkeys(also):
         item = None if item_id in seen else queue.item(str(item_id))
-        if item is not None and item["state"] in states and readable(item):
+        if item is not None and item["state"] in states:
             item.update(mine=False, handed=True)
-            out.append(item)
-    return out
+            candidates.append(item)
+    if not candidates:
+        return []
+    cited_by_id = {item["item_id"]: item_handles(item) for item in candidates}
+    all_cited = sorted({h for hs in cited_by_id.values() for h in hs})
+    batch_refused: Mapping[str, Any] | None = None
+    if all_cited:
+        try:
+            got = decide(all_cited)
+            if isinstance(got, Mapping):
+                batch_refused = got
+        except Exception:  # noqa: BLE001 - fall back per item so one bad handle never hides others
+            batch_refused = None
+    else:
+        batch_refused = {}
+
+    def readable(item: Mapping[str, Any]) -> bool:
+        cited = cited_by_id[item["item_id"]]
+        if batch_refused is not None:
+            refused: Any = batch_refused
+        else:
+            try:
+                refused = decide(cited) if cited else {}
+            except Exception:  # noqa: BLE001 - an undecidable item is not shown
+                return False
+        return may_show(item, may_read=may_read, held=held, refused=refused, cited=cited)
+
+    return [item for item in candidates if readable(item)]
+
+
+def visible_one(queue: Queue, item_id: str, *, reader: str, may_read: Callable[[str], bool],
+                held: Iterable[str], decide: Callable[[Sequence[str]], Mapping[str, Any]],
+                grants: Mapping[str, Any] | None = None,
+                states: Sequence[str] = ("open",), also: Iterable[str] = (),
+                pools: Iterable[str] = ()) -> dict[str, Any] | None:
+    """Single-item equivalent of ``visible``: reads only ``item_id`` from the queue and checks
+    only its own audiences, markings, and cited handles (fail closed)."""
+    from .proactive_commitments import owner_ids
+    mine = owner_ids(reader)
+    if not mine:
+        return None
+    item = queue.item(str(item_id))
+    if item is None or item["state"] not in states:
+        return None
+    grants = grants or {}
+    teams = grants.get("teams") or {}
+    held_teams = set()
+    for oid in mine:
+        held_teams.update((grants.get("managers") or {}).get(oid) or ())
+    reports = {o for o, t in teams.items() if t in held_teams}
+    pooled = {p for p in pools if str(p).startswith(POOL_PREFIX)}
+    owners = mine | reports | pooled
+    if item["owner"] in owners:
+        item["mine"] = item["owner"] in mine
+        if item["owner"] in pooled:
+            item["pooled"] = item["owner"]
+    elif item["item_id"] in set(also):
+        item.update(mine=False, handed=True)
+    else:
+        return None
+    cited = item_handles(item)
+    try:
+        refused = decide(cited) if cited else {}
+    except Exception:  # noqa: BLE001 - an undecidable item is not shown
+        return None
+    return item if may_show(item, may_read=may_read, held=set(held), refused=refused, cited=cited) else None
 
 
 def may_show(item: Mapping[str, Any], *, may_read: Callable[[str], bool], held: Iterable[str],

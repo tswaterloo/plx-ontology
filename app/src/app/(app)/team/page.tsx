@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { useAuth } from "@/components/auth";
 import { LabourView } from "@/components/labour-view";
 import { hasTeamGrant } from "@/components/shell";
 import { TeamApprovals } from "@/components/team/approvals";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
-import { Toolbar } from "@/components/ui/toolbar";
+import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { readPlannerAhead, TeamDashboard } from "@/components/team/dashboard";
 import { WorkloadSection } from "@/components/team/workload";
@@ -26,7 +28,8 @@ function useLoad<T>(key: string, load: (s: AbortSignal) => Promise<T>, on: boole
  * named Team readers, else only your own row: the server decides), what waits on other people
  * (approvals) for a reader with a team grant and, for a reader with the hr or ops-management
  * grant, labour hours. */
-export default function TeamPage() {
+function TeamContent() {
+  const params = useSearchParams();
   const { state } = useAuth();
   const me = state.status === "signed-in" ? state.me : null;
   const team = hasTeamGrant(me);
@@ -40,9 +43,8 @@ export default function TeamPage() {
   // /labour lands on #labour: a reader without the grant is told so there, never left on Team
   // wondering where the hours went (nobody else sees a word about labour)
   const [hash, setHash] = useState("");
-  const [person, setPerson] = useState("");
+  const person = params?.get("person") ?? "";
   useEffect(() => {
-    setPerson(new URLSearchParams(window.location.search).get("person") ?? "");
     const read = () => setHash(window.location.hash);
     read();
     window.addEventListener("hashchange", read);
@@ -62,7 +64,25 @@ export default function TeamPage() {
   );
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Toolbar heading title="Team" />
+      <Toolbar
+        heading
+        title="Team"
+        actions={
+          me ? (
+            <ToolbarButton
+              onClick={() => {
+                people.retry();
+                labour.retry();
+              }}
+              title="Refresh team activity"
+              aria-label="Refresh team activity"
+            >
+              <RefreshCw aria-hidden />
+              <span className="max-sm:sr-only">Refresh</span>
+            </ToolbarButton>
+          ) : undefined
+        }
+      />
       <PageIntro path="/team" />
       <StoredAge at={people.at} className="px-6 pb-1" />
       <div className="w-full space-y-10 px-4 py-5 lg:px-6">
@@ -109,5 +129,13 @@ export default function TeamPage() {
         ) : null}
       </div>
     </div>
+  );
+}
+
+export default function TeamPage() {
+  return (
+    <Suspense>
+      <TeamContent />
+    </Suspense>
   );
 }

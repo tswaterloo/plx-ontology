@@ -86,20 +86,20 @@ function SignIn() {
   const note = plainServerNote(config?.message);
   const accessNote = state.status === "signed-out" ? state.message : undefined;
 
-  const field = "h-9 w-full rounded-lg bg-surface px-3 text-[13px] ring-1 ring-border-strong ring-inset placeholder:text-faint focus:ring-2 focus:ring-ring focus:outline-none";
+  const field = "h-9 w-full rounded-md border border-border-strong bg-bg px-3 text-[13px] text-fg placeholder:text-faint transition-colors focus:border-accent focus:outline-none dark:bg-bg";
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-sidebar">
       <div className="absolute top-3 right-3 sm:top-4 sm:right-4">
-        <ThemeToggle className="rounded-lg border-0 bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] p-0.5 text-[12px] [&>button]:rounded-md [&>button]:border-0 [&>button]:px-2.5 [&>button]:py-1 [&>button[aria-checked=true]]:bg-bg [&>button[aria-checked=true]]:shadow-sm" />
+        <ThemeToggle />
       </div>
       <main id="main" className="flex flex-1 flex-col items-center justify-center px-4 pt-16 pb-12">
-        <div className="w-full max-w-[360px]">
+        <div className="w-full max-w-[368px]">
           <div className="flex flex-col items-center text-center">
-            <Logo className="text-[22px] leading-7" />
-            <h1 className="mt-4 text-[15px] leading-5 font-medium text-muted">Sign in</h1>
+            <Logo className="text-[21px] leading-7" />
+            <h1 className="mt-3.5 text-[14px] leading-5 font-medium text-muted">Sign in to your workspace</h1>
           </div>
-          <div className="mt-7 space-y-4 rounded-xl bg-bg p-5 shadow-lift dark:bg-surface">
+          <div className="mt-6 space-y-4 rounded-lg border border-border bg-bg p-5 shadow-sm dark:border-border-strong dark:bg-surface">
             {state.status === "loading" || state.status === "signed-in" ? (
               <Pending label="Checking your session" className="py-6 text-center" />
             ) : state.status === "error" ? (
@@ -111,19 +111,19 @@ function SignIn() {
                 <button
                   type="button"
                   onClick={() => void signOut()}
-                  className="h-9 w-full rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer"
+                  className="h-9 w-full rounded-md border border-border-strong bg-surface text-[13px] font-medium text-fg hover:bg-surface-2 cursor-pointer"
                 >
                   Sign out and use another account
                 </button>
               </div>
             ) : (
               <>
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   <button
                     type="button"
                     onClick={microsoft}
                     disabled={!entra || busy}
-                    className="flex h-10 w-full items-center justify-center gap-2.5 rounded-lg bg-bg dark:bg-surface-2 text-[13px] font-medium text-fg shadow-sm ring-1 ring-border-strong hover:bg-surface disabled:cursor-not-allowed disabled:opacity-55 cursor-pointer"
+                    className="flex h-10 w-full items-center justify-center gap-2.5 rounded-md border border-border-strong bg-bg text-[13px] font-medium text-fg shadow-xs transition-[background-color,border-color,transform] duration-150 hover:border-control hover:bg-surface active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-surface-2 dark:hover:bg-raised cursor-pointer"
                   >
                     <MicrosoftMark />
                     {busy && entra ? "Signing in" : "Sign in with Microsoft"}
@@ -165,7 +165,7 @@ function SignIn() {
                       <button
                         type="submit"
                         disabled={busy || (askTicket && !ticket.trim())}
-                        className="h-10 w-full rounded-lg bg-accent text-[13px] font-medium text-accent-fg shadow-sm hover:brightness-110 disabled:opacity-50 cursor-pointer"
+                        className="h-10 w-full rounded-md bg-accent text-[13px] font-medium text-accent-fg shadow-xs transition-[filter,transform] duration-150 hover:brightness-110 active:scale-[0.99] disabled:opacity-50 cursor-pointer"
                       >
                         {link ? "Continue with your access link" : "Continue with demo sign-in"}
                       </button>

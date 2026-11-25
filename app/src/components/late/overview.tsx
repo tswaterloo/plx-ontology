@@ -8,16 +8,16 @@ import { formatMoney, objectHref, recordLabel, safeHref } from "@/lib/format";
 import { valueOf } from "@/lib/late";
 import type { LatePo } from "@/lib/types";
 
-function Figure({ label, glyph, value, unit, caption, testId }: { label: string; glyph?: React.ReactNode; value: string; unit?: string; caption?: React.ReactNode; testId?: string }) {
+function Figure({ label, glyph, value, unit, caption, testId, className }: { label: string; glyph?: React.ReactNode; value: string; unit?: string; caption?: React.ReactNode; testId?: string; className?: string }) {
   return (
-    <div className="min-w-0" data-testid={testId}>
-      <div className="flex items-center gap-1.5 text-[12px] leading-4 text-muted">
+    <div className={cn("min-w-0 py-3.5 sm:px-5 sm:first:pl-0 sm:last:pr-0", className)} data-testid={testId}>
+      <div className="flex items-center gap-1.5 text-[11.5px] font-medium leading-4 text-faint">
         {glyph}
         {label}
       </div>
-      <div className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
-        <span className="text-[22px] leading-7 font-semibold tracking-[-0.02em] num">{value}</span>
-        {unit && <span className="text-[13px] text-muted">{unit}</span>}
+      <div className="mt-0.5 flex items-baseline gap-1.5 whitespace-nowrap">
+        <span className="text-[21px] leading-7 font-semibold tracking-[-0.02em] text-fg num">{value}</span>
+        {unit && <span className="text-[12.5px] font-normal text-muted">{unit}</span>}
       </div>
       {caption && <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">{caption}</div>}
     </div>
@@ -122,15 +122,19 @@ export function LateOverview({
   // confirmed rows have one)
   const unconfirmed = items.filter((p) => p.confirmation === "none_found").length;
   const money = totals(items);
+  const hasConfirmation = items.some((p) => p.confirmation);
+  const colCount = 1 + (oldest && typeof oldest.days_late === "number" ? 1 : 0) + (hasConfirmation ? 1 : 0) + (money.length > 0 ? 1 : 0);
+  const gridCols = colCount >= 4 ? "sm:grid-cols-4" : colCount === 3 ? "sm:grid-cols-3" : colCount === 2 ? "sm:grid-cols-2" : "sm:grid-cols-1";
   return (
-    <div className={cn("space-y-8", className)} data-testid="late-summary">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-5 @3xl:grid-cols-4 @3xl:gap-x-10">
-        <Figure label="Late" value={String(total)} unit={total === 1 ? "PO" : "POs"} testId="late-count" />
+    <div className={cn("space-y-6", className)} data-testid="late-summary">
+      <div className={cn("grid grid-cols-2 divide-y divide-border border-y border-border sm:divide-x sm:divide-y-0", gridCols)}>
+        <Figure label="Late" value={String(total)} unit={total === 1 ? "PO" : "POs"} testId="late-count" className="pr-4" />
         {oldest && typeof oldest.days_late === "number" && (
           <Figure
             label="Oldest"
             value={String(oldest.days_late)}
             unit={oldest.days_late === 1 ? "day" : "days"}
+            className="pl-4 sm:pl-5"
             caption={
               onPick ? (
                 <button type="button" onClick={() => onPick(oldest)} className="max-w-full truncate hover:text-fg hover:underline cursor-pointer">
@@ -149,10 +153,11 @@ export function LateOverview({
         )}
         {/* counted only where the supplier date state is known for some PO: "0 of 2" beside a
             PO whose page says "No date from the supplier" reads as a contradiction */}
-        {items.some((p) => p.confirmation) && <Figure label="No supplier date" glyph={<OpenRing size={12} tone="neutral" />} value={String(unconfirmed)} unit={`of ${items.length}`} />}
+        {hasConfirmation && <Figure label="No supplier date" glyph={<OpenRing size={12} tone="neutral" />} value={String(unconfirmed)} unit={`of ${items.length}`} className="pr-4 sm:pr-5" />}
         {money.length > 0 && (
           <Figure
             label="Value"
+            className="pl-4 sm:pl-5"
             value={formatMoney(String(money[0][1].toFixed(2)), money[0][0]).replace(/\.\d\d(?=\D*$)/, "")}
             caption={money.length > 1 ? `and ${money.slice(1).map(([c, v]) => formatMoney(v.toFixed(2), c).replace(/\.\d\d(?=\D*$)/, "")).join(", ")}` : undefined}
           />

@@ -557,10 +557,11 @@ def _pypdf_pages(source: str, reader: Any, max_text: int | None,
 
 
 def _pdftotext_pages(content: bytes, source: str, max_pages: int | None,
-                     first_pages: bool) -> Reading | None:
+                     first_pages: bool, max_text: int | None = None) -> Reading | None:
     """Each page's text layer through local poppler, or None when poppler cannot run."""
     try:
-        layers = local_pdf_text_layer(content, max_pages=max_pages, first_pages=first_pages)
+        layers = local_pdf_text_layer(content, max_pages=max_pages, first_pages=first_pages,
+                                      max_text=max_text)
     except (ValueError, OSError) as exc:  # ValidationError: missing or failed tools
         if str(exc) in _BOUND_ERRORS:
             raise
@@ -575,13 +576,17 @@ def _pdftotext_pages(content: bytes, source: str, max_pages: int | None,
 
 
 def _ocr_reading(content: bytes, source: str, max_pages: int | None,
-                 first_pages: bool) -> Reading:
+                 first_pages: bool, max_text: int | None = None) -> Reading:
     """Local OCR's reading; with ``first_pages`` a PDF over the page bound is read on
     its first pages and the rest are the reading's ``skipped_pages``, as without OCR."""
     reader = _portable_pdf_text if _local_ocr_backend() == "portable" else _macos_pdf_text
     try:
-        text, spans, status, warnings, ocr_pages, count = reader(
-            content, max_pages=max_pages, first_pages=first_pages)
+        if reader is _portable_pdf_text:
+            text, spans, status, warnings, ocr_pages, count = reader(
+                content, max_pages=max_pages, first_pages=first_pages, max_text=max_text)
+        else:
+            text, spans, status, warnings, ocr_pages, count = reader(
+                content, max_pages=max_pages, first_pages=first_pages)
     except OcrFailed as error:
         if error.cause != "pdf_unreadable":
             raise
@@ -637,7 +642,7 @@ def _pdf_reading(content: bytes, *, ocr: bool, max_pages: int | None,
                  max_text: int | None, page_fallback: bool, first_pages: bool) -> Reading:
     source = sha256(content).hexdigest()
     if ocr:
-        return _ocr_reading(content, source, max_pages, first_pages)
+        return _ocr_reading(content, source, max_pages, first_pages, max_text=max_text)
     reader, failure, opened = _pypdf_open(content, None if first_pages else max_pages)
     if failure == "encrypted":
         return Reading(source, "unsupported", "none", warnings=opened, failure=failure)
@@ -692,7 +697,7 @@ def _pdf_reading(content: bytes, *, ocr: bool, max_pages: int | None,
     if converted is not None and not page_fallback:
         paged = None
     elif reader is None and failure in ("pdf_parser_unavailable", "parser_panicked"):
-        paged = _pdftotext_pages(content, source, max_pages, first_pages)
+        paged = _pdftotext_pages(content, source, max_pages, first_pages, max_text=max_text)
     if converted is None:
         if paged is None and bounded_out:  # no page-by-page reader read its first pages
             raise ValidationError("PDF page count exceeds bound")
@@ -749,8 +754,8 @@ def _office_reading(content: bytes, kind: str) -> Reading:
 
 
 def read_pages(content: bytes, kind: str, *, ocr: bool = False,
-               max_pages: int | None = MAX_PAGES,
-               max_text: int | None = MAX_TEXT, page_fallback: bool = True,
+               max_pages: int | None = None,
+               max_text: int | None = None, page_fallback: bool = True,
                first_pages: bool = False) -> Reading:
     """The one reading of a PDF (``kind`` ``pdf``), DOCX or PPTX: the only place that
     chooses the reader.
@@ -1326,7 +1331,8 @@ class _UserPassword(Exception):
 
 
 def local_pdf_text_layer(content: bytes, *, max_pages: int | None = None,
-                         first_pages: bool = False) -> tuple[str | None, ...] | None:
+                         first_pages: bool = False,
+                         max_text: int | None = None) -> tuple[str | None, ...] | None:
     """The text layer of each page of one bounded PDF through local poppler
     (``pdftotext``), with no OCR and no ``pypdf``: the text-layer pass of
     ``_portable_pdf_text`` under the same bounds and envelope. A page without a
@@ -1338,7 +1344,7 @@ def local_pdf_text_layer(content: bytes, *, max_pages: int | None = None,
     PDF over the page bound gives its first pages' text and None for each page past
     the bound (not read)."""
     text, pages, status, _, _, count = _portable_pdf_text(
-        content, ocr=False, max_pages=max_pages, first_pages=first_pages)
+        content, ocr=False, max_pages=max_pages, first_pages=first_pages, max_text=max_text)
     if status == "unsupported":
         return None
     layers = tuple(text[page["start"]:page["end"]] for page in pages)
@@ -1812,7 +1818,7 @@ def _turned_pgm(path: Path, degrees: int, size: tuple[int, int]) -> Path:
 
 
 def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | None = None,
-                       first_pages: bool = False
+                       first_pages: bool = False, max_text: int | None = None
                        ) -> tuple[str, tuple[dict[str, int], ...],
                                   str, tuple[str, ...], frozenset[int], int]:
     """Read one bounded PDF through local poppler + tesseract, page by page.
@@ -1875,8 +1881,10 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
                                              opening=opening))
         if len(result.stdout) > 1_000_000:
             if command[0] == tools["pdftotext"]:
-                raise ValidationError("extracted PDF text exceeds bound")
-            raise OcrFailed("output_bound")
+                if max_text is not None:
+                    raise ValidationError("extracted PDF text exceeds bound")
+            else:
+                raise OcrFailed("output_bound")
         return result.stdout.decode("utf-8", "replace")
 
     def turn(image: Path, dpi: int) -> int:
@@ -1948,10 +1956,10 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
             return "", (), "unsupported", ("encrypted_pdf",), frozenset(), 0
         # "Encrypted: yes" past this point is an owner password (it opened without one).
         pages_in = int(_only_line(info, r"^Pages:\s+(\d+)\s*$").group(1))
-        bound = MAX_PAGES if max_pages is None else min(max_pages, MAX_PAGES)
-        if pages_in > bound and not first_pages:
+        bound = max_pages
+        if bound is not None and pages_in > bound and not first_pages:
             raise ValidationError("PDF page count exceeds bound")
-        total = min(pages_in, bound)  # the pages read
+        total = pages_in if bound is None else min(pages_in, bound)  # the pages read
         if total < 1:
             raise OcrFailed("page_count")
         sizes = {}
@@ -2022,7 +2030,7 @@ def _portable_pdf_text(content: bytes, *, ocr: bool = True, max_pages: int | Non
                 ocr_pages.add(index)
             else:
                 page_text = page_text.replace(LAYOUT_MARK, "").strip()
-            if position + len(page_text) > MAX_TEXT:
+            if max_text is not None and position + len(page_text) > max_text:
                 raise ValidationError("extracted PDF text exceeds bound")
             parts.append(page_text)
             pages.append({"page": index, "start": position,
@@ -2655,18 +2663,17 @@ def is_html(kind: str, filename: str = "") -> bool:
 
 
 def extract_document(content: bytes, mime_type: str, *, original_url: str,
-                     filename: str = "", local_pdf_ocr: bool = False) -> ExtractedDocument:
-    """Extract a bounded authorized source document without fetching or writing.
+                     filename: str = "", local_pdf_ocr: bool = False,
+                     max_bytes: int | None = None, max_pages: int | None = None,
+                     max_text: int | None = None) -> ExtractedDocument:
+    """Extract an authorized source document without fetching or writing.
 
-    A message's text is its own headers and body (module docstring): its
-    attachments are container members, read on their own. A PDF over ``MAX_PAGES``
-    (with or without ``local_pdf_ocr``) is read on pages 1-``MAX_PAGES`` and the rest
-    is ``skipped_pages`` (warning ``pdf_pages_skipped_by_cap:<first>-<last>``), as the
-    use-case intake reads it, never refused outright.
+    Defaults have no byte, page or text cap (ASK-GENIE §20 #7, Guardrail 1); explicit
+    ``max_bytes``, ``max_pages`` or ``max_text`` bounds are honoured when passed.
     """
     _https(original_url)
-    if not isinstance(content, bytes) or len(content) > MAX_BYTES:
-        raise ValidationError("document bytes required within 20 MB bound")
+    if not isinstance(content, bytes) or (max_bytes is not None and len(content) > max_bytes):
+        raise ValidationError("document bytes required within bound")
     if not isinstance(mime_type, str) or not mime_type.strip():
         raise ValidationError("MIME type required")
     kind = mime_type.split(";", 1)[0].strip().lower()
@@ -2680,7 +2687,8 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
     skipped: tuple[int, int] | None = None
     if (readable := doc_convert.convertible_kind(kind, filename)) is not None:
         ocr = local_pdf_ocr and readable == "pdf"
-        reading = read_pages(content, readable, ocr=ocr, first_pages=readable == "pdf")
+        reading = read_pages(content, readable, ocr=ocr, max_pages=max_pages, max_text=max_text,
+                             first_pages=(readable == "pdf" and max_pages is not None))
         text, pages, status = reading.text, reading.spans, reading.status
         warnings, method, ocr_pages = reading.warnings, reading.method, reading.ocr_pages
         conversion = dict(reading.conversion) if reading.conversion is not None else None
@@ -2697,18 +2705,21 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
             warnings += (f"pdf_pages_skipped_by_cap:{skipped[0]}-{skipped[1]}",)
     elif is_ooxml_workbook(kind, filename) or legacy_office.is_misnamed_xlsx(kind, filename,
                                                                              content):
-        text, status, warnings, ranges, found_sheets = extract_xlsx_text(content, max_text=MAX_TEXT)
+        wb_limit = 10 ** 9 if max_text is None else max_text
+        text, status, warnings, ranges, found_sheets = extract_xlsx_text(content, max_text=wb_limit)
         method = "ooxml-cell-transcription"
         review_ranges = list(ranges)
         sheets = list(found_sheets)
     elif legacy_office.is_xls(kind, filename, content):
+        wb_limit = 10 ** 9 if max_text is None else max_text
         text, status, warnings, ranges, found_sheets = legacy_office.extract_xls_text(
-            content, max_text=MAX_TEXT)
+            content, max_text=wb_limit)
         method = "biff8-cell-transcription"
         review_ranges = list(ranges)
         sheets = list(found_sheets)
     elif legacy_office.is_doc(kind, filename, content):
-        text, status, warnings = legacy_office.extract_doc_text(content, max_text=MAX_TEXT)
+        doc_limit = 10 ** 9 if max_text is None else max_text
+        text, status, warnings = legacy_office.extract_doc_text(content, max_text=doc_limit)
         method = "word97-text"
     elif _is_message(kind, filename):
         msg = kind in MSG_TYPES or filename.lower().endswith(".msg")
@@ -2765,11 +2776,7 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
     else:
         text, status, method = "", "unsupported", "none"
         warnings = (f"unsupported_mime_type:{kind}",)
-    # An HTML file's cost is bounded by its bytes (MAX_HTML_BYTES); its visible text is
-    # never longer than they are, so it is read whole (a map page holds >MAX_TEXT chars).
-    if len(text) > (MAX_HTML_BYTES if method in ("html-text", "xml-text")
-                    else MAX_PLAIN_TEXT if method in ("utf8-text", "decoded-text")
-                    else MAX_TEXT):
+    if max_text is not None and len(text) > max_text:
         raise ValidationError("extracted document text exceeds bound")
     if len(warnings) > MAX_WARNINGS:
         raise ValidationError("document warning count exceeds bound")
@@ -2810,3 +2817,12 @@ def extract_document(content: bytes, mime_type: str, *, original_url: str,
                              text, claims, line_items, warnings, pages,
                              tuple(sorted(ocr_pages)), conversion, tuple(sheets), failure,
                              skipped)
+
+
+def extract_document_file(path: str | Path, mime_type: str, *, original_url: str,
+                          filename: str = "", local_pdf_ocr: bool = False) -> ExtractedDocument:
+    """Extract an authorized document directly from ``path`` on disk with no byte, page or
+    text cap."""
+    p = Path(path)
+    return extract_document(p.read_bytes(), mime_type, original_url=original_url,
+                            filename=filename or p.name, local_pdf_ocr=local_pdf_ocr)

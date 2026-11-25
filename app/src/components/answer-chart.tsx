@@ -1,23 +1,38 @@
 "use client";
 
-import { ChevronDown, Download } from "lucide-react";
+import { BarChart3, ChevronDown, Download, ShieldCheck, Table2 } from "lucide-react";
 import type { Answer, StatementRead } from "@/lib/types";
 import Link from "next/link";
 import { useContext, useRef, useState } from "react";
 import { PinnedHere } from "@/components/insights/pinned";
 import { ChartView, chartKey, chartNotes, useChartTheme } from "@/components/charts/chart-view";
-import { FILES, saveFile, savePng } from "@/components/charts/export";
+import { FILES, chartToTable, saveChartCsv, saveFile, savePng } from "@/components/charts/export";
 import { EmailDraftButton } from "@/components/email-draft-button";
-import { INK } from "@/components/charts/scale";
+import { INK, full } from "@/components/charts/scale";
 import { QueryToggle, ShowWork } from "@/components/query-work";
 import { proposeMeasureCandidate, readStatement, saveInsight } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { formatDate } from "@/lib/format";
 
 export type AskChart = NonNullable<Answer["charts"]>[number];
+type ChartSpec = NonNullable<AskChart["spec"]>;
 
-/** Save a chart: PNG of the drawing, or Excel / PowerPoint / Word / PDF made from it. */
-function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObject<HTMLElement | null> }) {
+/** Save or share a chart: PNG of the drawing, Excel / PowerPoint / Word / PDF, and optional Email this. */
+export function ChartSaves({
+  chart,
+  figure,
+  label = "Save as",
+  align = "left",
+  includeEmail = false,
+  question,
+}: {
+  chart: AskChart;
+  figure: React.RefObject<HTMLElement | null>;
+  label?: string;
+  align?: "left" | "right";
+  includeEmail?: boolean;
+  question?: string;
+}) {
   const theme = useChartTheme();
   const [busy, setBusy] = useState("");
   const [problem, setProblem] = useState("");
@@ -45,10 +60,13 @@ function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObjec
       <details ref={menu} className="relative">
         <summary className={saveTrigger} aria-label="Save the chart">
           <Download className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
-          <span>{busy ? "Saving" : "Save as"}</span>
+          <span>{busy ? "Saving" : label}</span>
           <ChevronDown className="size-3 shrink-0 opacity-70" strokeWidth={2} aria-hidden />
         </summary>
-        <div className="absolute left-0 z-10 mt-1 flex min-w-[9rem] flex-col rounded-md border border-border bg-bg py-1 shadow-sm" role="menu">
+        <div
+          className={`absolute ${align === "right" ? "right-0" : "left-0"} z-20 mt-1 flex min-w-[10.5rem] flex-col rounded-lg border border-border bg-raised py-1 shadow-pop`}
+          role="menu"
+        >
           {png && (
             <button type="button" role="menuitem" className={item} disabled={!!busy}
               onClick={() => pick("png", async () => {
@@ -64,6 +82,20 @@ function ChartSaves({ chart, figure }: { chart: AskChart; figure: React.RefObjec
               {f.label}
             </button>
           ))}
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            disabled={!!busy}
+            onClick={() => pick("csv", async () => { saveChartCsv(chart); })}
+          >
+            CSV
+          </button>
+          {includeEmail && (
+            <div className="mt-1 border-t border-border px-2 pt-1.5 pb-1">
+              <EmailDraftButton title={chart.title || question || "Chart"} summary={question || ""} charts={[chart as unknown as Record<string, unknown>]} />
+            </div>
+          )}
         </div>
       </details>
       {problem && <span className="ml-1" role="alert">{problem}</span>}
@@ -110,6 +142,23 @@ function ProposeChartDefinition({ chart, question }: { chart: AskChart; question
   );
 }
 
+/** Pure: build a valid ChartSpec payload for POST /api/insights when pinning a chart. */
+export function pinChartSpec(chart: AskChart): ChartSpec | undefined {
+  if (chart.spec) return chart.spec;
+  const rawSeries = chart.series.length > 0 ? chart.series : (chart.panels?.[0]?.series ?? []);
+  const y = rawSeries.map((s) => s.name).filter(Boolean);
+  if (y.length === 0) return undefined;
+  const rawKind = chart.kind as string;
+  const isStacked = rawKind === "stacked_bar";
+  const kind = (isStacked ? "bar" : chart.kind) as ChartSpec["kind"];
+  return {
+    kind,
+    x: chart.x ?? null,
+    y,
+    ...(isStacked ? { stacked: true } : {}),
+  };
+}
+
 /** Pin a chart to Insights: its statement reads again, as whoever opens it, every time. */
 function PinChart({ chart, question }: { chart: AskChart; question: string }) {
   const here = useContext(PinnedHere);
@@ -118,12 +167,13 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
   if (!chart.sql) return null;
   const pin = async () => {
     setState("saving");
+    setProblem("");
     try {
       await saveInsight({
         title: (chart.title || question).slice(0, 160) || "Pinned chart",
         question: question.slice(0, 2000),
         sql: chart.sql ?? "",
-        chart: chart.spec ?? { kind: chart.kind, x: chart.x, y: chart.series.map((s) => s.name) },
+        chart: pinChartSpec(chart),
         schedule: "",
         notify: "never",
       });
@@ -139,11 +189,11 @@ function PinChart({ chart, question }: { chart: AskChart; question: string }) {
       {state === "pinned" ? (
         here ? <span>Added to your charts below</span> : <Link href="/insights" className="text-accent hover:underline">Pinned to your charts</Link>
       ) : (
-        <button type="button" onClick={pin} disabled={state === "saving"} className="h-7 rounded-md px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50">
+        <button type="button" onClick={pin} disabled={state === "saving"} className="h-7 rounded-md px-2 font-medium hover:bg-hover cursor-pointer disabled:opacity-50" data-testid="chart-pin">
           {state === "saving" ? "Pinning" : "Pin to your charts"}
         </button>
       )}
-      {state === "failed" && <span className="ml-2 text-muted">{problem}</span>}
+      {state === "failed" && <span className="ml-2 text-muted" role="alert">{problem}</span>}
     </span>
   );
 }
@@ -157,13 +207,14 @@ function PinAll({ charts, question }: { charts: AskChart[]; question: string }) 
   if (pinnable.length < 2) return null;
   const pin = async () => {
     setState("saving");
+    setProblem("");
     try {
       for (const chart of pinnable) {
         await saveInsight({
           title: (chart.title || question).slice(0, 160) || "Pinned chart",
           question: question.slice(0, 2000),
           sql: chart.sql ?? "",
-          chart: chart.spec ?? { kind: chart.kind, x: chart.x, y: chart.series.map((s) => s.name) },
+          chart: pinChartSpec(chart),
           schedule: "",
           notify: "never",
         });
@@ -245,7 +296,7 @@ function ChartWork({ chart }: { chart: AskChart }) {
       {first?.work && (
         <ShowWork work={first.work} testId="chart-work" read={async (edits) => setNow(await readStatement(chart.sql ?? "", edits))} onReset={() => setNow(first)} />
       )}
-      {check && <p className={check.ok === false ? "mt-1 text-red-700" : "mt-1"} data-testid="chart-checked">Checked: {check.says}</p>}
+      {check && <p className={check.ok === false ? "mt-1 text-late" : "mt-1"} data-testid="chart-checked">Checked: {check.says}</p>}
       {now && now !== first && <p className="mt-1" data-testid="chart-filtered">Your filters (not saved): {now.row_count} rows{now.truncated ? " (more than shown)" : ""}.</p>}
       {shown && shown.rows.length > 0 && (
         <div className="mt-1 max-h-60 overflow-auto">
@@ -266,7 +317,14 @@ function HowComputed({ chart }: { chart: AskChart }) {
   return (
     <div className="space-y-1 text-[12px] text-muted" data-testid="chart-definition">
       {m && (
-        <p>
+        <p className="leading-5">
+          <span
+            className="mr-1.5 inline-flex items-center gap-1 rounded border border-ok/30 bg-ok/10 px-1.5 py-0.5 align-middle text-[11px] font-medium leading-none text-ok"
+            data-testid="verified-measure-badge"
+          >
+            <ShieldCheck className="size-3 shrink-0" strokeWidth={2.2} aria-hidden />
+            Verified measure
+          </span>
           <span className="font-medium text-fg">{m.name}</span>
           {m.owner ? <span> ({m.owner})</span> : null}: {m.definition}
         </p>
@@ -276,12 +334,47 @@ function HowComputed({ chart }: { chart: AskChart }) {
   );
 }
 
-export function AnswerCharts({ charts, question, caption = true }: { charts: AskChart[]; question?: string; caption?: boolean }) {
+/** Interactive data table view of any drawn chart (single-series, multi-series, scatter, or faceted panels). */
+function ChartDataTable({ chart }: { chart: AskChart }) {
+  const { columns, rows } = chartToTable(chart);
+  const numericCol = columns.map((_, j) => {
+    const filled = rows.map((r) => r[j]).filter((c) => c !== null && c !== undefined && c !== "");
+    return filled.length > 0 && filled.every((c) => typeof c === "number");
+  });
+  return (
+    <div className="max-h-80 overflow-auto rounded-md border border-border" data-testid="chart-data-table">
+      <table className="w-full border-collapse text-left text-[12px]">
+        <thead className="sticky top-0 bg-bg text-muted">
+          <tr className="border-b border-border">
+            {columns.map((c, j) => (
+              <th key={`${c}-${j}`} className={`px-2.5 py-1.5 font-medium whitespace-nowrap ${numericCol[j] ? "text-right" : ""}`}>
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t border-border/70 first:border-t-0 hover:bg-hover/40">
+              {r.map((cell, j) => (
+                <td key={j} className={`px-2.5 py-1.5 tabular-nums ${numericCol[j] ? "text-right whitespace-nowrap" : ""}`}>
+                  {typeof cell === "number" ? full(cell, chart.currency) : (cell ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function AnswerCharts({ charts, question, caption = true, hideFooter = false }: { charts: AskChart[]; question?: string; caption?: boolean; hideFooter?: boolean }) {
   if (charts.length === 0) return null;
   return (
     <div className="space-y-6" data-testid="answer-charts">
       {question !== undefined && <PinAll charts={charts} question={question} />}
-      {charts.map((c, i) => <OneChart key={i} chart={c} question={question} caption={caption} />)}
+      {charts.map((c, i) => <OneChart key={i} chart={c} question={question} caption={caption} hideFooter={hideFooter} />)}
     </div>
   );
 }
@@ -295,26 +388,56 @@ export function firstBars(chart: AskChart, n = ANSWER_BARS): AskChart {
   return { ...chart, labels: chart.labels.slice(0, n), series: chart.series.map((s) => ({ ...s, values: s.values.slice(0, n) })) };
 }
 
-function OneChart({ chart, question, caption }: { chart: AskChart; question?: string; caption: boolean }) {
+function OneChart({ chart, question, caption, hideFooter = false }: { chart: AskChart; question?: string; caption: boolean; hideFooter?: boolean }) {
   const figure = useRef<HTMLElement>(null);
   const [all, setAll] = useState(false);
+  const [view, setView] = useState<"chart" | "table">("chart");
   const cut = firstBars(chart);
+  const canToggleTable = !hideFooter && chart.kind !== "table";
   return (
     <figure ref={figure} className="space-y-1.5">
       {caption && <figcaption className="text-[14px] font-semibold">{chart.title}</figcaption>}
-      <ChartView chart={all ? chart : cut} />
-      {cut !== chart && (
+      {view === "table" && canToggleTable ? (
+        <ChartDataTable chart={chart} />
+      ) : (
+        <ChartView chart={all ? chart : cut} />
+      )}
+      {view === "chart" && cut !== chart && (
         <button type="button" className="cursor-pointer text-[12px] text-accent hover:underline" onClick={() => setAll((a) => !a)} data-testid="chart-all">
           {all ? `Show the first ${ANSWER_BARS}` : `Showing the first ${ANSWER_BARS} of ${chart.labels.length}: show all`}
         </button>
       )}
-      <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
-        {chart.as_of && <span>As of {formatDate(chart.as_of)}</span>}
-        <ChartSaves chart={chart} figure={figure} />
-        <EmailDraftButton title={chart.title || question || "Chart"} summary={question || ""} charts={[chart as unknown as Record<string, unknown>]} />
-        {question !== undefined && <PinChart chart={chart} question={question} />}
-        {question !== undefined && <ProposeChartDefinition chart={chart} question={question} />}
-      </div>
+      {!hideFooter && (
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted">
+          {chart.as_of && <span>As of {formatDate(chart.as_of)}</span>}
+          {canToggleTable && (
+            <div className="inline-flex items-center rounded-md border border-border bg-bg p-0.5" role="group" aria-label="Visualization view" data-testid="chart-view-toggle">
+              <button
+                type="button"
+                aria-pressed={view === "chart"}
+                onClick={() => setView("chart")}
+                className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11.5px] font-medium cursor-pointer ${view === "chart" ? "bg-selected text-fg" : "text-muted hover:text-fg"}`}
+              >
+                <BarChart3 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                Chart
+              </button>
+              <button
+                type="button"
+                aria-pressed={view === "table"}
+                onClick={() => setView("table")}
+                className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11.5px] font-medium cursor-pointer ${view === "table" ? "bg-selected text-fg" : "text-muted hover:text-fg"}`}
+              >
+                <Table2 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                Table
+              </button>
+            </div>
+          )}
+          <ChartSaves chart={chart} figure={figure} />
+          <EmailDraftButton title={chart.title || question || "Chart"} summary={question || ""} charts={[chart as unknown as Record<string, unknown>]} />
+          {question !== undefined && <PinChart chart={chart} question={question} />}
+          {question !== undefined && <ProposeChartDefinition chart={chart} question={question} />}
+        </div>
+      )}
       {question !== undefined && <HowComputed chart={chart} />}
     </figure>
   );

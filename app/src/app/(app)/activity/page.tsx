@@ -1,12 +1,12 @@
 "use client";
 
-import { Check, Clock3, ListChecks, Mail, MessageCircle, X, type LucideIcon } from "lucide-react";
+import { Check, Clock3, ListChecks, Mail, MessageCircle, RefreshCw, Search, X, type LucideIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { StatusWord } from "@/components/ui/status-badge";
-import { Toolbar } from "@/components/ui/toolbar";
+import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { SectionTabs } from "@/components/shell";
 import { actionChip, realName } from "@/lib/actions";
@@ -64,6 +64,7 @@ function Row({ r }: { r: ActionLogRow }) {
   const mail = !!(r.to?.length || r.subject);
   const subject = realName(r.subject);
   const label = realName(r.card_label) ?? (r.card_id.startsWith("ask:") ? "From Ask" : null);
+  const titleText = subject || (mail ? (r.to?.length ? `Email to ${r.to[0]}` : "Email with no subject") : `${KIND[r.kind] ?? r.kind}${label ? `: ${label}` : ""}`);
   const title = subject || (mail ? (r.to?.length ? `Email to ${r.to[0]}` : "Email with no subject") : null) || (
     <>
       {KIND[r.kind] ?? r.kind}
@@ -76,21 +77,21 @@ function Row({ r }: { r: ActionLogRow }) {
   const cites = (r.citations ?? []).length;
   return (
     <li
-      className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-start gap-x-3 lg:items-center rounded-[3px] px-3 py-2.5 hover:bg-hover lg:grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px]"
+      className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-start gap-x-3 rounded-md px-3 py-2.5 transition-colors hover:bg-hover lg:grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px] lg:items-center"
       data-testid="actions-log-row"
       title={`${formatDateTime(r.at)}, by ${r.actor}`}
     >
       <KindTile kind={r.kind} />
       <div className="min-w-0">
-        <div className="truncate text-[13px] leading-[18px] font-semibold">{title}</div>
-        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">
+        <div className="truncate text-[13px] leading-[18px] font-semibold" title={titleText}>{title}</div>
+        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted" title={line || undefined}>
           {line}
           {label && mail && <span className="lg:hidden"> · {label}</span>}
         </div>
       </div>
       <div className="hidden min-w-0 lg:block">
-        <div className="truncate text-[13px] leading-[18px]">{label || "Follow-up"}</div>
-        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted">
+        <div className="truncate text-[13px] leading-[18px]" title={label || "Follow-up"}>{label || "Follow-up"}</div>
+        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted" title={r.actor}>
           {r.actor}
           {cites > 0 && <span className="text-faint"> · {plural(cites, "cited fact")}</span>}
           {r.replayed && <span className="text-faint"> · repeat of an earlier confirm</span>}
@@ -197,18 +198,24 @@ export default function ActivityPage() {
   const error = failed ? plainError(failed) : null;
 
   const [view, setView] = useState("all");
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase();
   const counts = useMemo(() => Object.fromEntries(VIEWS.map((v) => [v.key, (rows ?? []).filter(v.test).length])), [rows]);
   const days = useMemo(() => {
     const out: { key: string; label: string; rows: ActionLogRow[] }[] = [];
     const test = VIEWS.find((v) => v.key === view)?.test ?? (() => true);
     for (const r of (rows ?? []).filter(test)) {
+      if (q) {
+        const hay = [r.subject, r.card_label, r.actor, r.text, ...(r.to ?? []), ...(r.cc ?? []), KIND[r.kind] ?? r.kind].filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(q)) continue;
+      }
       const k = dayKey(r.at);
       const last = out[out.length - 1];
       if (last?.key === k) last.rows.push(r);
       else out.push({ key: k, label: dayLabel(r.at), rows: [r] });
     }
     return out;
-  }, [rows, view]);
+  }, [rows, view, q]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-list">
@@ -220,6 +227,12 @@ export default function ActivityPage() {
             Messages and tasks
             {rows && rows.length > 0 && <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal num text-faint">{rows.length}</span></>}
           </>
+        }
+        actions={
+          <ToolbarButton onClick={() => load()} title="Refresh activity" aria-label="Refresh activity">
+            <RefreshCw className={cn("size-3.5", at !== null && "animate-spin")} strokeWidth={1.9} aria-hidden />
+            <span className="max-sm:sr-only">Refresh</span>
+          </ToolbarButton>
         }
         className="bg-list"
       />
@@ -237,23 +250,52 @@ export default function ActivityPage() {
       ) : (
         <div className="pb-8" data-testid="actions-log">
           <Summary rows={rows} />
-          <div className="flex h-10 items-stretch gap-4 overflow-x-auto border-b border-border px-6 [scrollbar-width:none]" role="tablist" aria-label="Show">
-            {VIEWS.filter((v) => v.key === "all" || counts[v.key] > 0).map((v) => (
-              <button
-                key={v.key}
-                type="button"
-                role="tab"
-                aria-selected={view === v.key}
-                onClick={() => setView(v.key)}
-                className={cn(
-                  "relative flex shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer",
-                  view === v.key ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
-                )}
-              >
-                {v.label}
-                <span className="num text-[12px] font-normal text-faint">{counts[v.key]}</span>
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-6">
+            <div className="flex h-9 items-stretch gap-5 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Show">
+              {VIEWS.filter((v) => v.key === "all" || counts[v.key] > 0).map((v) => (
+                <button
+                  key={v.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === v.key}
+                  onClick={() => setView(v.key)}
+                  className={cn(
+                    "relative flex shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap transition-colors cursor-pointer",
+                    view === v.key ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
+                  )}
+                >
+                  {v.label}
+                  <span className="num text-[12px] font-normal text-faint">{counts[v.key]}</span>
+                </button>
+              ))}
+            </div>
+            <div className="relative my-1.5 w-full max-w-[240px]">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+              <input
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape" && search) {
+                    e.preventDefault();
+                    setSearch("");
+                  }
+                }}
+                placeholder="Filter activity"
+                aria-label="Filter activity"
+                className="h-7 w-full rounded-md border border-border bg-bg pl-7.5 pr-7 text-[12px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent placeholder:text-faint dark:bg-surface"
+              />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  aria-label="Clear filter"
+                  className="absolute right-1 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted hover:bg-hover hover:text-fg"
+                >
+                  <X className="size-3" aria-hidden />
+                </button>
+              )}
+            </div>
           </div>
           <div className="hidden h-8 grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px] items-end gap-x-3 px-6 pb-1 text-[11px] leading-4 text-faint lg:grid" aria-hidden>
             <span />
@@ -262,20 +304,36 @@ export default function ActivityPage() {
             <span>Result</span>
             <span className="text-right">Time</span>
           </div>
-          {days.map((d) => (
-            <section key={d.key} aria-label={d.label}>
-              <div className="sticky top-[52px] z-10 flex h-9 items-end bg-list px-6 pb-1.5">
-                <h2 className="text-[12px] font-medium text-muted">
-                  {d.label} <span className="font-normal num text-faint">{d.rows.length}</span>
-                </h2>
-              </div>
-              <ul className="px-3">
-                {d.rows.map((r) => (
-                  <Row key={r.seq} r={r} />
-                ))}
-              </ul>
-            </section>
-          ))}
+          {days.length === 0 ? (
+            <div className="flex flex-wrap items-center gap-3 px-6 py-8 text-[13px] text-muted">
+              <span>No activity matches &ldquo;{search.trim()}&rdquo;.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  setView("all");
+                }}
+                className="cursor-pointer rounded border border-border bg-bg px-2 py-0.5 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover dark:bg-surface"
+              >
+                Clear filters
+              </button>
+            </div>
+          ) : (
+            days.map((d) => (
+              <section key={d.key} aria-label={d.label}>
+                <div className="sticky top-12 z-10 flex h-9 items-end bg-list px-6 pb-1.5">
+                  <h2 className="text-[12px] font-medium text-muted">
+                    {d.label} <span className="font-normal num text-faint">{d.rows.length}</span>
+                  </h2>
+                </div>
+                <ul className="px-3">
+                  {d.rows.map((r) => (
+                    <Row key={r.seq} r={r} />
+                  ))}
+                </ul>
+              </section>
+            ))
+          )}
         </div>
       )}
     </div>

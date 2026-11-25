@@ -95,7 +95,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 from typing import Any, Callable, Mapping, Sequence
 
 from ontology.units import unit_token
-from operating.landed_cost import (ISO_4217, MAX_STEP_CHARS, _canon, _dec_str, _sha,
+from operating.landed_cost import (ISO_4217, _canon, _dec_str, _sha,
                                    correction_sources, person_correction)
 from operating.cases import _cited_float, _field
 
@@ -224,21 +224,21 @@ class _Run:
 
     def gap(self, code: str, subject: str, detail: str, *roles: str,
             line: str | None = None) -> None:
-        detail = f"{code}: {detail}"[:600]
+        detail = f"{code}: {detail}"
         gap = self.grouped.get((code, subject, detail))
         if gap is None:
             gap = self.grouped[(code, subject, detail)] = {
-                "state": _GAP_STATES.get(code, "unknown"), "reason": code.lower()[:64],
+                "state": _GAP_STATES.get(code, "unknown"), "reason": code.lower()[:64],  # guard-ok: derived identifier/reason code, fixed shape, not content
                 "subject": subject, "detail": detail, "lines": []}
             sources = [f"{self.items[self.roles[r]]['object_type']}."
-                       f"{'|'.join(self.items[self.roles[r]]['properties'])}"[:64]
+                       f"{'|'.join(self.items[self.roles[r]]['properties'])}"
                        for r in roles if self.roles.get(r) in self.items]
             if sources:
-                gap["searched"] = {"sources": sources[:8]}
+                gap["searched"] = {"sources": sources}
         if line and line not in gap["lines"]:
             gap["lines"].append(line)
         if code.lower() not in self.reasons:
-            self.reasons.append(code.lower()[:64])
+            self.reasons.append(code.lower()[:64])  # guard-ok: derived identifier/reason code, fixed shape, not content
 
     def gaps(self) -> list[dict[str, Any]]:
         out = []
@@ -246,7 +246,7 @@ class _Run:
             lines = gap.pop("lines")
             if lines:
                 gap["subject"] = f"{gap['subject']} of {', '.join(lines)}"
-            gap["subject"] = gap["subject"][:700]
+            gap["subject"] = gap["subject"]
             out.append(gap)
         return out
 
@@ -446,7 +446,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             continue                                      # not an item line (no item, qty 0)
         goods_lines += 1
         for entry in result["entries"]:
-            entry["inputs"] = list(dict.fromkeys(entry["inputs"]))[:50]
+            entry["inputs"] = list(dict.fromkeys(entry["inputs"]))
         entries.extend(result["entries"])
         if result.get("figures"):
             totals.append(result["figures"])
@@ -486,9 +486,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     total_names = {key: f"{name}_{key}" if key != "margin" else name
                    for key in ("revenue", "booked_cost", "margin", "margin_pct")}
     line_names = [e["name"] for e in entries]
-    out_totals = [{"name": total_names[key][:64], "kind": "computed", "value": None,
+    out_totals = [{"name": total_names[key][:64], "kind": "computed", "value": None,  # guard-ok: derived identifier/reason code, fixed shape, not content
                    "inputs": [n for n in line_names if n.endswith("_" + key)
-                              or (key in ("margin", "margin_pct") and n.endswith("_margin"))][:50],
+                              or (key in ("margin", "margin_pct") and n.endswith("_margin"))],
                    "steps": [], "check": "not_applicable"} for key in total_names]
     if (lines_complete and goods_lines and len(totals) == goods_lines and not stray
             and not stray_credit and not unsettled and len(currencies) == 1):
@@ -497,7 +497,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
         cost = sum((t[2] for t in totals), Decimal(0))
         margin = revenue - cost
         steps = [f"{t[0]}: revenue {_money(t[1], currency)}, booked cost "
-                 f"{_money(t[2], currency)}" for t in totals][:36]
+                 f"{_money(t[2], currency)}" for t in totals]
         steps.append(f"order: revenue {_money(revenue, currency)} - booked cost "
                      f"{_money(cost, currency)} = margin {_money(margin, currency)}")
         values = {"revenue": revenue, "booked_cost": cost, "margin": margin}
@@ -527,8 +527,8 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
                "the line set, the invoiced revenue or its credits are not proven whole "
                "(see the gaps)")
         for entry in out_totals:
-            entry["steps"] = [f"no order total: {why}"[:MAX_STEP_CHARS]]
-    landed = {"name": f"{name}_landed_estimate"[:64], "kind": "computed", "value": None,
+            entry["steps"] = [f"no order total: {why}"]
+    landed = {"name": f"{name}_landed_estimate"[:64], "kind": "computed", "value": None,  # guard-ok: derived identifier/reason code, fixed shape, not content
               "inputs": [], "steps": [LANDED_NOTE], "check": "not_applicable"}
     return {"entries": out_totals + entries + unattributed + [landed], "gaps": run.gaps(),
             "reasons": run.reasons}
@@ -594,7 +594,7 @@ def _unattributed(run: _Run) -> tuple[int, list[str]]:
     loose = {memo for memo, _ in run.links.get("customer_link", ())
              if _binding(memo).startswith("bc.")}
     open_ = sorted(loose - set(run.targets("credit_link")))
-    return len(open_), open_[:CITED_MEMOS]
+    return len(open_), open_
 
 
 def _credit_coverage(run: _Run, complete: bool,
@@ -611,7 +611,7 @@ def _credit_coverage(run: _Run, complete: bool,
     out: list[dict[str, Any]] = []
     count, cited = _unattributed(run)
     if count > 0:
-        entry = {"name": f"{name}_unattributed_credits"[:64], "kind": "computed",
+        entry = {"name": f"{name}_unattributed_credits"[:64], "kind": "computed",  # guard-ok: derived identifier/reason code, fixed shape, not content
                  "value": str(count), "inputs": [], "basis": cited, "check": "not_applicable",
                  "steps": [f"{count} posted credit memo(s) of the order's customer applied to "
                            f"no invoice; basis: {len(cited)} of them"]}
@@ -658,10 +658,10 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
     if not items and qty == 0:
         return None
     base = {"kind": "computed", "value": None, "check": "not_applicable"}
-    revenue = dict(base, name=f"{label}_revenue"[:64], inputs=[], steps=[],
+    revenue = dict(base, name=f"{label}_revenue"[:64], inputs=[], steps=[],  # guard-ok: derived identifier/reason code, fixed shape, not content
                    basis=[oid])
-    cost = dict(base, name=f"{label}_booked_cost"[:64], inputs=[], steps=[], basis=[oid])
-    margin = dict(base, name=f"{label}_margin"[:64], inputs=[revenue["name"], cost["name"]],
+    cost = dict(base, name=f"{label}_booked_cost"[:64], inputs=[], steps=[], basis=[oid])  # guard-ok: derived identifier/reason code, fixed shape, not content
+    margin = dict(base, name=f"{label}_margin"[:64], inputs=[revenue["name"], cost["name"]],  # guard-ok: derived identifier/reason code, fixed shape, not content
                   steps=[], basis=[oid])
     out = {"entries": [revenue, cost, margin]}
 
@@ -688,7 +688,7 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
     revenue["inputs"] += [r["amount"]["name"] for r in rows + credited_rows] + [
         r["quantity"]["name"] for r in rows + credited_rows if r["quantity"]]
     revenue["basis"] = [oid] + sorted({r["amount"]["object_id"]
-                                       for r in rows + credited_rows})[:99]
+                                       for r in rows + credited_rows})
     for code in sorted(held_back.get(item, ())):
         return stop(code, {"LEAD_TIER_INVOICE_EXCLUDED": "an invoice line of this item rests "
                            "on a lead-tier link and never enters a sum",
@@ -782,7 +782,7 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
             f"{_money(credit_total, currency)} for {_dec_str(returned)} {unit} credited")
     revenue["steps"] += [f"revenue = invoiced - credited = {_money(total_revenue, currency)}",
                          "currency: " + "; ".join(sorted(how))]
-    revenue["steps"] = revenue["steps"][:40]
+    revenue["steps"] = revenue["steps"]
     revenue.update(value=_dec_str(total_revenue), unit=currency, currency=currency,
                    digest=_sha(_canon({"revenue": revenue["steps"],
                                        "inputs": revenue["inputs"]})))
@@ -793,7 +793,7 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
     back = [e for memo in sorted(back_of) for e in back_of[memo]]
     cost["inputs"] = [e["cost"]["name"] for e in entries + back] + [
         e["quantity"]["name"] for e in entries + back if e["quantity"]]
-    cost["basis"] = [oid] + sorted({e["cost"]["object_id"] for e in entries + back})[:99]
+    cost["basis"] = [oid] + sorted({e["cost"]["object_id"] for e in entries + back})
     if not entries:
         return stop("COST_LINES_MISSING", "no Sale item ledger entry of this item is posted "
                     "on the order's shipments; a missing cost is never zero", "cost")
@@ -867,7 +867,7 @@ def _line(run: _Run, label: str, oid: str, ordered: Mapping[str, Any] | None,
                              f"ledger Cost Amount (Actual) = {_money(returned_cost, currency)}")
     cost["steps"] += [f"booked cost = shipped cost - returned cost = "
                       f"{_money(booked, currency)}", proof]
-    cost["steps"] = cost["steps"][:40]
+    cost["steps"] = cost["steps"]
     cost.update(value=_dec_str(booked), unit=currency, currency=currency,
                 digest=_sha(_canon({"cost": cost["steps"], "inputs": cost["inputs"]})))
     value = total_revenue - booked

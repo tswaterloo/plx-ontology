@@ -147,7 +147,7 @@ export function readAhead(key: string, load: (signal: AbortSignal) => Promise<un
   const began = epoch;
   let read: Promise<unknown>;
   try {
-    read = load(new AbortController().signal);
+    read = quietly(() => load(new AbortController().signal));
   } catch {
     return;
   }

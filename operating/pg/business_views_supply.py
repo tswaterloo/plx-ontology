@@ -890,7 +890,7 @@ def _purchase_order_lines(rd: Reader, as_of: dt.date) -> Iterator[Row]:
 
 
 AP_OPEN = "RelSageApOpenDocument"
-GL_CHART = ("RelSageGlAccount", "RelSageGlAcgrp")   # the payee class's records
+GL_CHART = ("RelSageGlAccount", "RelSageGlAcgrp", "RelSageApDsd")   # the payee class's records
 VENDOR_SUPPLIER_LINKS = ("RelSageApVendor.portal_supplier_by_sage_id",
                          "RelSageApVendor.portal_supplier", "RelSageApVendor.bc_vendor")
 # Sage AP's due date is ``dateinvcdu`` (APOBL; AR's ARODOC field is ``datedue``, which AP
@@ -908,28 +908,35 @@ PURCHASE_INVOICE_PROPS = ("bc_number", "vendor_invoice_number", "order_number",
 
 def _ap_vendors(rd: Reader) -> dict[str, Thing]:
     recs = rd.records("RelSageApVendor", ("vendname", "vendorid", "shortname", "idgrp",
-                                          "glaccnt"))
+                                          "glaccnt", "distsetid"))
     return {oid: Thing([rec]) for oid, rec in recs.items()}
 
 
-def _gl_chart(rd: Reader) -> dict[str, tuple]:
-    return rd.memo("gl_chart", lambda: payee_class.chart(
-        rd.records("RelSageGlAccount", payee_class.ACCOUNT_PROPS),
-        rd.records("RelSageGlAcgrp", payee_class.GROUP_PROPS)))
+def _gl_chart(rd: Reader) -> tuple[dict[str, tuple], dict[str, tuple[str, tuple[Any, ...]]]]:
+    def make() -> tuple[dict[str, tuple], dict[str, tuple[str, tuple[Any, ...]]]]:
+        accounts = payee_class.chart(
+            rd.records("RelSageGlAccount", payee_class.ACCOUNT_PROPS),
+            rd.records("RelSageGlAcgrp", payee_class.GROUP_PROPS))
+        dist_sets = payee_class.distsets(
+            rd.records("RelSageApDsd", payee_class.DISTSET_PROPS), accounts)
+        return accounts, dist_sets
+    return rd.memo("gl_chart", make)
 
 
 def _payee(rd: Reader, row: Row, vendor: Thing | None) -> None:
-    """``payee_class`` (``payee_class.classify``): the vendor's default account and its
-    group are read into that column."""
+    """``payee_class`` (``payee_class.classify_vendor``): the vendor's default account, or
+    its AP distribution set when no default account is set, and the referenced GL records
+    are read into that column."""
     if vendor is None:
         row.values["payee_class"] = "unknown"
         return
-    cls, account, group = payee_class.classify(vendor.rep, _gl_chart(rd))
+    accounts, dist_sets = _gl_chart(rd)
+    cls, refs = payee_class.classify_vendor(vendor.rep, accounts, dist_sets)
     row.values["payee_class"] = cls
     row.used(vendor.rep, vendor.rep.cell("glaccnt"))
-    for rec in (account, group):
-        if rec is not None:
-            row.read_record(rec.object_id, "*", column="payee_class")
+    row.used(vendor.rep, vendor.rep.cell("distsetid"))
+    for rec in refs:
+        row.read_record(rec.object_id, "*", column="payee_class")
 
 
 def _ap_row(rd: Reader, rec: Rec, vendors: Mapping[str, Thing],
@@ -1020,7 +1027,7 @@ VENDOR_GROUP_DOC = ("the Sage AP vendor group of the document's vendor (idgrp: D
                   f"({', '.join(VENDOR_SUPPLIER_LINKS)}); a BC invoice's "
                   "PurchaseInvoice.billed_by link")],
       reads=(AP_OPEN, "RelSageApVendor", "PurchaseInvoice", "Supplier", *GL_CHART),
-      memos=("suppliers", "vendor_suppliers", "gl_chart"))
+      memos=("suppliers", "vendor_suppliers", "gl_chart"), version=2)
 def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AP_OPEN, AP_PROPS)
     vendors = _ap_vendors(rd)
@@ -1085,7 +1092,7 @@ def _supplier_invoices(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                   f"({', '.join(VENDOR_SUPPLIER_LINKS)}); a BC invoice's "
                   "PurchaseInvoice.billed_by link")],
       reads=(AP_OPEN, "RelSageApVendor", "Supplier", *GL_CHART),
-      memos=("suppliers", "vendor_suppliers", "gl_chart"), covers=False)   # the open documents only
+      memos=("suppliers", "vendor_suppliers", "gl_chart"), covers=False, version=2)   # the open documents only
 def _supplier_balances(rd: Reader, as_of: dt.date) -> Iterator[Row]:
     docs = rd.records(AP_OPEN, AP_PROPS)
     vendors = _ap_vendors(rd)

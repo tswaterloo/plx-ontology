@@ -102,7 +102,6 @@ REQUIRED_ROLES = ("time", "actor", "outcome")
 CONTEXT_ROLES = ("time", "cites")
 RECORD_OPTIONS = ("decided_by_any", "open_outcomes")
 REVIEW_FEATURES = ("person_reviewed", "person_allocated")
-MAX_STEP_CHARS = 400
 _LABEL = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
@@ -251,8 +250,8 @@ class _Run:
     def gap(self, code: str, state: str, subject: str, detail: str, *,
             incomplete: bool = True) -> None:
         """A typed gap; ``incomplete``: the answer lacks something it was asked for."""
-        self.gaps.append({"state": state, "reason": code, "subject": subject[:700],
-                          "detail": f"{code}: {detail}"[:600]})
+        self.gaps.append({"state": state, "reason": code, "subject": subject,
+                          "detail": f"{code}: {detail}"})
         if incomplete and code not in self.reasons:
             self.reasons.append(code)
 
@@ -399,8 +398,8 @@ def _context(run: _Run, kinds: Sequence[Mapping[str, Any]], name: str) -> list[d
                                   "inputs": used, "steps": steps, "basis": [oid],
                                   "check": "not_applicable"}))
     found.sort(key=lambda pair: pair[0])   # timed (0, ...) before untimed (1, ...)
-    return [_digest({"name": f"{name}_context_{n}"[:64], **entry,
-                     "steps": [s[:MAX_STEP_CHARS] for s in entry["steps"]][:40]})
+    return [_digest({"name": f"{name}_context_{n}"[:64], **entry,  # guard-ok: derived entry identifier, fixed shape, not content
+                     "steps": entry["steps"]})
             for n, (_, entry) in enumerate(found, start=1)]
 
 
@@ -483,9 +482,9 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
     entries: list[dict[str, Any]] = []
     for index, decision in enumerate(found, start=1):
         entry: dict[str, Any] = {
-            "name": f"{name}_{index}"[:64], "kind": "computed", "value": decision["value"],
+            "name": f"{name}_{index}"[:64], "kind": "computed", "value": decision["value"],  # guard-ok: derived entry identifier, fixed shape, not content
             "inputs": decision["inputs"],
-            "steps": [s[:MAX_STEP_CHARS] for s in decision["steps"]][:40],
+            "steps": decision["steps"],
             "basis": decision["basis"], "check": "not_applicable"}
         entries.append(_digest(entry))
     for i, earlier in enumerate(found):
@@ -503,7 +502,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
              if context else "")
     if entries:
         entries.append({"name": name, "kind": "computed", "value": len(entries),
-                        "inputs": [e["name"] for e in entries][:50],
+                        "inputs": [e["name"] for e in entries],
                         "steps": [f"{len(entries)} recorded decision{'' if len(entries) == 1 else 's'} listed in time order"
                                   + noted + ("" if complete else "; the run was cut, so "
                                              "others may exist")], "check": "not_applicable"})
@@ -517,7 +516,7 @@ def plan_run(args: Mapping[str, Any], evidence: Mapping[str, Sequence[Mapping[st
             "detail": "no_recorded_decision: no decision about this object was found in what "
                       "this reader may read; a withheld source is reported in its own gap and "
                       "this is not proof that none was made",
-            "searched": {"sources": [r["label"] for r in args["records"]][:8]}})
+            "searched": {"sources": [r["label"] for r in args["records"]]}})
     return {"entries": entries[:-1] + context + entries[-1:] if context else entries,
             "gaps": run.gaps, "reasons": run.reasons}
 

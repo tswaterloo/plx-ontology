@@ -76,6 +76,7 @@ describe("Records page", () => {
   it("an empty search box is labelled with what to type, and a kind's tab lists its newest records", async () => {
     render(<RecordsPage />);
     expect(screen.getByText("Find a name or number")).toBeTruthy();
+    expect(screen.getByTestId("records-search")).toHaveAttribute("placeholder", "Search customers, POs, invoices, products, batches...");
     expect(screen.queryByTestId("records-empty-help")).toBeNull();
     expect(screen.getByTestId("records-browse")).toBeInTheDocument();
     nav.params = new URLSearchParams("kind=orders");

@@ -76,6 +76,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from typing import Any, Callable, Container, Iterator, Mapping, Sequence
@@ -178,9 +179,15 @@ def _meeting(raw: Mapping[str, Any]) -> dict[str, Any] | None:
                                                           ("content_class", by_header)) if hit]}
     if isinstance(raw.get("meetingMessageType"), str):
         out["message_type"] = raw["meetingMessageType"]
+    for key, name in (("startDateTime", "start"), ("endDateTime", "end"),
+                      ("location", "location"), ("isAllDay", "all_day"),
+                      ("iCalUId", "ical_uid")):
+        if raw.get(key) not in (None, "") and name not in out:
+            out[name] = raw[key]
     event = raw.get("event")
     if isinstance(event, Mapping):
-        for key, name in (("id", "event_id"), ("start", "start"), ("end", "end"),
+        for key, name in (("id", "event_id"), ("iCalUId", "ical_uid"),
+                          ("start", "start"), ("end", "end"),
                           ("location", "location"), ("isAllDay", "all_day"),
                           ("webLink", "event_link")):
             if event.get(key) not in (None, ""):
@@ -1132,22 +1139,71 @@ class GraphMailReader:
 _ITEM_SELECT = _DRIVE_SELECT + ",root"
 
 
+class QuickXorHasher:
+    """Incremental Microsoft QuickXorHash (constant 160-byte folded state, no whole-file
+    buffer in memory)."""
+
+    def __init__(self) -> None:
+        self._buf = bytearray(160)
+        self._length = 0
+
+    def update(self, data: bytes | bytearray | memoryview) -> None:
+        n = len(data)
+        if not n:
+            return
+        pos = self._length % 160
+        view = memoryview(data)
+        idx = 0
+        if pos:
+            take = min(160 - pos, n)
+            for i in range(take):
+                self._buf[pos + i] ^= view[i]
+            idx = take
+        rem = n - idx
+        full = rem - (rem % 160)
+        if full:
+            folded = int.from_bytes(self._buf, "little")
+            end = idx + full
+            for start in range(idx, end, 160):
+                folded ^= int.from_bytes(view[start:start + 160], "little")
+            self._buf[:] = folded.to_bytes(160, "little")
+            idx = end
+        if idx < n:
+            for i in range(n - idx):
+                self._buf[i] ^= view[idx + i]
+        self._length += n
+
+    def base64_digest(self) -> str:
+        value, mask = 0, (1 << 160) - 1
+        for index, byte in enumerate(self._buf):
+            shift = index * 11 % 160
+            value ^= ((byte << shift) | (byte >> (160 - shift))) & mask
+        digest = bytearray(value.to_bytes(20, "little"))
+        for index, byte in enumerate(self._length.to_bytes(8, "little")):
+            digest[12 + index] ^= byte
+        return base64.b64encode(bytes(digest)).decode("ascii")
+
+
 def quick_xor_hash(data: bytes) -> str:
     """Microsoft's QuickXorHash (base64), the hash OneDrive for Business and SharePoint
     publish for every file: byte ``i`` XORed into a 160-bit value at bit ``11*i mod 160``
     (rotating), then the length (64-bit little-endian) XORed into its last 8 bytes. The
     shift repeats every 160 bytes, so the data is folded into 160 bytes first."""
-    folded = 0
-    for start in range(0, len(data), 160):
-        folded ^= int.from_bytes(data[start:start + 160], "little")
-    value, mask = 0, (1 << 160) - 1
-    for index, byte in enumerate(folded.to_bytes(160, "little")):
-        shift = index * 11 % 160
-        value ^= ((byte << shift) | (byte >> (160 - shift))) & mask
-    digest = bytearray(value.to_bytes(20, "little"))
-    for index, byte in enumerate(len(data).to_bytes(8, "little")):
-        digest[12 + index] ^= byte
-    return base64.b64encode(bytes(digest)).decode("ascii")
+    h = QuickXorHasher()
+    h.update(data)
+    return h.base64_digest()
+
+
+def quick_xor_hash_file(path: str | Path, *, chunk_bytes: int = 65_536) -> str:
+    """Streaming QuickXorHash of the file at ``path``."""
+    h = QuickXorHasher()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(chunk_bytes)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.base64_digest()
 
 
 def undecided_not_visible(why: str) -> NotVisible:
@@ -1688,23 +1744,17 @@ class SharePointReader:
             raise NotVisible()
         return raw, path, acl
 
-    def get_content(self, actor: Actor, item_id: str, *, max_bytes: int = 20_000_000,
+    def get_content(self, actor: Actor, item_id: str, *, max_bytes: int | None = None,
                     content_route: bool = False,
                     may_retry: Callable[[], bool] | None = None,
-                    from_listing: bool = False) -> dict[str, Any]:
-        """Original bytes of one visible file (bounded), with a content-hash citation.
+                    from_listing: bool = False,
+                    dest_path: str | Path | None = None,
+                    headroom: Any = None) -> dict[str, Any]:
+        """Original bytes of one visible file, with a content-hash citation.
 
-        The download URL is requested only after the visibility check, for the
-        same eTag and canonical path (``content_route``: through
-        ``graph.drive_item_content`` and its 302, ``SourceApi.get_content``); bytes
-        come credential-free from the tenant's download hosts; the eTag and path
-        are re-read afterwards so a moving item never yields a mixed citation.
-        ``may_retry`` (a caller's budget) is asked before the one download retry
-        (:meth:`_download_same_version`). ``from_listing``: called from ``list_folder``'s
-        ``each`` for the child it hands over, the item is not opened again (its metadata
-        and permissions GETs): the listing's own reads of them, moments old, stand, and
-        the download's metadata read still requires the listed eTag and path. Any other
-        item, or outside that call, is opened as without it.
+        When ``dest_path`` is provided, streams directly to disk with chunked SHA-256 and
+        QuickXorHash verification and ``operating.disk_guard.Headroom`` headroom checking (no
+        whole-file RAM buffer and no fixed byte cap unless ``max_bytes`` is explicitly given).
         """
         raw, path, acl = (self._held_item(actor, item_id) if from_listing
                           else self._open_item(actor, item_id))
@@ -1713,15 +1763,44 @@ class SharePointReader:
             raise SourceUnavailable("drive item is not a file")
         if type(size) is not int or size < 0:
             raise SourceUnavailable("drive item size invalid")
-        if size > max_bytes:
+        if max_bytes is not None and size > max_bytes:
             return {"record": self._record(raw, path, acl), "content": None,
                     "content_status": "exceeds_cap", "max_bytes": max_bytes}
+        if dest_path is not None:
+            if content_route:
+                written, digest = self._api.get_content_to_file(
+                    grammar.url("graph.drive_item_content", drive=self.drive_id, item=raw["id"]),
+                    dest_path, max_bytes=None if max_bytes is None else max(1, max_bytes),
+                    headroom=headroom)
+            else:
+                written, digest = self._download_same_version_to_file(
+                    raw, path, dest_path, max_bytes, may_retry, headroom=headroom)
+            if written != size:
+                Path(dest_path).unlink(missing_ok=True)
+                raise SourceUnavailable("downloaded bytes differ from item size")
+            after = self._metadata(raw["id"])
+            if after.get("eTag") != raw.get("eTag") or self._source_path(after) != path:
+                Path(dest_path).unlink(missing_ok=True)
+                raise SourceUnavailable("drive item changed during content read")
+            hashes = (raw.get("file") or {}).get("hashes") or {}
+            listed = hashes.get("sha256Hash") if isinstance(hashes, Mapping) else None
+            if isinstance(listed, str) and listed.lower() != digest:
+                Path(dest_path).unlink(missing_ok=True)
+                raise SourceUnavailable("downloaded bytes differ from the source sha256Hash")
+            listed = hashes.get("quickXorHash") if isinstance(hashes, Mapping) else None
+            if isinstance(listed, str) and listed != quick_xor_hash_file(dest_path):
+                Path(dest_path).unlink(missing_ok=True)
+                raise SourceUnavailable("downloaded bytes differ from the source quickXorHash")
+            return {"record": self._record(after, path, acl, digest),
+                    "content_path": Path(dest_path), "content_bytes": written,
+                    "content_status": "read", "content_sha256": digest}
+        effective_bound = max(1, size) if max_bytes is None else max(1, max_bytes)
         if content_route:
             content = self._api.get_content(
                 grammar.url("graph.drive_item_content", drive=self.drive_id, item=raw["id"]),
-                max_bytes=max(1, max_bytes))
+                max_bytes=effective_bound)
         else:
-            content = self._download_same_version(raw, path, max_bytes, may_retry)
+            content = self._download_same_version(raw, path, effective_bound, may_retry)
         if len(content) != size:
             raise SourceUnavailable("downloaded bytes differ from item size")
         after = self._metadata(raw["id"])
@@ -1784,6 +1863,34 @@ class SharePointReader:
             try:
                 return self._transport.download_preauthenticated(
                     secret_url.reveal(), max_bytes=max(1, max_bytes))
+            except SourceUnavailable as exc:
+                if (not is_transport_failure(exc) or attempt + 1 >= self.DOWNLOAD_ATTEMPTS
+                        or (may_retry is not None and not may_retry())):
+                    raise
+            finally:
+                self._transport.forget_secret(secret_url)
+                del download, with_url
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _download_same_version_to_file(
+        self, raw: Mapping[str, Any], path: str, dest_path: str | Path,
+        max_bytes: int | None, may_retry: Callable[[], bool] | None = None,
+        *, headroom: Any = None,
+    ) -> tuple[int, str]:
+        """Streaming version of :meth:`_download_same_version`."""
+        for attempt in range(self.DOWNLOAD_ATTEMPTS):
+            with_url = self._metadata(raw["id"], download_url=True)
+            if with_url.get("eTag") != raw.get("eTag") or self._source_path(with_url) != path:
+                raise SourceUnavailable("drive item changed during content read")
+            download = with_url.get(grammar.DRIVE_DOWNLOAD_URL_KEY)
+            if not isinstance(download, str) or not download:
+                raise SourceUnavailable("drive item lacks a download URL")
+            secret_url = self._transport.register_secret(Secret(download))
+            try:
+                return self._transport.download_preauthenticated_to_file(
+                    secret_url.reveal(), dest_path,
+                    max_bytes=None if max_bytes is None else max(1, max_bytes),
+                    headroom=headroom)
             except SourceUnavailable as exc:
                 if (not is_transport_failure(exc) or attempt + 1 >= self.DOWNLOAD_ATTEMPTS
                         or (may_retry is not None and not may_retry())):

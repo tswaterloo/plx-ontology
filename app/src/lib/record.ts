@@ -3,7 +3,7 @@
 // lists (messages by thread, activity by month, related by type). Display only: nothing
 // is recomputed that the server did not state; an unknown value is left out, never guessed.
 
-import { currencyCode, decodeEscapes, formatDate, formatMoney, plainWords, plural, readable, recordLabel, SYSTEM_LABEL, typeLabel } from "./format";
+import { currencyCode, decodeEscapes, formatDate, formatMoney, isRawGuid, plainWords, plural, readable, recordLabel, SYSTEM_LABEL, typeLabel } from "./format";
 import { etaShown as etaHeadline } from "./eta";
 import { lateness, recordState, type Shown, type Status } from "./status";
 import type { Fact, LinkedItem, LinkGroup, LinkRef, ObjectPage, ObjectRef, PoTrail, Source, TimelineEvent } from "./types";
@@ -80,7 +80,7 @@ export interface StatSpec {
 
 export interface RecordHead {
   title: string;
-  counterpart?: ObjectRef | { label: string; open_url?: undefined; object_id?: undefined; type?: undefined } | null;
+  counterpart?: ObjectRef | { label: string; open_url?: string; object_id?: undefined; type?: undefined } | null;
   subline?: string | null;
   lead?: string | null;
   leadStatus?: Status;
@@ -430,12 +430,314 @@ const INTERNAL_FACT = /(?:^|_)(?:\w*uniq|guid|row_?version|etag|system_id|last_m
 /** The fact holding a record's own number, by type ("Shipment number" on a shipment). */
 const OWN_NUMBER: Record<string, string[]> = { Shipment: ["shipment_number"], SalesInvoice: ["invoice_number"], CreditMemo: ["credit_memo_number"] };
 
+/** True when a label is an internal object key or a raw GUID/hash, never a title to show. */
+function isInternalLabel(label: string): boolean {
+  const t = label.trim();
+  return !t || /:\{|^[A-Za-z]+:[a-z]+\./.test(t) || isRawGuid(t);
+}
+
+/** Deduplicated non-internal facts from the payload, keeping each fact's source. */
+function cleanFacts(f: Map<string, RecordFact>, excludeLabels: RegExp = /^name$/i, limit = 8): RecordHead["keyFacts"] {
+  return [...f.values()]
+    .filter((x) => !excludeLabels.test(x.label) && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
+    .filter((x, i, all) => all.findIndex((y) => factValue(y.value) === factValue(x.value) && aliasLabels(y.label, x.label)) === i)
+    .slice(0, limit)
+    .map((x) => ({ label: x.label, value: blockedWords(x.label, factValue(x.value)), source: x.source }));
+}
+
+function linkedRef(obj: ObjectPage, type: RegExp, role?: string): ObjectRef | null {
+  if (role) {
+    const hit = (obj.links ?? []).find((g) => g.role === role)?.records?.[0];
+    if (hit) return hit;
+  }
+  const fromLinks = (obj.links ?? []).find((g) => type.test(g.type))?.records?.[0];
+  return fromLinks ?? related(obj, type)[0] ?? null;
+}
+
+/** Whether a batch has not been manufactured yet (so QC status "On-Hold" is never a hold badge). */
+export function isUnmadeBatch(f: Map<string, RecordFact>, statusText?: string): boolean {
+  const st = (statusText ?? get(f, "status") ?? "").trim().toLowerCase();
+  if (st === "cancelled") return false;
+  const made = /^(?:realized|completed|manufactured|filled|shipped|released|closed|done)$/i.test(st);
+  if (made) return false;
+  const realizedDate = get(f, "realized_date", "made_date", "completed_date");
+  if (realizedDate) return false;
+  const produced = get(f, "produced_quantity", "made_quantity", "actual_quantity", "output_quantity");
+  if (produced && !isZero(produced)) return false;
+  return !st || /^(?:planned|scheduled|draft|open|new|allocated|committed|not started|pending|unmade)$/i.test(st) || !realizedDate;
+}
+
+function salesOrderHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const customerRef = linkedRef(obj, /^Customer$/, "customer");
+  const customer = get(f, "customer_name", "customer", "sell_to_customer_name") ?? customerRef?.label;
+  const ownNo = get(f, "order_number", "number");
+  const rawName = isInternalLabel(obj.label) ? (ownNo ? recordLabel("SalesOrder", ownNo) : typeLabel("SalesOrder")) : recordLabel("SalesOrder", obj.label);
+  const status = get(f, "status");
+  const currency = get(f, "currency", "currency_code");
+  const statusBadge: Shown | null = status
+    ? { status: recordState(status), label: status }
+    : obj.status && !/not_established|^read$|^reading$/i.test(obj.status.state)
+      ? { status: recordState(obj.status.state), label: shortState(obj.status.state) }
+      : null;
+  const chosen: RecordHead["keyFacts"] = [
+    { label: "Status", value: status ?? "", source: srcOf(f, "status") },
+    { label: "Customer", value: customer ?? "", source: srcOf(f, "customer_name", "customer", "sell_to_customer_name") },
+    { label: "Customer PO", value: get(f, "external_document_number", "customer_po", "customer_po_number") ?? "", source: srcOf(f, "external_document_number", "customer_po", "customer_po_number") },
+    { label: "Currency", value: currency ?? "", source: srcOf(f, "currency", "currency_code") },
+    { label: "Rep", value: get(f, "salesperson", "salesperson_code", "rep") ?? "", source: srcOf(f, "salesperson", "salesperson_code", "rep") },
+    { label: "Ordered", value: asDate(get(f, "order_date", "document_date")) ?? "", source: srcOf(f, "order_date", "document_date") },
+    { label: "Needed by", value: asDate(get(f, "requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date", "required_date")) ?? "", source: srcOf(f, "requested_delivery_date", "promised_delivery_date", "shipment_date", "requested_date", "required_date") },
+  ].filter((k) => k.value);
+  const seen = new Set(chosen.map((k) => k.value.toLowerCase()));
+  for (const extra of cleanFacts(f, /^(?:name|status|customer|customer name|currency|order date|document date|requested delivery date|requested date|required date|salesperson|rep)$/i, 6)) {
+    if (!seen.has(extra.value.toLowerCase()) && chosen.length < 8) chosen.push(extra);
+  }
+  return {
+    title: rawName,
+    counterpart: customerRef ?? (customer ? { label: customer } : null),
+    subline: usefulSummary(obj, customer),
+    lead: fallbackLead(obj),
+    badges: statusBadge && statusBadge.label ? [statusBadge] : [],
+    stats: [],
+    keyFacts: chosen,
+    askLabel: rawName,
+  };
+}
+
+function productHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const code = get(f, "item_code", "code", "erp_code", "sku", "number");
+  const name = isInternalLabel(obj.label) ? (get(f, "description", "display_name", "name") ?? code ?? typeLabel(obj.type)) : recordLabel(obj.type, obj.label);
+  const category = get(f, "category", "item_category_code");
+  const uom = get(f, "uom", "base_unit_of_measure", "unit");
+  const blocked = isBlocked(get(f, "blocked"));
+  const activeRaw = get(f, "active");
+  const inactive = activeRaw !== undefined && /^(?:no|false|0|inactive)$/i.test(activeRaw.trim());
+  const currency = get(f, "currency", "currency_code");
+  const onHand = get(f, "on_hand", "inventory", "quantity_on_hand");
+  const unitCost = get(f, "unit_cost");
+  const unitPrice = get(f, "unit_price");
+  const stats: StatSpec[] = [];
+  if (onHand !== undefined) stats.push({ label: "On hand", value: onHand, caption: uom, source: srcOf(f, "on_hand", "inventory", "quantity_on_hand") });
+  if (unitCost !== undefined && !isZero(unitCost)) {
+    const m = moneyText(unitCost, currency) ?? unitCost;
+    stats.push({ label: "Unit cost", value: m.replace(/\s+[A-Z]{3}$/, ""), caption: /\s([A-Z]{3})$/.exec(m)?.[1] ?? currency, source: srcOf(f, "unit_cost") });
+  }
+  if (unitPrice !== undefined && !isZero(unitPrice)) {
+    const m = moneyText(unitPrice, currency) ?? unitPrice;
+    stats.push({ label: "Unit price", value: m.replace(/\s+[A-Z]{3}$/, ""), caption: /\s([A-Z]{3})$/.exec(m)?.[1] ?? currency, source: srcOf(f, "unit_price") });
+  }
+  const badges: Shown[] = [];
+  if (blocked) badges.push({ status: "late", label: "Blocked" });
+  else if (inactive) badges.push({ status: "neutral", label: "Inactive" });
+  else if (activeRaw !== undefined && /^(?:yes|true|1|active)$/i.test(activeRaw.trim())) badges.push({ status: "ok", label: "Active" });
+  const subline = [code && code !== name ? code : null, category].filter(Boolean).join(" · ") || usefulSummary(obj);
+  return {
+    title: name,
+    subline,
+    lead: fallbackLead(obj),
+    badges,
+    stats,
+    keyFacts: cleanFacts(f),
+    askLabel: name,
+  };
+}
+
+function batchHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const code = get(f, "batch_code", "batch_number");
+  const name = isInternalLabel(obj.label) ? (code ? recordLabel("Batch", code) : typeLabel("Batch")) : recordLabel("Batch", obj.label);
+  const productRef = linkedRef(obj, /^(?:Product|Item|FgItem)$/);
+  const product = get(f, "product", "product_name") ?? productRef?.label;
+  const lot = get(f, "lot_number", "lot");
+  const status = get(f, "status");
+  const qc = get(f, "quality_status", "qc_status");
+  const cancelled = /^cancelled$/i.test((status ?? "").trim());
+  const unmade = isUnmadeBatch(f, status);
+  const qcHold = /\b(?:hold|quarantine)\b/i.test(qc ?? "") || /\b(?:hold|quarantine)\b/i.test(obj.status?.state ?? "");
+  const badges: Shown[] = [];
+  if (cancelled) {
+    badges.push({ status: "neutral", label: "Cancelled" });
+  } else if (unmade) {
+    badges.push({ status: "neutral", label: status || "Not made yet" });
+  } else {
+    if (status) badges.push({ status: recordState(status), label: status });
+    if (qcHold) badges.push({ status: "risk", label: "On hold" });
+    else if (qc && /released|pass/i.test(qc)) badges.push({ status: "ok", label: qc });
+  }
+  const planned = get(f, "planned_quantity");
+  const produced = get(f, "produced_quantity");
+  const scheduled = asDate(get(f, "scheduled_date"));
+  const made = asDate(get(f, "realized_date"));
+  const stats: StatSpec[] = [];
+  if (planned) stats.push({ label: "Planned", value: planned, source: srcOf(f, "planned_quantity") });
+  if (produced && !isZero(produced)) stats.push({ label: "Produced", value: produced, source: srcOf(f, "produced_quantity") });
+  else if (unmade) stats.push({ label: "Produced", value: "Not made yet" });
+  if (made) stats.push({ label: "Made", value: made, source: srcOf(f, "realized_date") });
+  else if (scheduled) stats.push({ label: "Scheduled", value: scheduled, source: srcOf(f, "scheduled_date") });
+  return {
+    title: name,
+    counterpart: productRef ?? (product ? { label: product } : null),
+    subline: lot ? `Lot ${lot}` : usefulSummary(obj, product),
+    lead: unmade && qcHold ? "Not made yet; QC status reads on hold." : fallbackLead(obj),
+    badges: badges.slice(0, 2),
+    stats,
+    keyFacts: cleanFacts(f),
+    askLabel: name,
+  };
+}
+
+function lotHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const lotNo = get(f, "lot_number", "lot");
+  const name = isInternalLabel(obj.label) ? (lotNo ? recordLabel("Lot", lotNo) : typeLabel("Lot")) : recordLabel("Lot", obj.label);
+  const productRef = linkedRef(obj, /^(?:Product|Item|FgItem)$/) ?? linkedRef(obj, /^(?:Supplier|Vendor)$/);
+  const status = get(f, "quality_status", "status");
+  const badges: Shown[] = [];
+  if (status) {
+    const st = /\b(?:hold|quarantine)\b/i.test(status) ? "risk" : /expired/i.test(status) ? "late" : /\b(?:released|pass|passed|approved)\b/i.test(status) ? "ok" : recordState(status);
+    badges.push({ status: st, label: status });
+  } else if (obj.status && !/not_established|^read$|^reading$/i.test(obj.status.state)) {
+    const label = shortState(obj.status.state);
+    if (label) badges.push({ status: recordState(obj.status.state), label });
+  }
+  const qtyVal = get(f, "quantity_on_hand", "on_hand", "remaining_quantity", "quantity_received", "quantity");
+  const expiry = asDate(get(f, "expiry_date", "expiration_date"));
+  const received = asDate(get(f, "receipt_date", "received_date"));
+  const stats: StatSpec[] = [];
+  if (qtyVal) stats.push({ label: "Quantity", value: qtyVal });
+  if (expiry) stats.push({ label: "Expires", value: expiry });
+  if (received) stats.push({ label: "Received", value: received });
+  return {
+    title: name,
+    counterpart: productRef,
+    subline: usefulSummary(obj, productRef?.label),
+    lead: fallbackLead(obj),
+    badges,
+    stats,
+    keyFacts: cleanFacts(f, /^name$/i, 6),
+    askLabel: name,
+  };
+}
+
+function shipmentHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const parent = (obj.related ?? []).find((r) => /Order$/.test(r.type) && !/Line$/.test(r.type));
+  const named = isInternalLabel(obj.label)
+    ? `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}${(obj.type_label || typeLabel(obj.type)).toLowerCase()}`
+    : recordLabel(obj.type, obj.label);
+  const ownNo = get(f, "shipment_number", "document_number");
+  const name = ownNo && !named.includes(ownNo) ? ownNo : named;
+  const customerRef = linkedRef(obj, /^Customer$/);
+  const customer = get(f, "customer_name", "customer", "sell_to_customer_name") ?? customerRef?.label;
+  const status = get(f, "status");
+  const s = status
+    ? { status: recordState(status), label: status }
+    : obj.status && !/not_established|^read$|^reading$/i.test(obj.status.state)
+      ? { status: recordState(obj.status.state), label: shortState(obj.status.state) }
+      : null;
+  const shipDate = asDate(get(f, "ship_date", "shipment_date", "posting_date"));
+  const carrier = get(f, "carrier", "shipping_agent_code", "ship_via");
+  const tracking = get(f, "tracking_number", "package_tracking_no");
+  const stats: StatSpec[] = [];
+  if (shipDate) stats.push({ label: "Shipped", value: shipDate, source: srcOf(f, "ship_date", "shipment_date", "posting_date") });
+  if (carrier) stats.push({ label: "Carrier", value: carrier, source: srcOf(f, "carrier", "shipping_agent_code", "ship_via") });
+  if (tracking) stats.push({ label: "Tracking", value: tracking, source: srcOf(f, "tracking_number", "package_tracking_no") });
+  return {
+    title: name.charAt(0).toUpperCase() + name.slice(1),
+    counterpart: customerRef ?? (customer ? { label: customer } : null),
+    subline: name !== named ? named : usefulSummary(obj, customer),
+    lead: fallbackLead(obj),
+    badges: s && s.label ? [s] : [],
+    stats,
+    keyFacts: cleanFacts(f),
+    askLabel: name,
+  };
+}
+
+function receiptHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const parent = (obj.related ?? []).find((r) => /Order$/.test(r.type) && !/Line$/.test(r.type));
+  const ownNo = get(f, "receipt_number", "document_number", "number");
+  const named = isInternalLabel(obj.label)
+    ? (ownNo ? `Receipt ${ownNo}` : `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}receipt`)
+    : recordLabel(obj.type, obj.label);
+  const name = ownNo && !named.includes(ownNo) ? ownNo : named;
+  const supplierRef = linkedRef(obj, /^(?:Supplier|Vendor)$/);
+  const supplier = get(f, "supplier_name", "vendor_name", "supplier") ?? supplierRef?.label;
+  const status = get(f, "status");
+  const s = status
+    ? { status: recordState(status), label: status }
+    : obj.status && !/not_established|^read$|^reading$/i.test(obj.status.state)
+      ? { status: recordState(obj.status.state), label: shortState(obj.status.state) }
+      : null;
+  const recDate = asDate(get(f, "receipt_date", "received_date", "posting_date", "document_date"));
+  const qtyVal = get(f, "quantity_received", "quantity");
+  const currency = get(f, "currency", "currency_code");
+  const amt = get(f, "total_amount", "amount", "total");
+  const stats: StatSpec[] = [];
+  if (recDate) stats.push({ label: "Received", value: recDate, source: srcOf(f, "receipt_date", "received_date", "posting_date", "document_date") });
+  if (qtyVal) stats.push({ label: "Quantity", value: qtyVal });
+  if (amt && !isZero(amt)) {
+    const m = moneyText(amt, currency) ?? amt;
+    stats.push({ label: "Amount", value: m.replace(/\s+[A-Z]{3}$/, ""), caption: /\s([A-Z]{3})$/.exec(m)?.[1] ?? currency });
+  }
+  return {
+    title: name.charAt(0).toUpperCase() + name.slice(1),
+    counterpart: supplierRef ?? (supplier ? { label: supplier } : null),
+    subline: name !== named ? named : usefulSummary(obj, supplier),
+    lead: fallbackLead(obj),
+    badges: s && s.label ? [s] : [],
+    stats,
+    keyFacts: cleanFacts(f),
+    askLabel: name,
+  };
+}
+
+function supplierInvoiceHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
+  const docNo = get(f, "document_number", "invoice_number", "vendor_invoice_number", "number");
+  const raw = isInternalLabel(obj.label) || /^rel sage ap/i.test(obj.label.trim())
+    ? (docNo ? `Invoice ${docNo}` : "Supplier invoice")
+    : recordLabel(obj.type, obj.label);
+  const name = docNo && !raw.includes(docNo) ? `Invoice ${docNo}` : raw;
+  const supplierRef = linkedRef(obj, /^(?:Supplier|Vendor)$/);
+  const supplier = get(f, "supplier", "supplier_name", "vendor_name") ?? supplierRef?.label;
+  const currency = get(f, "currency", "currency_code");
+  const amount = get(f, "original_amount", "total_amount_including_tax", "total_amount", "amount");
+  const owed = get(f, "amount_due", "remaining_amount", "balance_due");
+  const paidRaw = get(f, "paid");
+  const paid = /^(?:yes|true|1|paid)$/i.test((paidRaw ?? "").trim()) || (owed !== undefined && isZero(owed) && amount !== undefined && !isZero(amount));
+  const status = get(f, "status");
+  const dated = asDate(get(f, "document_date", "invoice_date", "posting_date"));
+  const due = asDate(get(f, "due_date"));
+  const badges: Shown[] = [];
+  if (paid) badges.push({ status: "ok", label: "Paid" });
+  else if (status) badges.push({ status: recordState(status), label: status });
+  else if (owed !== undefined && !isZero(owed)) badges.push({ status: "neutral", label: "Open" });
+  const stats: StatSpec[] = [];
+  if (amount !== undefined && !isZero(amount)) {
+    const m = moneyText(amount, currency) ?? amount;
+    stats.push({ label: "Amount", value: m.replace(/\s+[A-Z]{3}$/, ""), caption: /\s([A-Z]{3})$/.exec(m)?.[1] ?? currency });
+  }
+  if (owed !== undefined) {
+    const m = moneyText(owed, currency) ?? owed;
+    stats.push({ label: "Still owed", value: m.replace(/\s+[A-Z]{3}$/, ""), caption: /\s([A-Z]{3})$/.exec(m)?.[1] ?? currency });
+  }
+  if (dated) stats.push({ label: "Dated", value: dated });
+  if (due) stats.push({ label: "Due", value: due });
+  return {
+    title: name,
+    counterpart: supplierRef ?? (supplier ? { label: supplier } : null),
+    subline: usefulSummary(obj, supplier),
+    lead: fallbackLead(obj),
+    badges,
+    stats,
+    keyFacts: cleanFacts(f),
+    askLabel: name,
+  };
+}
+
 /** Every other type: its status sentence, its facts as key facts. */
 function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
   // a record with no name of its own arrives labelled by its internal id ("SalesOrderLine:bc.…:{"id":…}"):
   // it is called by its kind and the record it belongs to, never by the id
   const parent = (obj.related ?? []).find((r) => /Order$/.test(r.type) && !/Line$/.test(r.type));
-  const internal = /:\{|^[A-Za-z]+:[a-z]+\./.test(obj.label);
+  const internal = isInternalLabel(obj.label);
   const named = internal ? `${parent ? `${recordLabel(parent.type, parent.label)}, ` : ""}${(obj.type_label || typeLabel(obj.type)).toLowerCase()}` : recordLabel(obj.type, obj.label);
   // a shipment labelled "OR1000154433, shipment" has a number of its own: that is its name,
   // the order it ships stays in the label's place below
@@ -448,12 +750,7 @@ function genericHead(obj: ObjectPage, f: Map<string, RecordFact>): RecordHead {
     lead: fallbackLead(obj),
     badges: s && s.label ? [s] : [],
     stats: [],
-    keyFacts: [...f.values()]
-      .filter((x) => x.label.toLowerCase() !== "name" && !INTERNAL_FACT.test(x.key) && !/\buniq\b/i.test(x.label))
-      // the same value under a second name ("Lot text" beside "Lot number") is said once
-      .filter((x, i, all) => all.findIndex((y) => factValue(y.value) === factValue(x.value) && aliasLabels(y.label, x.label)) === i)
-      .slice(0, 6)
-      .map((x) => ({ label: x.label, value: blockedWords(x.label, factValue(x.value)), source: x.source })),
+    keyFacts: cleanFacts(f, /^name$/i, 6),
     askLabel: name,
   };
 }
@@ -475,9 +772,16 @@ function shortState(state: string): string {
 export function recordHead(obj: ObjectPage): RecordHead {
   const f = factMap(obj.facts);
   if (/^PurchaseOrder$/.test(obj.type)) return poHead(obj, f);
+  if (/^SalesOrder$/.test(obj.type)) return salesOrderHead(obj, f);
   if (/^(?:Supplier|Vendor)$/.test(obj.type)) return supplierHead(obj, f);
   if (/^Customer$/.test(obj.type)) return customerHead(obj, f);
   if (/^(?:AssemblyOrder|ManufacturingOrder)$/.test(obj.type)) return aoHead(obj, f);
+  if (/^(?:Product|Item|FgItem)$/.test(obj.type)) return productHead(obj, f);
+  if (/^Batch$/.test(obj.type)) return batchHead(obj, f);
+  if (/^(?:Lot|InventoryLot)$/.test(obj.type)) return lotHead(obj, f);
+  if (/^Shipment$/.test(obj.type)) return shipmentHead(obj, f);
+  if (/^Receipt$/.test(obj.type)) return receiptHead(obj, f);
+  if (/^(?:SupplierInvoice|PurchaseInvoice|RelSageApOpenDocument)$/.test(obj.type)) return supplierInvoiceHead(obj, f);
   return genericHead(obj, f);
 }
 
@@ -637,4 +941,56 @@ export function linkSections(obj: Pick<ObjectPage, "type" | "links">, shownInHea
     out[g.role === "fulfilment" ? "fulfilment" : "linked"].push({ group: g, heading, records: [...once.values()] });
   }
   return out;
+}
+
+const LINKED_PLAIN_LABELS: Readonly<Record<string, string>> = {
+  "ar customer period statistics": "Customer period totals",
+  "ar customer optional field": "Customer custom fields",
+  "ar customer group optional field": "Customer group custom fields",
+  "ar customer group period statistics": "Customer group period totals",
+  "ar national account optional field": "National account custom fields",
+  "ar national account period statistics": "National account period totals",
+  "ar statement customer optional field": "Statement custom fields",
+  "ar salesperson period statistics": "Salesperson period totals",
+  "ar open document journal line": "Receivables journal entries",
+  "ar open document line optional field": "Receivables line custom fields",
+  "ar open document optional field": "Receivables custom fields",
+  "ar posted transaction line": "Receivables transactions",
+  "ar posted transaction line optional field": "Receivables transaction line custom fields",
+  "ar posted transaction optional field": "Receivables transaction custom fields",
+  "ar invoice entry": "Receivables invoice entries",
+  "ar invoice entry optional field": "Receivables invoice custom fields",
+  "ar invoice line optional field": "Receivables invoice line custom fields",
+  "ar open document": "Open receivables",
+  "ar customer comment": "Account notes",
+  "ap vendor period statistics": "Supplier period totals",
+  "ap vendor optional field": "Supplier custom fields",
+  "ap vendor group period statistics": "Supplier group period totals",
+  "ap open document journal line": "Payables journal entries",
+  "ap open document line optional field": "Payables line custom fields",
+  "ap open document optional field": "Payables custom fields",
+  "ap posted transaction line": "Payables transactions",
+  "ap posted transaction line optional field": "Payables transaction line custom fields",
+  "ap posted transaction optional field": "Payables transaction custom fields",
+  "ap invoice entry": "Payables invoice entries",
+  "ap invoice entry optional field": "Payables invoice custom fields",
+  "ap invoice line optional field": "Payables invoice line custom fields",
+  "ap recurring payable optional field": "Recurring payable custom fields",
+};
+
+/** Maps internal Sage/BC technical entity labels in the Linked rail to plain English. */
+export function plainLinkedHeading(heading: string): string {
+  const [base, ...rest] = heading.split(" · ");
+  const mapped = LINKED_PLAIN_LABELS[base.trim().toLowerCase()];
+  if (!mapped) return heading;
+  return rest.length > 0 ? `${mapped} · ${rest.join(" · ")}` : mapped;
+}
+
+/** True for low-level Sage/BC accounting, optional-field, period-statistics, and journal-line
+ * link groups that belong folded under "Accounting records" rather than crowding primary links. */
+export function isAccountingLinkGroup(group: { type?: string | null; type_label?: string | null }, heading: string): boolean {
+  const t = (group.type ?? "").trim();
+  if (/^RelSage(?:Ar|Ap|Gl)/i.test(t)) return true;
+  const text = `${group.type_label ?? ""} ${heading}`.trim();
+  return /\b(?:optional field|period statistics|journal line|posted transaction|period totals|custom fields|journal entries|receivables transactions|payables transactions)\b/i.test(text) || /^(?:AR|AP|GL)\s+/i.test(text);
 }

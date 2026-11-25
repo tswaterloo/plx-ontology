@@ -68,6 +68,9 @@ describe("prepared change in an Ask answer", () => {
     expect(screen.getByTestId("prepared-diff").textContent).toContain(
       "Chase the carrier",
     );
+    expect(screen.getByTestId("prepared-action").textContent).toContain("Create task");
+    expect(screen.getByTestId("prepared-action").textContent).not.toContain("task_create");
+    expect(screen.getByTestId("prepared-mode").textContent).toContain("Live mode:");
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(api.preparedStep).not.toHaveBeenCalled();
     await userEvent.click(
@@ -99,6 +102,7 @@ describe("prepared change in an Ask answer", () => {
     expect(
       screen.getByText("planner is not opened to approved writes."),
     ).toBeTruthy();
+    expect(screen.getByTestId("prepared-mode").textContent).toContain("Pilot dry-run:");
     await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(api.preparedStep).toHaveBeenCalledWith("pw_1", "dismiss");
     expect(screen.getByTestId("prepared-state").textContent).toBe(

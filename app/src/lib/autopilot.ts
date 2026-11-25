@@ -38,9 +38,60 @@ const humanize = (id: string) =>
     .map((w, i) => WORDS[w] ?? (i === 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w))
     .join(" ");
 
+const OPERATIONS: Record<string, string> = {
+  send_email: "Send email",
+  chat_message: "Send Teams message",
+  channel_message: "Post Teams message",
+  approval_decide: "Decide approval",
+  task_note: "Add task note",
+  task_create: "Create task",
+  task_update: "Update task",
+  event_create: "Create calendar event",
+  event_update: "Update calendar event",
+  event_respond: "Respond to calendar invite",
+  list_item_create: "Create SharePoint item",
+  list_item_update: "Update SharePoint item",
+  file_upload: "Upload SharePoint file",
+  file_replace: "Replace SharePoint file",
+  purchase_order_create: "Create purchase order",
+  purchase_order_update: "Update purchase order",
+  purchase_order_delete: "Delete purchase order",
+  purchase_order_comment: "Add purchase order comment",
+  purchase_order_attach: "Attach file to purchase order",
+  purchase_order_line_create: "Add purchase order line",
+  purchase_order_line_update: "Update purchase order line",
+  sales_order_create: "Create sales order",
+  sales_order_update: "Update sales order",
+  sales_order_delete: "Delete sales order",
+  sales_order_comment: "Add sales order comment",
+  sales_order_attach: "Attach file to sales order",
+  sales_order_line_create: "Add sales order line",
+  sales_order_line_update: "Update sales order line",
+  sales_order_charge_line: "Add sales order charge",
+  sales_invoice_charge_line: "Add sales invoice charge",
+  sales_invoice_attach: "Attach file to sales invoice",
+  customer_note: "Add customer note",
+  vendor_note: "Add supplier note",
+  "activity.note": "Add activity note",
+  "purchase-order.update": "Update purchase order",
+  "sales-order.update": "Update sales order",
+  "ship-release.create": "Create ship release",
+  "ship-release.update": "Update ship release",
+  "customer-contact.create": "Create customer contact",
+  "customer-contact.update": "Update customer contact",
+  "customer-location.create": "Create customer location",
+  "customer-location.update": "Update customer location",
+};
+
 export const roleLabel = (role: string) => ROLE[role] ?? humanize(role);
 export const systemLabel = (system: string) => SYSTEM[system] ?? humanize(system);
 export const workflowLabel = (workflow: string) => humanize(workflow);
+export const operationLabel = (operation: string) => {
+  const raw = (operation ?? "").trim();
+  if (!raw) return "";
+  if (OPERATIONS[raw]) return OPERATIONS[raw];
+  return humanize(raw.replace(/[.-]+/g, "_"));
+};
 
 /** A workflow row's state in words, with the status shape it is drawn with. */
 export function stateShown(state: AutopilotWorkflowRow["state"], owner: boolean): { status: Status; label: string } {
@@ -173,7 +224,7 @@ export function rowRole(area: AutopilotArea, row: AutopilotWorkflowRow): string 
 }
 
 export const pct = (s: { percent?: number | null; judged: number } | null | undefined) =>
-  s && s.percent != null ? `${s.percent.toFixed(1)}%` : "—";
+  s && s.percent != null ? `${s.percent.toFixed(1)}%` : "–";
 
 // ---- the studio: modes and due words -------------------------------------------------
 

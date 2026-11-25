@@ -84,8 +84,8 @@ export function Figure({
         {label}
       </span>
       <span className="mt-1 flex items-baseline gap-1.5 whitespace-nowrap">
-        <span className={cn(words ? "text-[13px] leading-7 text-muted" : "text-[22px] leading-7 font-semibold tracking-[-0.02em] num", source && "group-hover:underline decoration-1 underline-offset-4")}>{value}</span>
-        {unit && <span className="truncate text-[13px] text-muted">{unit}</span>}
+        <span className={cn(words ? "text-[13px] leading-7 text-muted" : "text-[24px] leading-7 font-semibold tracking-[-0.02em] tabular-nums", source && "group-hover:underline decoration-1 underline-offset-4")}>{value}</span>
+        {unit && <span className="truncate text-[13px] font-medium text-muted">{unit}</span>}
       </span>
     </>
   );

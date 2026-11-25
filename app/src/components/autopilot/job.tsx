@@ -4,16 +4,17 @@
 // prepared only when the person reviews it (read from its system, before and after), then
 // confirmed in two clicks on the prepared change itself. Nothing here writes.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
 import { PreparedChange } from "@/components/prepared-change";
 import { TodoSteps } from "@/components/autopilot/todo";
 import { noteParts, saidOnce } from "@/components/autopilot/lines";
 import { prepareAutopilotJob, type PreparedItem, type ProposedJob } from "@/lib/api";
-import { ItemActions } from "@/components/autopilot/item-actions";
+import { ItemActions, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
 import { plainError } from "@/lib/errors";
 import { countedWords, formatDateTime } from "@/lib/format";
+import { operationLabel } from "@/lib/autopilot";
 
 const SYSTEMS: Record<string, string> = {
   bc: "Business Central",
@@ -50,7 +51,7 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   return (
     <li className="space-y-1 py-2" data-testid="proposed-job">
       <p className="text-[13px]">
-        <span className="font-medium">{SYSTEMS[job.system] ?? job.system}</span> · {job.operation}
+        <span className="font-medium">{SYSTEMS[job.system] ?? job.system}</span> · {operationLabel(job.operation)}
         {job.state ? <span className="text-muted"> · {job.state}</span> : null}
       </p>
       {job.reason && <p className="text-[12px] text-muted">{job.reason}</p>}
@@ -59,7 +60,7 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
         <PreparedChange id={pid} />
       ) : (
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void review()}>
-          Review this change
+          {busy ? "Preparing..." : "Review this change"}
         </Button>
       )}
       {problem}
@@ -67,7 +68,20 @@ function Proposed({ itemId, job }: { itemId: string; job: ProposedJob }) {
   );
 }
 
-export function JobCard({ item, linked, onGone, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; feedback?: React.ReactNode }) {
+export function JobCard({
+  item,
+  linked,
+  onGone,
+  onOptimistic,
+  onRestore,
+  onFeedback,
+  feedback,
+}: {
+  item: PreparedItem;
+  linked?: boolean;
+  onGone: (id: string) => void;
+  feedback?: React.ReactNode;
+} & OptimisticCallbacks) {
   const card = useProblemSlot();
   const parsedNote = noteParts(item.note ?? "");
   const [subjectLine, summary, message, noteText] = saidOnce([item.subject ?? "", item.summary ?? "", item.message ?? "", parsedNote.text]);
@@ -76,22 +90,28 @@ export function JobCard({ item, linked, onGone, feedback }: { item: PreparedItem
   return (
     <li
       id={`prepared-${item.item_id}`}
-      className={linked ? "max-w-[50rem] space-y-3 rounded-lg border border-accent/70 bg-surface/60 p-4 ring-1 ring-accent/30" : "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4"}
+      className={linked ? "w-full space-y-3 border-l-2 border-l-accent pl-3 py-1" : "w-full space-y-3 py-1"}
       data-testid="prepared-job"
     >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         {item.sender && <span className="text-[14px] font-semibold text-fg">{item.sender}</span>}
         {subHeader && (
-          <span className="inline-flex max-w-full items-center truncate rounded-md border border-border/70 bg-bg/80 px-2 py-0.5 text-[12px] text-muted">
-            {subHeader}
-          </span>
+          <>
+            <span className="text-faint" aria-hidden>·</span>
+            <span className="max-w-full truncate text-[13px] text-muted">
+              {subHeader}
+            </span>
+          </>
         )}
         {parsedNote.labels.map((l) => (
-          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
-            {l}
-          </p>
+          <Fragment key={l}>
+            <span className="text-faint" aria-hidden>·</span>
+            <p className="text-[11.5px] leading-4 text-faint" data-testid="prepared-label">
+              {l}
+            </p>
+          </Fragment>
         ))}
-        <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
+        <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
       </div>
       {headline && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(headline)}</p>}
       {message && <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">{message}</p>}
@@ -115,7 +135,7 @@ export function JobCard({ item, linked, onGone, feedback }: { item: PreparedItem
       {card.provide(
         <>
           {(item.jobs ?? []).length > 0 && (
-            <ul className="divide-y divide-border/70 rounded-md border border-border/70 bg-bg/80 px-3" aria-label="Changes to review">
+            <ul className="divide-y divide-border/70 border-t border-border/70 pt-2" aria-label="Changes to review">
               {(item.jobs ?? []).map((j) => (
                 <Proposed key={j.index} itemId={item.item_id} job={j} />
               ))}
@@ -124,7 +144,7 @@ export function JobCard({ item, linked, onGone, feedback }: { item: PreparedItem
           <TodoSteps todos={item.todos ?? []} />
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 pt-3">
             <div className="min-w-0">
-              <ItemActions item={item} onGone={onGone} />
+              <ItemActions item={item} onGone={onGone} onOptimistic={onOptimistic} onRestore={onRestore} onFeedback={onFeedback} />
             </div>
             {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
           </div>

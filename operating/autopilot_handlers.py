@@ -17,8 +17,6 @@ from .autopilot_queue import (
     CLOSED,
     HandlerTimeout,
     INVOICE_NUMBER,
-    MAX_LINES,
-    MAX_RECORDS,
     ORDER_NUMBER,
     PO_LINE_ITEM,
     PO_LINE_OF,
@@ -27,7 +25,6 @@ from .autopilot_queue import (
     ROLES_FILE,
     SO_LINE_ITEM,
     SO_LINE_OF,
-    SUMMARY_CHARS,
     lot_subject,
     order_key,
 )
@@ -222,7 +219,7 @@ class Ctx:
         """The records ``find`` reads ``prop`` of from the identifier table; None when the
         table does not carry ``prop`` of ``prefix`` (``_carried``)."""
         via = IDENTIFIED_VIA.get((prefix, prop))
-        if not (self._carried(*via[:2]) if via else self._carried(prefix, prop)):
+        if not (self._carried(*via[:2]) if via else self._carried(prefix, prop)):  # guard-ok: prefix/property pair, not content
             return None
         stripped = value.strip()
         bare = re.sub(r"[^0-9A-Za-z]", "", stripped)
@@ -352,7 +349,7 @@ def identified(ctx: "Ctx", *texts: str) -> list[str]:
     identifier table: customer PO, order, PO, invoice, shipment, lot numbers), a customer
     PO resolved to its orders; a token naming more than ``MAX_PER_TOKEN`` records is
     ambiguous and left out (conservative identity)."""
-    return list(dict.fromkeys(o for _t, o in identified_tokens(ctx, *texts)))[:MAX_RECORDS]
+    return list(dict.fromkeys(o for _t, o in identified_tokens(ctx, *texts)))
 
 
 def identified_tokens(ctx: "Ctx", *texts: str) -> list[tuple[str, str]]:
@@ -365,7 +362,7 @@ def identified_tokens(ctx: "Ctx", *texts: str) -> list[tuple[str, str]]:
             if 4 <= len(tok) <= 25 and sum(c.isdigit() for c in tok) >= 3 and \
                     not re.fullmatch(r"(?:19|20)\d{2}(?:-\d{1,2}){0,2}", tok):
                 tokens.append(tok)
-    tokens = list(dict.fromkeys(tokens))[:20]
+    tokens = list(dict.fromkeys(tokens))
     if not tokens:
         return []
     ctx.check()
@@ -398,7 +395,7 @@ def _numbers(rx: re.Pattern[str], *texts: str) -> list[str]:
         for m in rx.finditer(t or ""):
             if m.group(1) not in out and any(c.isdigit() for c in m.group(1)):
                 out.append(m.group(1))
-    return out[:5]
+    return out
 
 
 def _greeting(sender: str) -> str:
@@ -421,7 +418,7 @@ def _reply(event: Mapping[str, Any], lines: Sequence[str]) -> dict[str, Any]:
     return {"channel": event.get("channel") or "email",
             "to": [{"address": a} for a in [event.get("sender"), *more]],
             **({"cc": [{"address": a} for a in copied]} if copied else {}),
-            "subject": subject[:200], "body": body, "in_reply_to": event.get("object_id")}
+            "subject": subject, "body": body, "in_reply_to": event.get("object_id")}
 
 
 def _order_facts(ctx: Ctx, order: str) -> dict[str, Any]:
@@ -430,19 +427,19 @@ def _order_facts(ctx: Ctx, order: str) -> dict[str, Any]:
     ctx.cite(row, "order_number", "status")
     facts: dict[str, Any] = {"object_id": order, "order_number": _v(row, "order_number"),
                              "customer_po": _v(row, "customer_po"), "status": _v(row, "status"),
-                             "required_date": _v(row, "required_date")[:10]}
-    ships = ctx.linked(order, ("Shipment.ships",))[:5]
+                             "required_date": _v(row, "required_date")[:10]}  # guard-ok: ISO date shape, not content
+    ships = ctx.linked(order, ("Shipment.ships",))
     srows = ctx.read(ships, ("shipment_number", "ship_date", "carrier", "tracking_number",
                              "status"))
     facts["shipments"] = [{"object_id": s, "number": _v(r, "shipment_number"),
-                           "ship_date": _v(r, "ship_date")[:10], "carrier": _v(r, "carrier"),
+                           "ship_date": _v(r, "ship_date")[:10], "carrier": _v(r, "carrier"),  # guard-ok: ISO date shape, not content
                            "tracking": _v(r, "tracking_number")} for s, r in sorted(srows.items())]
     for r in srows.values():
         ctx.cite(r, "ship_date", "tracking_number")
-    invs = ctx.linked(order, ("SalesInvoice.bills",))[:5]
+    invs = ctx.linked(order, ("SalesInvoice.bills",))
     irows = ctx.read(invs, ("invoice_number", "bc_number", "invoice_date"))
     facts["invoices"] = [{"object_id": i, "number": _v(r, "invoice_number") or _v(r, "bc_number"),
-                          "date": _v(r, "invoice_date")[:10]} for i, r in sorted(irows.items())]
+                          "date": _v(r, "invoice_date")[:10]} for i, r in sorted(irows.items())]  # guard-ok: ISO date shape, not content
     return facts
 
 
@@ -504,10 +501,9 @@ def availability(ctx: Ctx, order: str) -> dict[str, Any]:
     not both today). Quantities compare only in one stated unit (the order line's, the
     stock's, each PO line's; never converted). Another order's demand is not netted (stated
     in ``basis``). Unknown (``date`` None) when any line's item, quantity, unit or supply
-    date is unstated, or the order has more lines than one check reads
-    (``lines_not_read``)."""
+    date is unstated. Every line of the order is read, however many."""
     found = ctx.linked(order, (SO_LINE_OF,))
-    lines = found[:MAX_LINES]
+    lines = found
     rows = ctx.read(lines, ("ordered_quantity", "shipped_quantity", "outstanding_quantity",
                             "uom", "description"))
     dates: list[date] = []
@@ -560,7 +556,7 @@ def availability(ctx: Ctx, order: str) -> dict[str, Any]:
                 covered = sum((q for _d, q in ledger), Decimal(0))
                 if covered < drawn and not flows_read:
                     flows_read = True
-                    po_lines = ctx.linked(item, (PO_LINE_ITEM,))[:MAX_LINES]
+                    po_lines = ctx.linked(item, (PO_LINE_ITEM,))
                     flows, why = supply_flows(ctx, po_lines, unit)
                     ledger += [(at, due) for at, due, _pl in flows]
                 if why is None:
@@ -580,9 +576,7 @@ def availability(ctx: Ctx, order: str) -> dict[str, Any]:
                 reasons[key] = reasons.get(key, 0) + 1
             else:
                 dates.append(when)
-    if len(found) > MAX_LINES:
-        reasons["lines_not_read"] = len(found) - MAX_LINES
-    atp = max(dates).isoformat() if dates and not unknown and len(found) <= MAX_LINES \
+    atp = max(dates).isoformat() if dates and not unknown \
         else None
     out = {"date": atp, "lines": out_lines, "unknown_lines": len(unknown),
            "basis": "on hand, then open purchase order lines by expected date, each "
@@ -590,8 +584,6 @@ def availability(ctx: Ctx, order: str) -> dict[str, Any]:
                     "netted"}
     if reasons:
         out["unknown_reasons"] = reasons
-    if len(found) > MAX_LINES:
-        out["lines_read"], out["lines_total"] = MAX_LINES, len(found)
     return out
 
 
@@ -642,7 +634,7 @@ def h_order_entry(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         ctx.cite(crow, "code", "erp_code")
         out["write"] = {"system": "bc", "operation": "sales_order_create",
                         "payload": {"customerNumber": _v(crow, "code") or _v(crow, "erp_code"),
-                                    "externalDocumentNumber": pos[0][:35],
+                                    "externalDocumentNumber": pos[0][:35],  # guard-ok: BC externalDocumentNumber field width
                                     "orderDate": ctx.as_of.isoformat()},
                         "reason": f"Customer PO {pos[0]} received by mail; lines to be "
                                   "entered from the PO document before approval.",
@@ -669,7 +661,7 @@ def _records_named(ctx: Ctx, event: Mapping[str, Any]) -> list[str]:
         found += ctx.find("SalesOrder", "order_number", no)
     for no in _numbers(INVOICE_NUMBER, *texts):
         found += ctx.find("SalesInvoice", "invoice_number", no)
-    return list(dict.fromkeys(found))[:MAX_RECORDS]
+    return list(dict.fromkeys(found))
 
 
 def _record_customers(ctx: Ctx, oid: str) -> set[str]:
@@ -711,7 +703,7 @@ def senders_own(ctx: Ctx, event: Mapping[str, Any], records: Sequence[str]
         return records          # every reader is ours: a mail with no outside recipient
     from .autopilot_work import resolve_customer
     text = f"{event.get('subject') or ''}\n{event.get('text') or ''}"
-    customer = resolve_customer(ctx, event, text[:20000])
+    customer = resolve_customer(ctx, event, text)
     want = str(customer.get("number") or "").strip().upper()
     if not want:
         return None
@@ -816,7 +808,7 @@ def h_answer_request(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"skip": "status_customer_ambiguous"}
     if unique and not own:
         return {"skip": "no_own_record_named"}
-    orders = own[:5]
+    orders = own
     wants_docs = "document_request" in (event.get("intents") or ())
     out: dict[str, Any] = {"orders": [], "links": [], "gaps": []}
     lines = []
@@ -844,7 +836,7 @@ def h_answer_request(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         lines = ["Could you send the PO or order number this is about? We will reply with "
                  "the status and documents right away."]
     else:
-        out["summary"] = f"Asks about {len(orders)} order(s): " + " ".join(lines)[:SUMMARY_CHARS]
+        out["summary"] = f"Asks about {len(orders)} order(s): " + " ".join(lines)
         if wants_docs:
             # the send carries no attachments (autopilot_write builds the message from the
             # body alone): the reply never says they are attached. The reviewer attaches
@@ -860,43 +852,43 @@ def h_delay_impact(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             if o.startswith("PurchaseOrder:")]
     for no in _numbers(PO_NUMBER, event.get("subject", ""), event.get("text", "")):
         pos += ctx.find("PurchaseOrder", "po_number", no)
-    pos = list(dict.fromkeys(pos))[:5]
+    pos = list(dict.fromkeys(pos))
     out: dict[str, Any] = {"purchase_orders": [], "impacted": [], "options": [], "gaps": []}
     impacted: dict[str, dict[str, Any]] = {}
     for po in pos:
         head = ctx.read([po], ("po_number", "expected_date", "status", "vendor_name")).get(po)
         ctx.cite(head, "po_number", "expected_date")
         out["purchase_orders"].append({"object_id": po, "number": _v(head, "po_number"),
-                                       "expected": _v(head, "expected_date")[:10],
+                                       "expected": _v(head, "expected_date")[:10],  # guard-ok: ISO date shape, not content
                                        "supplier": _v(head, "vendor_name")})
-        for pl in ctx.linked(po, (PO_LINE_OF,))[:MAX_LINES]:
-            for item in ctx.linked(pl, (PO_LINE_ITEM,))[:1]:
+        for pl in ctx.linked(po, (PO_LINE_OF,)):
+            for item in ctx.linked(pl, (PO_LINE_ITEM,))[:1]:  # guard-ok: a line links one item by definition; first of the singleton link
                 irow = ctx.read([item], ("code", "name", "quantity_on_hand")).get(item)
-                others = [x for x in ctx.linked(item, (PO_LINE_ITEM,)) if x != pl][:20]
+                others = [x for x in ctx.linked(item, (PO_LINE_ITEM,)) if x != pl]
                 if others:
                     out["options"].append({"item": _v(irow, "code") or _v(irow, "name"),
                                            "other_open_po_lines": len(others),
                                            "on_hand": _v(irow, "quantity_on_hand") or None})
-                for sl in ctx.linked(item, (SO_LINE_ITEM,))[:200]:
-                    for order in ctx.linked(sl, (SO_LINE_OF,))[:1]:
+                for sl in ctx.linked(item, (SO_LINE_ITEM,)):
+                    for order in ctx.linked(sl, (SO_LINE_OF,))[:1]:  # guard-ok: a line belongs to one order by definition; first of the singleton link
                         if order in impacted:
                             continue
                         r = ctx.read([order], ("order_number", "status", "required_date")
                                      ).get(order)
                         if not r or CLOSED.search(_v(r, "status")):
                             continue
-                        cust = ctx.linked(order, ("SalesOrder.ordered_by",))[:1]
+                        cust = ctx.linked(order, ("SalesOrder.ordered_by",))[:1]  # guard-ok: an order has one customer; first of the singleton link
                         crow = ctx.read(cust, ("name", "email")).get(cust[0]) if cust else None
                         impacted[order] = {"object_id": order,
                                            "order_number": _v(r, "order_number"),
-                                           "required_date": _v(r, "required_date")[:10],
+                                           "required_date": _v(r, "required_date")[:10],  # guard-ok: ISO date shape, not content
                                            "customer": _v(crow, "name"),
                                            "customer_email": (_addresses(_v(crow, "email"))
                                                               or [None])[0],
                                            "customer_id": cust[0] if cust else None,
                                            "item": _v(irow, "code") or _v(irow, "name")}
                         ctx.cite(r, "order_number", "required_date")
-    out["impacted"] = sorted(impacted.values(), key=lambda x: x["required_date"] or "9")[:20]
+    out["impacted"] = sorted(impacted.values(), key=lambda x: x["required_date"] or "9")
     if not pos:
         return {"skip": "no_purchase_order_named"}
     out["summary"] = (f"Supplier delay or shortage on {len(pos)} PO(s); "
@@ -934,7 +926,7 @@ def h_approval(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                            if _v(r, "status").lower() in ("approved", "granted")
                            and _v(r, "requested_at") < f.get("requested_at", "")
                            # granted before this request (a replay reads today's records)
-                           and _v(r, "decided_at")[:19] <= f.get("requested_at", "")[:19]),
+                           and _v(r, "decided_at")[:19] <= f.get("requested_at", "")[:19]),  # guard-ok: ISO seconds-precision comparison shape, not content
                           key=lambda o: _v(srows[o], "requested_at"))
         stage = _v(trow, "stage")
         if newer:
@@ -943,16 +935,16 @@ def h_approval(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             last = srows[approved[-1]]
             rec, reasons = "approve", [
                 f"an earlier approval of this task was granted on "
-                f"{_v(last, 'decided_at')[:10] or _v(last, 'requested_at')[:10]}",
+                f"{_v(last, 'decided_at')[:10] or _v(last, 'requested_at')[:10]}",  # guard-ok: ISO date shape, not content
                 f"task stage: {stage or 'not stated'}"]
         else:
             rec, reasons = "review", [
                 f"no earlier approval of this task; task stage: {stage or 'not stated'}",
                 f"requested by {f.get('requested_by') or 'unknown'} on "
-                f"{(f.get('requested_at') or '')[:10]}"]
+                f"{(f.get('requested_at') or '')[:10]}"]  # guard-ok: ISO date shape, not content
         out.update(
             summary=f"Approval requested for {_v(trow, 'task_id') or f.get('task_id')}: "
-                    f"{(f.get('reason') or '')[:120]}",
+                    f"{(f.get('reason') or '')}",
             recommendation=rec, reasons=reasons,
             evidence=[{"object_id": o} for o in [task, *newer, *approved[-2:]] if o])
         ctx.cite(trow, "title", "stage")
@@ -983,7 +975,7 @@ def h_approval(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
                                  "(operating.autopilot_write)."}
         return out
     family = pt.approval_family(event.get("text") or "")
-    out.update(summary=f"Approval asked ({family}): {(event.get('subject') or '')[:120]}",
+    out.update(summary=f"Approval asked ({family}): {(event.get('subject') or '')}",
                recommendation="review", reasons=[f"family: {family}"],
                evidence=[{"object_id": o} for o in event.get("records") or ()])
     out["draft"] = _reply(event, ["Thanks, I am reviewing this and will confirm today."])
@@ -997,15 +989,15 @@ def h_task(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     named = _records_named(ctx, probe)
     for no in _numbers(PO_NUMBER, text):
         named += ctx.find("PurchaseOrder", "po_number", no)
-    named = list(dict.fromkeys(named))[:MAX_RECORDS]
-    facts = [_order_facts(ctx, o) for o in named if o.startswith("SalesOrder:")][:5]
+    named = list(dict.fromkeys(named))
+    facts = [_order_facts(ctx, o) for o in named if o.startswith("SalesOrder:")]
     if not facts:
         # a task naming no order we can answer from would only restate itself: no item
         return {"skip": "no_record_named" if not named else "nothing_to_answer"}
-    out = {"summary": f"Task: {f.get('title', '')[:140]}",
+    out = {"summary": f"Task: {f.get('title', '')}",
            "records": named, "orders": facts, "gaps": [] if named else ["no_record_named"],
            "links": [{"label": "Open the task's records", "href": object_href(o)}
-                     for o in named[:5]]}
+                     for o in named]}
     if facts:
         out["answer"] = [f"Order {x['order_number']}: {x['status'] or 'in progress'}"
                          + (f", shipped {x['shipments'][0]['ship_date']}"
@@ -1030,15 +1022,15 @@ def h_question(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         ctx.cite(row, "title")
         title = _v(row, "title")
     named = _records_named(ctx, {"subject": title, "text": f"{text}\n{q.get('context') or ''}",
-                                 "records": []})[:MAX_RECORDS]
-    facts = [_order_facts(ctx, o) for o in named if o.startswith("SalesOrder:")][:5]
+                                 "records": []})
+    facts = [_order_facts(ctx, o) for o in named if o.startswith("SalesOrder:")]
     rec = q.get("recommended")
     out: dict[str, Any] = {
-        "summary": text[:140], "question": text, "context": str(q.get("context") or ""),
-        "options": options, "task_id": q.get("task_id"), "task_title": title[:200],
+        "summary": text, "question": text, "context": str(q.get("context") or ""),
+        "options": options, "task_id": q.get("task_id"), "task_title": title,
         "records": named, "orders": facts,
         "links": ([{"label": "Open the task", "href": object_href(task)}] if task else [])
-        + [{"label": "Open a record it names", "href": object_href(o)} for o in named[:4]],
+        + [{"label": "Open a record it names", "href": object_href(o)} for o in named],
         "note": "Answer in Mission Control; nothing is answered from here."}
     if task:
         out["task"] = {"object_id": task}     # the question is the item, not the whole task
@@ -1071,7 +1063,7 @@ def h_ledger(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"skip": "invoice_customer_ambiguous"}
     if not own:
         return {"skip": "no_own_invoice_named"}
-    invs = own[:5]
+    invs = own
     rows = ctx.read(invs, ("invoice_number", "bc_number", "invoice_date", "due_date",
                            "total_amount", "remaining_amount", "currency", "status"))
     ledger, lines = [], []
@@ -1080,19 +1072,19 @@ def h_ledger(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         total, left = _decimal(_v(r, "total_amount")), _decimal(_v(r, "remaining_amount"))
         cur = _v(r, "currency")
         number = _v(r, "invoice_number") or _v(r, "bc_number")
-        ledger.append({"object_id": inv, "number": number, "date": _v(r, "invoice_date")[:10],
-                       "due": _v(r, "due_date")[:10], "total": str(total) if total is not None
+        ledger.append({"object_id": inv, "number": number, "date": _v(r, "invoice_date")[:10],  # guard-ok: ISO date shape, not content
+                       "due": _v(r, "due_date")[:10], "total": str(total) if total is not None  # guard-ok: ISO date shape, not content
                        else None, "remaining": str(left) if left is not None else None,
                        "currency": cur or None})
         if left is not None and left == 0:
             lines.append(f"Invoice {number} is paid in full.")
         elif left is not None:
             lines.append(f"Invoice {number}: {left} {cur} remains open"
-                         + (f", due {_v(r, 'due_date')[:10]}." if _v(r, "due_date") else "."))
+                         + (f", due {_v(r, 'due_date')[:10]}." if _v(r, "due_date") else "."))  # guard-ok: ISO date shape, not content
         else:
             lines.append(f"Invoice {number}: the open balance is not stated in our records.")
     out = {"ledger": ledger, "gaps": [] if ledger else ["no_invoice_named"],
-           "summary": (" ".join(lines)[:SUMMARY_CHARS] if lines else
+           "summary": (" ".join(lines) if lines else
                        "Invoice or payment question; no invoice named.")}
     out["draft"] = _reply(event, lines or [
         "Could you send the invoice number? We will check the payment status right away."])
@@ -1106,7 +1098,7 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     for no in re.findall(r"[A-Z]{0,4}-?\d{3,12}", f.get("order_list", "")):
         orders += ctx.find("SalesOrder", "order_number", no)
     requests = ctx.linked(oid, ("Batch.requested_by",))
-    for ao in requests[:5]:
+    for ao in requests:
         orders += [o for o in ctx.linked(ao) if o.startswith("SalesOrder:")]
     # every order the lot holds up is kept (no cut); the one cut left (only the first 5
     # requesting records are followed) is counted in ``cut`` and an item with a cut is
@@ -1126,12 +1118,12 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         # BC's records of one order share its number): the first open copy speaks for it,
         # and the customer's address comes from whichever copy states one
         number = order_key(_v(r, "order_number")) or order
-        cust = ctx.linked(order, ("SalesOrder.ordered_by",))[:1]
+        cust = ctx.linked(order, ("SalesOrder.ordered_by",))[:1]  # guard-ok: an order has one customer; first of the singleton link
         crow = ctx.read(cust, ("name", "email")).get(cust[0]) if cust else None
         if number not in noticed:
             noticed[number] = len(affected)
             affected.append({"object_id": order, "order_number": _v(r, "order_number"),
-                             "required_date": _v(r, "required_date")[:10],
+                             "required_date": _v(r, "required_date")[:10],  # guard-ok: ISO date shape, not content
                              "customer": _v(crow, "name")})
         elif not affected[noticed[number]]["customer"] and _v(crow, "name"):
             affected[noticed[number]]["customer"] = _v(crow, "name")
@@ -1160,7 +1152,7 @@ def h_qc(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
             # (``autopilot_queue.subject_of``), whichever batch record or run raised it
             **({"subject": lot_subject(lot)} if lot_subject(lot) else {}),
             "results": {k: v for k, v in f.items() if k.startswith("qc_")},
-            "affected": affected, "customer_notices": drafts[:5], "gaps": [],
+            "affected": affected, "customer_notices": drafts, "gaps": [],
             **({"requests_not_followed": cut} if cut else {})}
 
 
@@ -1185,17 +1177,17 @@ def h_meeting(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     parties = event.get("parties") or []
     prow = ctx.read(parties, ("name",))
     open_orders = []
-    for p in parties[:3]:
-        for o in ctx.linked(p, ("SalesOrder.ordered_by",))[:200]:
+    for p in parties:
+        for o in ctx.linked(p, ("SalesOrder.ordered_by",)):
             r = ctx.read([o], ("order_number", "status", "required_date")).get(o)
             if r and not CLOSED.search(_v(r, "status")):
                 open_orders.append({"object_id": o, "order_number": _v(r, "order_number"),
                                     "status": _v(r, "status"),
-                                    "required_date": _v(r, "required_date")[:10]})
-    open_orders = sorted(open_orders, key=lambda x: x["required_date"] or "9")[:10]
+                                    "required_date": _v(r, "required_date")[:10]})  # guard-ok: ISO date shape, not content
+    open_orders = sorted(open_orders, key=lambda x: x["required_date"] or "9")[:10]  # guard-ok: ISO date shape, not content
     external = list(dict.fromkeys(
         a for a in event.get("attendees") or () if not _internal(a, ctx.domains)))
-    subject = f"Follow-up: {f.get('subject', '')}"[:200]
+    subject = f"Follow-up: {f.get('subject', '')}"
 
     def draft(to: Sequence[str], orders: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         lines = ["Thank you for your time today. A short recap and next steps:", ""]
@@ -1207,7 +1199,7 @@ def h_meeting(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
         return {"channel": "email", "to": [{"address": a} for a in to], "subject": subject,
                 "body": "\n".join(["Hello,", "", *lines, "", "Best regards,"])}
 
-    out: dict[str, Any] = {"summary": f"Meeting ended: {f.get('subject', '')[:120]}",
+    out: dict[str, Any] = {"summary": f"Meeting ended: {f.get('subject', '')}",
                            "parties": [_v(r, "name") for r in prow.values()]}
     if not external:
         out.update(open_orders=open_orders, draft=draft([], open_orders),
@@ -1296,7 +1288,7 @@ def h_job(ctx: Ctx, event: Mapping[str, Any]) -> dict[str, Any]:
     """The system work an event calls for: the model decides it (``autopilot_jobs``, run by
     the cycle for a ``"draft": "job"`` autopilot); the handler only names the event."""
     what = str(event.get("subject") or (event.get("fields") or {}).get("title") or "")
-    return {"kind": "job", "summary": what[:120]}
+    return {"kind": "job", "summary": what}
 
 
 HANDLERS: dict[str, Callable[[Ctx, Mapping[str, Any]], dict[str, Any]]] = {

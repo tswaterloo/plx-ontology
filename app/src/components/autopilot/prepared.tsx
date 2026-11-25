@@ -8,7 +8,7 @@ import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
 import { PreparedFeedback } from "@/components/autopilot/prepared-feedback";
 import { noteParts, saidOnce } from "@/components/autopilot/lines";
-import { ItemActions, type MenuEntry } from "@/components/autopilot/item-actions";
+import { ItemActions, type MenuEntry, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
 
 export { tomorrowMorning } from "@/components/autopilot/item-actions";
 import { TodoCard, TodoSteps } from "@/components/autopilot/todo";
@@ -60,7 +60,22 @@ export function senderLabel(raw: string): string {
   return m ? m[1].trim() : s;
 }
 
-export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { item: PreparedItem; linked?: boolean; onGone: (id: string) => void; onChanged: () => void; feedback?: React.ReactNode }) {
+export function PreparedCard({
+  item,
+  linked,
+  onGone,
+  onChanged,
+  onOptimistic,
+  onRestore,
+  onFeedback,
+  feedback,
+}: {
+  item: PreparedItem;
+  linked?: boolean;
+  onGone: (id: string) => void;
+  onChanged: () => void;
+  feedback?: React.ReactNode;
+} & OptimisticCallbacks) {
   const [text, setText] = useState(item.body);
   const [editing, setEditing] = useState(false);
   const [line, setLine] = useState("");
@@ -157,9 +172,15 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
         setToken(out.confirm_token);
         return;
       }
-      if (out.decision?.sent) onGone(item.item_id);
-      else if (out.state === "waiting") setNote("Not sent: the send was refused or failed. It stays here to confirm again.");
-      else setNote("Confirmed. Nothing was sent: sending isn't switched on for this yet.");
+      if (out.decision?.sent) {
+        if (onOptimistic) onOptimistic(item.item_id, "Sent");
+        else onGone(item.item_id);
+      } else if (out.state === "waiting") {
+        setNote("Not sent: the send was refused or failed. It stays here to confirm again.");
+      } else {
+        setNote("Confirmed. Nothing was sent: sending isn't switched on for this yet.");
+        onFeedback?.("Confirmed");
+      }
     });
   const keep = () =>
     run(async () => {
@@ -167,12 +188,23 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
       setPref("");
       setOpen(null);
       setNote("Saved as your preference: your next drafts follow it. Change or remove it in Memory.");
+      onFeedback?.("Saved as your preference");
     });
   const haveReply = text.trim() !== "";
   const versions = (item.options ?? []).filter((o) => o.reply.trim() && o.reply !== text);
   const entries: MenuEntry[] = [];
   if (haveReply && item.redo) entries.push({ label: "Rewrite from a line", run: () => setOpen("rewrite") });
-  if (haveReply) entries.push({ label: "Copy", run: () => run(async () => void (await navigator.clipboard.writeText(text))) });
+  if (haveReply) {
+    entries.push({
+      label: "Copy",
+      run: () =>
+        run(async () => {
+          await navigator.clipboard.writeText(text);
+          setNote("Copied to clipboard.");
+          onFeedback?.("Copied reply to clipboard");
+        }),
+    });
+  }
   if (haveReply && item.channel === "mail" && item.to.length > 0) entries.push({ label: "Open in Outlook", run: () => void (window.location.href = mailtoOf(item, text)) });
   entries.push({ label: "Save a preference for my drafts", run: () => setOpen("pref") });
   const parsedNote = noteParts(item.note ?? "");
@@ -189,26 +221,32 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
     <li
       id={`prepared-${item.item_id}`}
       className={cn(
-        "max-w-[50rem] space-y-3 rounded-lg border border-border bg-surface/60 p-4 transition-colors",
-        linked && "border-accent/70 ring-1 ring-accent/30",
+        "w-full space-y-3 py-1 transition-colors",
+        linked && "border-l-2 border-l-accent pl-3",
       )}
       data-testid="prepared-item"
     >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-[14px] font-semibold text-fg" title={item.sender || undefined}>
           {senderLabel(item.sender) || "Someone"}
         </span>
         {showSubject && (
-          <span className="inline-flex max-w-full items-center truncate rounded-md bg-bg/80 px-2 py-0.5 text-[12px] text-muted border border-border/70">
-            {item.subject}
-          </span>
+          <>
+            <span className="text-faint" aria-hidden>·</span>
+            <span className="max-w-full truncate text-[13px] text-muted">
+              {item.subject}
+            </span>
+          </>
         )}
         {parsedNote.labels.map((l) => (
-          <p key={l} className="inline-flex items-center rounded-md bg-surface-2 px-2 py-0.5 text-[11px] leading-4 text-muted" data-testid="prepared-label">
-            {l}
-          </p>
+          <Fragment key={l}>
+            <span className="text-faint" aria-hidden>·</span>
+            <p className="text-[11.5px] leading-4 text-faint" data-testid="prepared-label">
+              {l}
+            </p>
+          </Fragment>
         ))}
-        <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
+        <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
       </div>
       {dedupedMessage && (
         <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">
@@ -216,7 +254,7 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
         </p>
       )}
       {!haveReply && (
-        <div className="space-y-2.5 rounded-md border border-border/70 bg-bg/80 p-3.5">
+        <div className="space-y-2.5 border-t border-border/70 pt-3.5">
           {dedupedAsk && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(dedupedAsk)}</p>}
           {item.facts.length > 0 && (
             <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted">
@@ -246,9 +284,9 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
       {haveReply && (
         <>
           {editing ? (
-            <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full rounded-md border border-border bg-bg p-3 text-[14px] leading-relaxed text-fg" />
+            <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full resize-none rounded-md border border-border-strong bg-bg p-3 text-[14px] leading-relaxed text-fg focus:border-accent focus:outline-none" />
           ) : (
-            <p className="whitespace-pre-wrap rounded-md border border-border/70 bg-bg/80 p-3.5 text-[14px] leading-relaxed text-fg">{text}</p>
+            <p className="whitespace-pre-wrap border-t border-border/70 pt-3.5 text-[14px] leading-relaxed text-fg">{text}</p>
           )}
           {versions.length > 0 && (
             <div className="flex flex-wrap items-center gap-2" aria-label="Other versions">
@@ -302,13 +340,16 @@ export function PreparedCard({ item, linked, onGone, onChanged, feedback }: { it
             item={item}
             onGone={onGone}
             onChanged={onChanged}
+            onOptimistic={onOptimistic}
+            onRestore={onRestore}
+            onFeedback={onFeedback}
             busy={busy}
             entries={entries}
             primary={
               haveReply ? (
                 <>
                   <Button size="sm" disabled={busy} onClick={() => void confirm()}>
-                    {token ? "Confirm again to send" : "Confirm"}
+                    {busy ? "Confirming..." : token ? "Confirm again to send" : "Confirm"}
                   </Button>
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
                     {editing ? "Done editing" : "Edit"}
@@ -345,7 +386,7 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
   const drawn = items.length > count ? items.slice(0, count) : items;
   return (
     <>
-      <ul className="space-y-3" aria-label="Prepared for me">
+      <ul className="divide-y divide-border [&>li]:py-4 [&>li:first-child]:pt-1" aria-label="Prepared for me">
         {drawn.map((i) => {
           const fb = <PreparedFeedback item={i} />;
           return (
@@ -353,7 +394,7 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
               {i.kind === "job" ? (
                 <JobCard item={i} linked={i.item_id === linked} onGone={onGone} feedback={fb} />
               ) : i.kind === "todo" ? (
-                <TodoCard item={i} linked={i.item_id === linked} onGone={onGone} feedback={fb} />
+                <TodoCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} feedback={fb} />
               ) : i.kind === "alert" ? (
                 <AlertCard item={i} linked={i.item_id === linked} onGone={onGone} onChanged={onChanged} feedback={fb} />
               ) : (

@@ -37,14 +37,14 @@ export function CutList<T>({
     <>
       {got.items.map((item, i) => children(item, i))}
       {got.total > shown ? (
-        <p className="text-sm text-neutral-600" data-testid="cut-list-note">
+        <p className="text-sm text-muted" data-testid="cut-list-note">
           {shown.toLocaleString("en-US")} of {got.total.toLocaleString("en-US")} {noun} shown.{" "}
           {got.next !== null ? (
-            <button type="button" className="underline" onClick={more} disabled={busy}>
+            <button type="button" className="underline hover:text-fg cursor-pointer" onClick={more} disabled={busy}>
               {busy ? "Reading" : `Show the other ${(got.total - shown).toLocaleString("en-US")}`}
             </button>
           ) : null}
-          {error ? <span className="ml-2 text-danger">{error}</span> : null}
+          {error ? <span className="ml-2 text-late">{error}</span> : null}
         </p>
       ) : null}
     </>

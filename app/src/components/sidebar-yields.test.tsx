@@ -1,14 +1,11 @@
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// W4: the sidebar's small read starts with the page's own reads (one Promise.all at mount),
-// never after the sign-in check or after the page's read has ended
 const nav = vi.hoisted(() => ({ path: "/records" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path, useRouter: () => ({ push: () => undefined }), useSearchParams: () => new URLSearchParams() }));
-const auth = vi.hoisted(() => ({ status: "loading" }));
+const auth = vi.hoisted(() => ({ status: "loading" as "loading" | "signed-in" | "signed-out" }));
 vi.mock("./auth", () => ({ useAuth: () => ({ state: { status: auth.status } }), RequireAuth: ({ children }: { children: unknown }) => children }));
 
-import { getMe } from "@/lib/api";
 import { resetSessionCaches } from "@/lib/session-cache";
 import { LateBySupplier } from "./shell";
 
@@ -17,22 +14,36 @@ function json(body: unknown): Response {
 }
 const side = { late_total: 1, supplier_total: 1, partial: false, late_suppliers: [{ supplier: "Acme", late: 1 }], recent_questions: [] };
 
-describe("the sidebar's read starts with the page's own", () => {
+describe("the sidebar's read waits until auth is signed-in (no 401 race)", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     resetSessionCaches();
+    auth.status = "loading";
   });
 
-  for (const path of ["/records", "/"]) {
-    it(`on ${path} it is sent at mount, while the page's read and the sign-in check are still open`, async () => {
-      nav.path = path;
+  for (const status of ["loading", "signed-out"] as const) {
+    it(`does not call /api/sidebar while auth is ${status}`, async () => {
+      auth.status = status;
       const asked: string[] = [];
       vi.stubGlobal("fetch", vi.fn((url: string) => {
         asked.push(String(url));
-        if (String(url).startsWith("/api/me")) return new Promise<Response>(() => undefined);   // never answered
         return Promise.resolve(json(side));
       }));
-      void getMe().catch(() => undefined);   // the page's read, still open
+      render(<LateBySupplier />);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(asked.filter((u) => u.startsWith("/api/sidebar"))).toHaveLength(0);
+    });
+  }
+
+  for (const path of ["/records", "/"]) {
+    it(`on ${path} calls /api/sidebar once auth resolves to signed-in`, async () => {
+      nav.path = path;
+      auth.status = "signed-in";
+      const asked: string[] = [];
+      vi.stubGlobal("fetch", vi.fn((url: string) => {
+        asked.push(String(url));
+        return Promise.resolve(json(side));
+      }));
       render(<LateBySupplier />);
       await vi.waitFor(() => expect(asked.filter((u) => u.startsWith("/api/sidebar"))).toHaveLength(1));
       // one small read: never Home's whole read nor the late list

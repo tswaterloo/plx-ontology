@@ -2143,7 +2143,8 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                limit: int = MAX_SHOWN, kinds: Sequence[str] | None = None,
                today: date | None = None, since: str | None = None,
                all_owners: bool = False, include_off: bool = False,
-               enabled: Iterable[str] = ()) -> dict[str, Any]:
+               enabled: Iterable[str] = (),
+               include_hidden: bool = False) -> dict[str, Any]:
     """The gaps one reader may see, trimmed: every late order first (longest late first), then
     by priority; what the last run
     covered of what this reader may read. ``may_read(audience_key)``, ``held`` (the
@@ -2325,6 +2326,34 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
         whole = scanned > 0 and scanned == conn.execute(
             "SELECT COALESCE(SUM(objects), 0) FROM scope").fetchone()[0]
         rules = _rule_coverage(conn, params, detectors, whole=whole)
+        hidden_map: dict[str, int] | None = None
+        if include_hidden:
+            # Compute hidden counts in the same SQLite connection without a second attach
+            # or redundant decide() pass when all visible rows were already evaluated.
+            h_kinds = [k for k in (kinds or ()) if k != "\x00none"]
+            if h_kinds:
+                h_params = {**params, "kinds": json.dumps(h_kinds)}
+                h_total = Counter(row["kind"] for row in conn.execute(
+                    "SELECT kind, detector, last_seen FROM gaps WHERE state = 'open' AND kind IN "
+                    "(SELECT value FROM json_each(:kinds))", h_params)
+                    if (_of_served(row, current) or row["detector"] in behind)
+                    and row["kind"] not in _OWNER_KINDS)
+                if not more and "open" in states and since is None:
+                    h_seen = Counter(g["kind"] for g in shown
+                                     if g.get("kind") not in _OWNER_KINDS)
+                else:
+                    h_rows = [row for row in conn.execute(
+                        "SELECT g.* FROM gaps g WHERE g.state = 'open' AND g.kind IN "
+                        "(SELECT value FROM json_each(:kinds)) AND "
+                        + _OBJECT_VISIBLE.format(o="g.object_id"),
+                        h_params).fetchall()
+                        if _of_served(row, current) or row["detector"] in behind]
+                    h_seen = Counter(row["kind"] for row, _ in _visible(conn, h_rows, h_params, decide)
+                                     if row["kind"] not in _OWNER_KINDS)
+                hidden_map = {kind: h_total[kind] - h_seen[kind] for kind in sorted(h_total)
+                              if h_total[kind] - h_seen[kind] > 0}
+            else:
+                hidden_map = {}
     try:
         _learned_order(shown, store, reader)
     except Exception:  # noqa: BLE001 - lessons never break a read: the order stands
@@ -2343,7 +2372,7 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
     # shown until they run over it (the scheduled refresh), and the read says so
     refreshing = sorted(name for name in behind if name in detectors)
     checked = sorted(at for name in refreshing if isinstance(at := behind[name], str))
-    return {"status": "read", "as_of": last["as_of"] if last else None,
+    result: dict[str, Any] = {"status": "read", "as_of": last["as_of"] if last else None,
             # each failed rule's failure time: its findings shown are its last good ones
             "failed_at": dict(sorted(failed_at.items())),
             "carried": sum(1 for g in shown if g.get("carried")),
@@ -2370,6 +2399,87 @@ def read_inbox(inbox: Any, store: Any, *, reader: str, may_read: Callable[[str],
                            and LATE_RULE not in refreshing
                            and po_status.late_count_exact(late_skips)),
             "gaps": shown, "more": more, "limit": limit}
+    if hidden_map is not None:
+        result["hidden"] = hidden_map
+    return result
+
+
+def read_gap_one(inbox: Any, store: Any, *, gap_id: str, reader: str,
+                 may_read: Callable[[str], bool], held: Iterable[str],
+                 decide: Callable[[Sequence[str]], Mapping[str, Any]],
+                 kinds: Sequence[str] | None = None,
+                 states: Sequence[str] = ("open", "acknowledged"),
+                 today: date | None = None, all_owners: bool = False,
+                 include_off: bool = False,
+                 enabled: Iterable[str] = ()) -> dict[str, Any] | None:
+    """Read a single gap by ``gap_id`` with the exact same permission, ownership,
+    freshness, and suppression checks as ``read_inbox``, in O(1) time instead of
+    scanning every open gap of the kind."""
+    if not isinstance(gap_id, str) or not gap_id:
+        return None
+    off_kinds: list[str] = []
+    if not include_off:
+        off = alert_kinds.off_gap_kinds(enabled)
+        if kinds is None:
+            kinds = sorted(alert_kinds.registered_gap_kinds() - off)
+        kinds = [k for k in kinds if k not in off] or ["\x00none"]
+        off_kinds = sorted(off)
+    path = Path(inbox)
+    if not path.is_file():
+        return None
+    today = _today() if today is None else today
+    unknown = set(states) - set(STATES)
+    if unknown:
+        raise ValueError("gap_state_unknown")
+    from . import feedback_signals
+    hide = feedback_signals.suppressor(feedback_signals.state_of(store))
+    with closing(_attach(path, Path(store))) as conn:
+        aud, marks = _reader_view(conn, may_read, held)
+        params = {"aud": aud, "marks": marks}
+        allowed = set(json.loads(marks))
+        readable = set(json.loads(aud))
+        digest = _served_digest(conn, store)
+        older: set[str] = set()
+        current, behind = _current_since(conn, digest[0] if digest else None, older)
+        runs = [row for row in conn.execute(
+            "SELECT detector, status, run_at FROM detector_runs").fetchall()
+            if row["detector"] in DETECTORS]
+        detectors = {row["detector"]: row["status"] for row in runs}
+        failed_at = {row["detector"]: row["run_at"] for row in runs
+                     if row["status"] == "failed"}
+        carried_rules = (set(behind) | older) & set(detectors)
+        cut_short = {name for name, status in detectors.items() if status == "truncated"}
+        unchecked = _held_unchecked(conn)
+        stored = {"open"} if set(states) & {"open", "acknowledged"} else set()
+        stored |= {"resolved"} & set(states)
+        rows = conn.execute(
+            "SELECT g.*, (SELECT at FROM acks a WHERE a.gap_id = g.gap_id AND a.reader = "
+            ":reader) AS acked FROM gaps g WHERE g.gap_id = :gap_id AND g.state IN "
+            "(SELECT value FROM json_each(:states)) AND (:kinds IS NULL OR g.kind IN "
+            "(SELECT value FROM json_each(:kinds))) AND g.kind NOT IN (SELECT value FROM "
+            "json_each(:off)) AND " + _OBJECT_VISIBLE.format(o="g.object_id"),
+            {**params, "gap_id": gap_id, "reader": reader,
+             "states": json.dumps(sorted(stored)),
+             "kinds": None if kinds is None else json.dumps(list(kinds)),
+             "off": json.dumps(off_kinds)}).fetchall()
+        rows = [row for row in rows if _of_served(row, current) or (
+            (row["detector"] in carried_rules | cut_short
+             or (row["detector"], row["object_id"]) in unchecked)
+            and row["state"] == "open")]
+        for row, citations in _visible(conn, rows, params, decide):
+            state = ("resolved" if row["state"] == "resolved"
+                     else "acknowledged" if row["acked"] else "open")
+            if state not in states or hide(row["gap_id"], reader) is not None:
+                continue
+            follow_up = json.loads(row["follow_up"])
+            if not all_owners and not _owned(follow_up, row["kind"], reader):
+                continue
+            follow_up.pop(_ORDER, None)
+            follow_up.pop(_ATTESTS, None)
+            return _shown(row, citations, state, follow_up, allowed, readable, today=today,
+                          carried=_carried(row, carried_rules, older, failed_at,
+                                           cut_short, current, unchecked))
+    return None
 
 
 def acknowledge(inbox: Any, store: Any, gap_id: str, *, reader: str,

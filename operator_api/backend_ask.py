@@ -333,11 +333,17 @@ class AskMixin:
         finished = False
         try:
             while True:
-                try:
-                    name, payload = events.get(
-                        timeout=max(0.1, deadline - time.monotonic()))
-                except queue.Empty:
+                if cancel is not None and cancel.is_set():
+                    return
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise errors.ASK_TIMEOUT from None
+                try:
+                    name, payload = events.get(timeout=min(1.0, max(0.05, remaining)))
+                except queue.Empty:
+                    if time.monotonic() >= deadline:
+                        raise errors.ASK_TIMEOUT from None
+                    continue
                 if name == "done":
                     finished = True
                     return

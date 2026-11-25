@@ -145,9 +145,12 @@ class Pages(unittest.TestCase):
         self.assertEqual(top("ACME")[0], ("Customer", "Acme Ltd"))
         self.assertEqual(self.find("ACME")[0].match, "exact")
         # a supplier held three times: one result (BC's separate payment vendor by the
-        # same name is its own account, found as such)
-        self.assertEqual([x for x in top("croda") if x[0] == "Supplier"],
+        # same name is its own account, found as such, with clear EFT vs purchasing role)
+        croda_hits = [s for s in self.find("croda") if s.type == "Supplier"]
+        self.assertEqual([(s.type, s.label) for s in croda_hits],
                          [("Supplier", "Croda Canada"), ("Supplier", "CRODA CANADA (EFT)")])
+        self.assertIn("Purchasing vendor", croda_hits[0].sublabel or "")
+        self.assertIn("Payment vendor (EFT)", croda_hits[1].sublabel or "")
         # a name mistyped finds the close spelling, marked as one; a string that is close to
         # nothing finds nothing (never the nearest name for any text)
         near = self.find("Crodda")
@@ -176,11 +179,17 @@ class Pages(unittest.TestCase):
     NUMBERED = (  # (type, system, label, whose class): records the box finds by number
         ("Shipment", "sage", "Shipment SH1000000001", "PO-1"),
         ("Shipment", "bc", "SH1000000001", "PO-1"),                 # a BC pilot copy
+        ("Shipment", "bc", "BC doc S-SHPT102001", "PO-1"),          # BC doc prefix
         ("Shipment", "sage", "Shipment SH10000000019", "PO-1"),     # starts with the number
         ("Shipment", "sage", "Shipment SH-HIDDEN-1", "PO-FIN"),
         ("Receipt", "sage", "Receipt RCP10000001", "PO-1"),
+        ("Receipt", "bc", "BC doc 106001", "PO-1"),
         ("Lot", "filemaker", "S220001", "PO-1"),
-        ("SalesCreditMemo", "bc", "CM-1000", "PO-1"))
+        ("SalesCreditMemo", "bc", "CM-1000", "PO-1"),
+        ("SalesCreditMemo", "bc", "BC doc CM-2000", "PO-1"),
+        ("PurchaseCreditMemo", "bc", "BC doc PCM-1000", "PO-1"),
+        ("PurchaseCreditMemo", "bc", "BC doc PCM-HIDDEN-1", "PO-FIN"),
+        ("PurchaseInvoice", "bc", "BC doc PI-1000", "PO-1"))
 
     def add_numbered(self):
         import psycopg
@@ -242,9 +251,14 @@ class Pages(unittest.TestCase):
                                    ("Shipment", "SH1000000001", "exact"),
                                    ("Shipment", "Shipment SH10000000019", "prefix")])
         self.assertEqual(top("sh1000000001")[0], got[0])        # any case
+        self.assertEqual(top("S-SHPT102001")[0], ("Shipment", "BC doc S-SHPT102001", "exact"))
         self.assertEqual(top("RCP10000001")[0], ("Receipt", "Receipt RCP10000001", "exact"))
+        self.assertEqual(top("106001")[0], ("Receipt", "BC doc 106001", "exact"))
         self.assertEqual(top("s220001")[0], ("Lot", "S220001", "exact"))
         self.assertEqual(top("CM-1000")[0][:2], ("SalesCreditMemo", "CM-1000"))
+        self.assertEqual(top("CM-2000")[0], ("SalesCreditMemo", "BC doc CM-2000", "exact"))
+        self.assertEqual(top("PCM-1000")[0], ("PurchaseCreditMemo", "BC doc PCM-1000", "exact"))
+        self.assertEqual(top("PI-1000")[0], ("PurchaseInvoice", "BC doc PI-1000", "exact"))
         # a number prefix finds them after the exact ones
         self.assertEqual([x[1] for x in top("RCP100") if x[0] == "Receipt"],
                          ["Receipt RCP10000001"])
@@ -264,10 +278,12 @@ class Pages(unittest.TestCase):
         self.add_numbered()
         self.assertEqual([s.label for s in self.find("SH-HIDDEN-1", FULL)],
                          ["Shipment SH-HIDDEN-1"])
-        for q in ("SH-HIDDEN-1", "SH-HIDDEN", "IN-FIN", "RCP10000001"):
+        self.assertEqual([s.label for s in self.find("PCM-HIDDEN-1", FULL)],
+                         ["BC doc PCM-HIDDEN-1"])
+        for q in ("SH-HIDDEN-1", "SH-HIDDEN", "PCM-HIDDEN-1", "IN-FIN", "RCP10000001"):
             with self.subTest(q=q):
                 self.assertEqual([s.label for s in self.find(q, NOBODY)], [])
-        for q in ("SH-HIDDEN-1", "IN-FIN"):
+        for q in ("SH-HIDDEN-1", "PCM-HIDDEN-1", "IN-FIN"):
             self.assertFalse([s for s in self.find(q, OPS) if "HIDDEN" in s.label
                               or "FIN" in s.label], q)
 
@@ -565,7 +581,7 @@ class Pages(unittest.TestCase):
             self.assertEqual(len(page.table.columns), len(page.column_keys))
             self.assertTrue(all(len(r) == len(page.table.columns) for r in page.table.rows))
         # unknown views, columns, filters and values fail closed
-        for bad in (dict(view="quotes"), dict(view="batches", sort="nope"),
+        for bad in (dict(view="no_such_view"), dict(view="batches", sort="nope"),
                     dict(view="batches", direction="up"), dict(view="batches", filters={"nope": "x"}),
                     dict(view="batches", filters={"on_hold": "maybe"}),
                     dict(view="emails"), dict(view="batches", q="x" * 81)):
@@ -683,18 +699,37 @@ class Pages(unittest.TestCase):
         croda = self.handle("suppliers", "name", "Croda Canada")
         eft = self.handle("suppliers", "name", "CRODA CANADA (EFT)")
         page = self.page("supplier", handle=eft)
+        self.assertIn("Payment vendor (EFT)", page.subtitle or "")
         same = self.section(page, "same_name")
         open_pos = self.truth("SELECT count(*) FROM {biz}.purchase_orders WHERE status = "
                               "'open' AND supplier_handle = %s", (croda,))[0][0]
         self.assertGreater(open_pos, 0)
         self.assertEqual([(r[0].text, r[2].number) for r in same.rows],
                          [("Croda Canada", str(open_pos))])
+        self.assertIn("Purchasing vendor", same.rows[0][3].text or "")
         self.assertTrue(same.rows[0][0].href.endswith(quote(croda, safe="")))
         self.assertEqual(self.section(page, "open_orders").total, 0)   # never merged
-        back = self.section(self.page("supplier", handle=croda), "same_name")
+        croda_page = self.page("supplier", handle=croda)
+        self.assertIn("Purchasing vendor", croda_page.subtitle or "")
+        back = self.section(croda_page, "same_name")
         self.assertEqual([r[0].text for r in back.rows], ["CRODA CANADA (EFT)"])
+        self.assertIn("Payment vendor (EFT)", back.rows[0][3].text or "")
         other = self.page("supplier", handle=self.handle("suppliers", "name", "Other Chem"))
         self.assertIsNone(self.section(other, "same_name"))
+        # Pure helper covers Sage/BC/Portal/FileMaker, (EFT) / - EFT, blocked, and currency
+        self.assertEqual(ps.supplier_role_label("ACME CORP (EFT)", source_systems="sage",
+                                                currency="CAD", include_currency=True),
+                         "Payment vendor (EFT) · Sage · CAD")
+        self.assertEqual(ps.supplier_role_label("AZELIS CANADA INC.- EFT", blocked="All",
+                                                source_systems="bc,portal"),
+                         "Payment vendor (EFT) · BC/Portal")
+        self.assertEqual(ps.supplier_role_label("Croda Canada Ltd",
+                                                source_systems="bc,filemaker,portal",
+                                                currency="CAD", include_currency=True),
+                         "Purchasing vendor · BC/FileMaker/Portal · CAD")
+        self.assertEqual(ps.supplier_role_label("Old Vendor Inc", blocked="All",
+                                                source_systems="bc"),
+                         "Supplier (blocked) · BC")
 
     def test_a_zeroed_po_header_shows_its_lines_total_and_a_differing_header_both(self):
         def facts(number):
@@ -704,7 +739,7 @@ class Pages(unittest.TestCase):
                     for f in page.facts if "otal" in f.label}
         self.assertEqual(facts("PO-LN"), {"Total (sum of lines)": "112.50"})
         self.assertEqual(facts("PO-HL"), {"Total": "130", "Lines total": "100.00"})
-        self.assertEqual(facts("PO-NP"), {"Total": "0"})
+        self.assertEqual(facts("PO-NP"), {"Total": None})
 
     # ---- Freightcom: a person sees it, the AI's path never does ------------------------
 
@@ -836,6 +871,45 @@ class CodesText(unittest.TestCase):
         self.assertEqual(ps.codes_text("bc:X9", "C1"), "C1. Other systems: BC X9")
         self.assertEqual(ps.codes_text("sage:A, portal:A"), "Portal A, Sage A")
         self.assertIsNone(ps.codes_text("", "C1"))
+
+
+class SearchDsmAndStaff(unittest.TestCase):
+    def test_exact_short_supplier_dsm_and_staff_member_search(self):
+        self.assertIn("FROM staff st WHERE", pr.FIND_SQL)
+        self.assertEqual(ps.SEARCH_TYPES["staff"], "Person")
+        dsm_row = {
+            "kind": "supplier",
+            "handle": "bc://prod/vendors/dsm@1",
+            "title": "DSM",
+            "code": "V06110",
+            "context": "bc,filemaker,portal|CAD|",
+            "status": "Active",
+            "members": None,
+            "rank": 1,
+        }
+        staff_row = {
+            "kind": "staff",
+            "handle": "graph-mail://u1/person/u1",
+            "title": "Venessa Bandiera",
+            "code": "venessa@petrasoap.com",
+            "context": "Account Executive · IT",
+            "status": "u1",
+            "members": None,
+            "rank": 3,
+        }
+        with unittest.mock.patch.object(ps, "read", return_value=({"find": [dsm_row]}, {})):
+            got = ps.search(object(), None, "DSM", 8)
+        self.assertEqual(len(got), 1)
+        self.assertEqual((got[0].type, got[0].label, got[0].match), ("Supplier", "DSM", "exact"))
+        self.assertTrue(got[0].open_url.startswith("/account?kind=supplier&h="))
+        self.assertIn("V06110", got[0].sublabel or "")
+
+        with unittest.mock.patch.object(ps, "read", return_value=({"find": [staff_row]}, {})):
+            got_staff = ps.search(object(), None, "Venessa", 8)
+        self.assertEqual(len(got_staff), 1)
+        self.assertEqual((got_staff[0].type, got_staff[0].label), ("Person", "Venessa Bandiera"))
+        self.assertEqual(got_staff[0].open_url, "/team?person=Venessa%20Bandiera")
+        self.assertIn("Account Executive · IT", got_staff[0].sublabel or "")
 
 
 if __name__ == "__main__":

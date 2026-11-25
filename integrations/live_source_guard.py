@@ -1511,6 +1511,78 @@ def _read_to_eof(response: Any, limit: int, *, deadline: float | None = None) ->
     return b"".join(chunks)
 
 
+def urllib_stream_sender(url: str, headers: Mapping[str, str],
+                         timeout: float, dest_path: str | os.PathLike[str],
+                         *, max_bytes: int | None = None,
+                         headroom: Any = None) -> tuple[int, Mapping[str, str], int, str]:
+    """Stream a GET-only response directly to ``dest_path`` in chunks (zero whole-file buffering
+    in RAM), verifying declared ``Content-Length``, checking ``headroom.room(written)``
+    as bytes arrive, and hashing with SHA-256 on the fly.
+    Returns ``(status, response_headers, written_bytes, sha256_hex)``. On non-200 error, writes
+    nothing to ``dest_path`` and returns ``(status, error_headers, 0, "")``."""
+    from hashlib import sha256 as _sha256
+    from pathlib import Path as _Path
+    _refuse_non_read_send("GET", url, None)
+    request = Request(url, headers=dict(headers), method="GET")
+    connect = _BoundedConnect()
+    try:
+        try:
+            opener = build_opener(_RefuseRedirect(), connect)
+            response = opener.open(request, timeout=timeout)
+        except HTTPError as error:
+            status = error.code
+            if _content_redirect(url, status):
+                location = error.headers.get("Location") if error.headers is not None else None
+                return status, ({"location": location} if isinstance(location, str) else {}), 0, ""
+            if 300 <= status < 400:
+                raise ReadOnlyGuardError("redirect refused") from None
+            return status, _error_headers(getattr(error, "headers", None)), 0, ""
+        with response:
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            dest = _Path(dest_path)
+            hasher = _sha256()
+            written = 0
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    while True:
+                        if headroom is not None:
+                            headroom.room(written)
+                        try:
+                            chunk = response.read(_READ_CHUNK_BYTES)
+                        except IncompleteRead:
+                            raise DownloadIncomplete() from None
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if max_bytes is not None and written > max_bytes:
+                            raise SourceUnavailable(f"response exceeds the {max_bytes}-byte bound")
+                        if headroom is not None:
+                            headroom.room(written)
+                        hasher.update(chunk)
+                        out.write(chunk)
+            except BaseException:
+                try:
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+            declared = response_headers.get("content-length")
+            if declared is not None:
+                try:
+                    expected = int(str(declared).strip())
+                except ValueError:
+                    dest.unlink(missing_ok=True)
+                    raise DownloadIncomplete("download length header invalid") from None
+                if expected < 0 or written != expected:
+                    dest.unlink(missing_ok=True)
+                    raise DownloadIncomplete("download ended before declared length")
+            connect.release(response)
+            return getattr(response, "status", 200), response_headers, written, hasher.hexdigest()
+    finally:
+        connect.discard()
+
+
 def _require_declared_length(headers: Mapping[str, str], raw: bytes, max_bytes: int) -> None:
     """Refuse a body shorter than its declared ``Content-Length``.
 
@@ -1742,18 +1814,117 @@ class GuardedTransport:
                 raise ReadOnlyGuardError("MC_GO_LIVE_TEAMS_* URLs are never called")
         return url
 
-    def download_preauthenticated(self, url: str, *, max_bytes: int) -> bytes:
+    def download_preauthenticated(self, url: str, *, max_bytes: int | None = None) -> bytes:
         """Credential-free GET of a pre-authenticated download URL on the one
         configured tenant SharePoint host (``sharepoint_host``)."""
-        if not isinstance(max_bytes, int) or not 1 <= max_bytes <= MAX_CONTENT_BYTES:
+        if max_bytes is not None and (isinstance(max_bytes, bool)
+                                      or not isinstance(max_bytes, int)
+                                      or not 1 <= max_bytes <= MAX_CONTENT_BYTES):
             raise ValueError("content bound invalid")
         self.check_download_url(url)
-        status, _headers, raw = self._send("GET", url, {"Accept": "application/octet-stream"},
-                                           None, max_bytes)
+        bound = MAX_CONTENT_BYTES if max_bytes is None else max_bytes
+        status, response_headers, raw = self._send("GET", url, {"Accept": "application/octet-stream"},
+                                                   None, bound)
         if status != 200:
-            raise _http_failure(SourceUnavailable(f"download returned HTTP {status}"),
-                                status, raw)
+            error = _http_failure(SourceUnavailable(f"download returned HTTP {status}"),
+                                  status, raw)
+            lowered = {str(k).lower(): v for k, v in (response_headers or {}).items()}
+            error.retry_after_seconds = BoundedBackoff().retry_after(lowered.get("retry-after"))
+            raise error
         return raw
+
+    def download_preauthenticated_to_file(
+        self, url: str, dest_path: str | os.PathLike[str], *,
+        max_bytes: int | None = None, headroom: Any = None,
+    ) -> tuple[int, str]:
+        """Stream a credential-free pre-authenticated SharePoint download directly to
+        ``dest_path`` with no fixed byte ceiling (bounded by ``headroom``,
+        ``operating.disk_guard.Headroom``, and optional explicit ``max_bytes``).
+        Returns ``(written_bytes, sha256_hex)``."""
+        from hashlib import sha256 as _sha256
+        from pathlib import Path as _Path
+        if max_bytes is not None and (isinstance(max_bytes, bool)
+                                      or not isinstance(max_bytes, int) or max_bytes < 1):
+            raise ValueError("content bound invalid")
+        self.check_download_url(url)
+        budget = _ACTIVE_BUDGET.get()
+        if budget is not None:
+            budget._admit(self)
+        timeout = _deadline_timeout(self._timeout)
+        label, scope = self._classify("GET", url)
+        if self.throttle is not None and scope is not None:
+            from . import drain
+            lefts = [d.left() for d in _ACTIVE_DEADLINES.get()]
+            self.throttle.before(scope, budget_left=min(lefts) if lefts else None,
+                                 drain_requested=drain.requested)
+        for observe in self.observers:
+            observe("GET", url)
+        with self._count_lock:
+            self.requests_sent += 1
+            self.gets_sent += 1
+            self._mix.setdefault(label, [0, 0])[0] += 1
+        dest = _Path(dest_path)
+        try:
+            if self._sender is urllib_sender:
+                status, response_headers, written, digest = urllib_stream_sender(
+                    url, {"Accept": "application/octet-stream"}, timeout, dest,
+                    max_bytes=max_bytes, headroom=headroom)
+            else:
+                bound = max_bytes if max_bytes is not None else (1 << 40)
+                status, response_headers, raw = self._sender(
+                    "GET", url, {"Accept": "application/octet-stream"}, None, timeout, bound)
+                if not isinstance(status, int) or not isinstance(raw, (bytes, bytearray)):
+                    raise SourceUnavailable("sender returned an invalid response")
+                if status == 200:
+                    if max_bytes is not None and len(raw) > max_bytes:
+                        raise SourceUnavailable(f"response exceeds the {max_bytes}-byte bound")
+                    hasher = _sha256()
+                    written = 0
+                    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    try:
+                        with os.fdopen(fd, "wb") as out:
+                            for lo in range(0, len(raw), _READ_CHUNK_BYTES):
+                                chunk = bytes(raw[lo:lo + _READ_CHUNK_BYTES])
+                                if headroom is not None:
+                                    headroom.room(written + len(chunk))
+                                hasher.update(chunk)
+                                out.write(chunk)
+                                written += len(chunk)
+                    except BaseException:
+                        dest.unlink(missing_ok=True)
+                        raise
+                    digest = hasher.hexdigest()
+                else:
+                    written, digest = 0, ""
+        except ReadOnlyGuardError:
+            raise
+        except DownloadIncomplete as exc:
+            raise DownloadIncomplete(self.scrub(str(exc))) from None
+        except SourceUnavailable:
+            raise
+        except OSError as exc:
+            raise transport_failure(self.scrub(
+                f"GET to {urlsplit(url).hostname} failed: {type(exc).__name__}")) from None
+        except Exception as exc:
+            if type(exc).__name__ in ("DiskRefused", "_DiskRefused"):
+                raise SourceUnavailable("disk_floor_reached") from None
+            raise SourceUnavailable(self.scrub(
+                f"GET to {urlsplit(url).hostname} failed: {type(exc).__name__}")) from None
+        if status in (429, 503):
+            with self._count_lock:
+                self._mix[label][1] += 1
+        if self.throttle is not None and scope is not None:
+            lowered = {str(k).lower(): v for k, v in (response_headers or {}).items()}
+            self.throttle.answered(scope, status, BoundedBackoff().retry_after(
+                lowered.get("retry-after")))
+        if 300 <= status < 400:
+            raise ReadOnlyGuardError("redirect refused; credentials are never forwarded")
+        if status != 200:
+            error = _http_failure(SourceUnavailable(f"download returned HTTP {status}"), status, b"")
+            lowered = {str(k).lower(): v for k, v in (response_headers or {}).items()}
+            error.retry_after_seconds = BoundedBackoff().retry_after(lowered.get("retry-after"))
+            raise error
+        return written, digest
 
 
 # ------------------------------------------------------------------ approved actions
@@ -2483,6 +2654,30 @@ class SourceApi:
         try:
             return self._transport.download_preauthenticated(secret.reveal(),
                                                              max_bytes=max_bytes)
+        finally:
+            self._transport.forget_secret(secret)
+
+    def get_content_to_file(self, url: str, dest_path: str | os.PathLike[str], *,
+                            max_bytes: int | None = None,
+                            headroom: Any = None) -> tuple[int, str]:
+        """Streaming version of :meth:`get_content`: writes directly to ``dest_path``."""
+        check_request("GET", url, environ=self._transport._environ)
+        if not _content_redirect(url):
+            raise ReadOnlyGuardError("only a drive item content route answers with content")
+        sent = {"Authorization": "Bearer " + self._tokens.bearer()}
+        status, response_headers, raw = self._send_get(url, sent, 65_536)
+        if status == 404:
+            raise _http_failure(SourceNotFound(f"{self.source} GET returned HTTP 404"), 404, raw)
+        if status != 302:
+            raise _http_failure(SourceUnavailable(f"{self.source} GET returned HTTP {status}"),
+                                status, raw)
+        location = {str(k).lower(): v for k, v in response_headers.items()}.get("location")
+        if not isinstance(location, str) or not location:
+            raise SourceUnavailable(f"{self.source} content redirect lacks a location")
+        secret = self._transport.register_secret(Secret(location))
+        try:
+            return self._transport.download_preauthenticated_to_file(
+                secret.reveal(), dest_path, max_bytes=max_bytes, headroom=headroom)
         finally:
             self._transport.forget_secret(secret)
 

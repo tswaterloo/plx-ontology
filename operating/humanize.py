@@ -493,7 +493,8 @@ NO_LIMIT = -1.0   # ``rewriter(seconds=NO_LIMIT)``: no time limit on the call
 
 
 def rewriter(binary: str = "claude", model: Optional[str] = None,
-             seconds: Optional[float] = None, feature: str = "humanize_rewrite"
+             seconds: Optional[float] = None, feature: str = "humanize_rewrite",
+             effort: Optional[str] = None
              ) -> Callable[[str], Optional[str]]:
     """One ``claude -p`` turn with no tools and no settings on the operator's login
     (``agent_environment``), its prompt masked first (``operating.card_text``: no card
@@ -507,6 +508,8 @@ def rewriter(binary: str = "claude", model: Optional[str] = None,
                 "--no-session-persistence", "--max-turns", "1", "--output-format", "json",
                 "--system-prompt", NEUTRAL_SYSTEM, "--exclude-dynamic-system-prompt-sections",
                 "--model", model or os.environ.get(MODEL_ENV) or MODEL]
+        if effort:
+            argv += ["--effort", effort]
         limit = (None if seconds == NO_LIMIT else
                  seconds or float(os.environ.get(SECONDS_ENV) or SECONDS))
         started = time.monotonic()

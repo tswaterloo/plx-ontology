@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getActionsLog, getAuthConfig, getMe, getObject, getObjectCore, getRecordViews, getSidebar, getTrust, getUpcomingMeetings, setTokenProvider } from "./api";
+import { getActionsLog, getAuthConfig, getHomeNeeds, getMe, getObject, getObjectCore, getRecordViews, getSidebar, getTrust, getUpcomingMeetings, setTokenProvider } from "./api";
 import { resetSessionCaches } from "./session-cache";
 import { EARLY_READS_SCRIPT, TICKET_BOOT_SCRIPT } from "./ticket-boot";
 
@@ -131,6 +131,7 @@ describe("every mapped page's and a record's reads start with the HTML and are t
     return asked;
   }
   it.each([
+    ["/", "/api/home/needs", () => getHomeNeeds()],
     ["/records", "/api/records/views", () => getRecordViews()],
     ["/activity", "/api/actions/log", () => getActionsLog()],
     ["/meetings", "/api/brief/meetings", () => getUpcomingMeetings()],

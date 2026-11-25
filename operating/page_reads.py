@@ -146,10 +146,10 @@ def _rank(exact: str, prefix: str, name: str | None = None) -> str:
     a name holding it, 9 no match. ``exact``/``prefix``: SQL tests on ``Q``."""
     out = f"CASE WHEN {exact} THEN 0 "
     if name:
-        out += f"WHEN lower({name}) = {Q} THEN 1 "
+        out += f"WHEN lower(btrim({name})) = {Q} THEN 1 "
     out += f"WHEN {prefix} THEN 2 "
     if name:
-        out += (f"WHEN strpos(lower({name}), {Q}) = 1 THEN 3 "
+        out += (f"WHEN strpos(lower(btrim({name})), {Q}) = 1 THEN 3 "
                 f"WHEN strpos(' ' || lower({name}), ' ' || {Q}) > 0 THEN 4 "
                 f"WHEN strpos(lower({name}), {Q}) > 0 THEN 5 ")
     return out + "ELSE 9 END"
@@ -227,30 +227,47 @@ def _narrow(*cols: str) -> str:
 
 def _codes(code: str, codes: str) -> tuple[str, str]:
     """A party's own code or any system's code in ``codes`` ('sage:A1, bc:A1')."""
-    return (f"(lower({code}) = {Q} OR strpos(lower({codes}) || ',', ':' || {Q} || ',') > 0)",
-            f"(strpos(lower({code}), {Q}) = 1 OR strpos(lower({codes}), ':' || {Q}) > 0)")
+    c = f"COALESCE({code}, '')"
+    cs = f"COALESCE({codes}, '')"
+    return (f"(lower({c}) = {Q} OR strpos(lower({cs}) || ',', ':' || {Q} || ',') > 0)",
+            f"(strpos(lower({c}), {Q}) = 1 OR strpos(lower({cs}), ':' || {Q}) > 0)")
 
 
 # Record kinds found by their own number through the guarded ``records`` view (a document's
-# label is its number, with or without the kind in front: "Receipt RCP10002648", a lot's
-# "S220001"). Sales and supplier invoices are read from their own views, whose number
-# columns are typed; every kind here is one record page (``object_url``).
+# label is its number, with or without the kind in front: "Receipt RCP10002648", "BC doc
+# S-SHPT102001", a lot's "S220001"). Sales and supplier invoices are read from their own
+# views, whose number columns are typed; every kind here is one record page (``object_url``).
 NUMBERED_RECORDS = {"shipment": "Shipment", "receipt": "Receipt", "lot": "Lot",
-                    "credit_note": "SalesCreditMemo", "purchase_invoice": "PurchaseInvoice"}
+                    "credit_note": "SalesCreditMemo",
+                    "purchase_credit_note": "PurchaseCreditMemo",
+                    "purchase_invoice": "PurchaseInvoice"}
+# Label prefixes ``generic_records`` writes before a record's number (its own kind word,
+# ``BC doc`` for BC document numbers, ``Invoice`` for vendor invoice numbers).
+_NUMBERED_PREFIXES = {
+    "Shipment": ("Shipment", "BC doc"),
+    "Receipt": ("Receipt", "BC doc"),
+    "Lot": ("Lot",),
+    "SalesCreditMemo": ("SalesCreditMemo", "Credit Memo", "Credit Note", "BC doc"),
+    "PurchaseCreditMemo": ("PurchaseCreditMemo", "Credit Memo", "Credit Note", "BC doc"),
+    "PurchaseInvoice": ("PurchaseInvoice", "Invoice", "BC doc"),
+}
 # Search kinds whose results open the record page the Ask opens (the record's object), not
 # an account or order page.
 OBJECT_KINDS = ("product", "batch", "sales_invoice", "supplier_invoice", *NUMBERED_RECORDS)
 
 
-def _label_number(word: str) -> tuple[str, str]:
+def _label_number(prefixes: tuple[str, ...] | str) -> tuple[str, str]:
     """A record's label read as its number, by the operators the guarded view lets reach
     an index (``texteq``, ``text_pattern_ge``/``lt``: leakproof; ``lower()`` is not): the
-    label is the number or its kind word and the number, spelt as typed, upper or lower
-    case. Exact is equality with one of those, a prefix a range over them."""
+    label is the number or a known prefix word and the number, spelt as typed, upper or
+    lower case. Exact is equality with one of those, a prefix a range over them."""
     # the typed text as the statement's own parameters (constants to the planner), never a
     # column of ``k``: only then does the guarded view let the test reach the index
-    forms = ["btrim(%(q)s)", "upper(btrim(%(q)s))", "lower(btrim(%(q)s))"]
-    forms += [f"('{word} ' || {f})" for f in forms]
+    words = (prefixes,) if isinstance(prefixes, str) else tuple(prefixes)
+    base = ["btrim(%(q)s)", "upper(btrim(%(q)s))", "lower(btrim(%(q)s))"]
+    forms = list(base)
+    for word in words:
+        forms += [f"('{word} ' || {f})" for f in base]
     exact = f"r.label = ANY(ARRAY[{', '.join(forms)}])"
     ranges = " OR ".join(f"(r.label ~>=~ {f} AND r.label ~<~ ({f} || chr(1114111)))"
                          for f in forms)
@@ -292,8 +309,19 @@ def _find_sql() -> str:
          no, "(SELECT chain, chain_code, count(*) AS n FROM customers WHERE chain IS NOT NULL "
          "GROUP BY 1, 2 HAVING count(*) > 1) g WHERE "
          f"{_may(f'strpos(lower(g.chain_code), {Q}) = 1', 'g.chain')}"),
-        ("supplier", "s.handle", "s.name", "s.supplier_code", "NULL::text", "s.status", "NULL::bigint",
+        ("supplier", "s.handle", "s.name", "s.supplier_code",
+         "concat_ws('|', COALESCE(s.source_systems, ''), COALESCE(s.currency, ''), "
+         "COALESCE(s.blocked, ''))",
+         "s.status", "NULL::bigint",
          _rank(sx, sp, "s.name"), no, f"suppliers s WHERE {_may(sp, 's.name')}"),
+        ("staff", "COALESCE(st.handle, st.person_id)", "st.name", "st.email",
+         "concat_ws(' · ', NULLIF(btrim(COALESCE(st.title, '')), ''), "
+         "NULLIF(btrim(COALESCE(st.department, '')), ''))",
+         "st.person_id", "NULL::bigint",
+         _rank(f"lower(COALESCE(st.email, '')) = {Q}",
+               f"strpos(lower(COALESCE(st.email, '')), {Q}) = 1", "st.name"),
+         no,
+         f"staff st WHERE {_may(f'strpos(lower(COALESCE(st.email, \'\')), {Q}) = 1', 'st.name')}"),
         ("sales_order", "o.handle", "o.order_number", "o.customer_po", "o.customer", "o.status",
          "NULL::bigint", f"LEAST({_rank(ox, op_)}, CASE WHEN {cpx} THEN 2 ELSE 9 END)",
          no, f"sales_orders o, {_HEADS} WHERE {_narrow(*_cols('o', 'sales_orders'))}"),
@@ -314,7 +342,7 @@ def _find_sql() -> str:
          f"supplier_invoices d, {_HEADS} WHERE {_narrow(*_cols('d', 'supplier_invoices'))}"),
     ]
     for kind, type_ in NUMBERED_RECORDS.items():
-        rx, rp = _label_number(type_)
+        rx, rp = _label_number(_NUMBERED_PREFIXES.get(type_, (type_,)))
         parts.append((kind, "r.handle", "r.label", "r.system", "r.type", "NULL::text",
                       "NULL::bigint", _rank(rx, rp), bc_pilot_record_sql("r.system"),
                       f"(SELECT * FROM records WHERE type = '{type_}' AND ({rx.replace('r.', '')} OR "
@@ -327,14 +355,14 @@ def _find_sql() -> str:
     # under two characters: no result (``search`` asks for none; the statement holds it too)
     return (f"SELECT kind, handle, title, code, context, status, members, rank FROM ({union}) "
             "hit WHERE length(btrim(%(q)s)) >= 2 ORDER BY rank, pilot, CASE kind WHEN 'chain' THEN 0 WHEN 'customer' THEN 1 "
-            "WHEN 'supplier' THEN 2 ELSE 3 END, length(title), title, handle "
+            "WHEN 'staff' THEN 2 WHEN 'supplier' THEN 3 ELSE 4 END, length(title), title, handle "
             "LIMIT %(limit)s")
 
 
 FIND_SQL = _find_sql()
 
 # A name spelt close to what was typed ("Croda" typed "Crodda"), asked only when ``find`` found
-# nothing: parties and products whose name is close by pg_trgm (``public.``: the page role's
+# nothing: parties, staff and products whose name is close by pg_trgm (``public.``: the page role's
 # search path holds no extension schema). A short word needs the whole name close (a four-letter
 # typo is a word of many other names); a longer one may be a close word inside the name. Rank 6
 # so the result reads as a close spelling, never an exact find.
@@ -351,7 +379,12 @@ FIND_NEAR_SQL = (
         f"{_WORD.format(n=n)} AS word FROM {frm}"
         for kind, h, n, c, ctx, frm in (
             ("customer", "handle", "name", "customer_code", "chain", "customers"),
-            ("supplier", "handle", "name", "supplier_code", "NULL::text", "suppliers"),
+            ("staff", "COALESCE(handle, person_id)", "name", "email",
+             "concat_ws(' · ', NULLIF(btrim(COALESCE(title, '')), ''), "
+             "NULLIF(btrim(COALESCE(department, '')), ''))", "staff"),
+            ("supplier", "handle", "name", "supplier_code",
+             "concat_ws('|', COALESCE(source_systems, ''), COALESCE(currency, ''), "
+             "COALESCE(blocked, ''))", "suppliers"),
             ("product", "handle", "name", "item_code", "category", "products")))
     + ") near WHERE length(btrim(%(q)s)) >= 4 AND (whole >= 0.3 OR (length(btrim(%(q)s)) >= 5 "
     "AND word >= 0.6))) hit) numbered WHERE same <= 2 "   # a name many records share: two of them
@@ -504,8 +537,8 @@ QUERIES: dict[str, Query] = {
     # ---- the supplier's account page (``handle``)
     "supplier_account": Query(
         "SELECT name, supplier_code, codes, currency, status, blocked, supplier_type, "
-        "incoterms, lead_time_days, email, phone, website, handle, withheld FROM suppliers "
-        "WHERE handle = %(handle)s", ("handle",)),
+        "incoterms, lead_time_days, email, phone, website, source_systems, handle, withheld "
+        "FROM suppliers WHERE handle = %(handle)s", ("handle",)),
     "supplier_open_pos": Query(
         "SELECT po_number, supplier, order_date, requested_date, promised_date, verdict, "
         "days_late, total, total_currency, purchaser, line_count, handle, withheld "
@@ -516,7 +549,8 @@ QUERIES: dict[str, Query] = {
     # purchasing vendor "X" the POs name): listed beside the account, never merged into it
     "supplier_same_name": Query(
         "WITH me AS (SELECT " + _NAME_KEY.format(col="name") + " AS k FROM suppliers "
-        "WHERE handle = %(handle)s) SELECT s.name, s.supplier_code, s.handle, s.withheld, "
+        "WHERE handle = %(handle)s) SELECT s.name, s.supplier_code, s.blocked, s.currency, "
+        "s.source_systems, s.handle, s.withheld, "
         "(SELECT count(*) FROM purchase_orders p WHERE p.status = 'open' AND "
         "p.supplier_handle = s.handle) AS open_pos FROM suppliers s, me "
         "WHERE s.handle <> %(handle)s AND me.k <> '' AND "

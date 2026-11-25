@@ -178,10 +178,13 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
                  addresses_of: Mapping[str, set[str]], domains: Sequence[str],
                  skipped: Counter, outbound: list | None = None, parties: Any = None
                  ) -> list[dict[str, Any]]:
+    from . import autopilot_records
     from . import inbox_triage as it
     from . import proactive_threads as pt
     out = []
     rows = _read(st, oids, EMAIL_PROPS)
+    bodies = autopilot_records.body_texts(
+        st, [h for r in rows.values() for h in _handles_of(r)[:1]])
     machine = it.automated_mail()   # triage's test; a cycle is no window: its form rules
     for oid in oids:
         row = rows.get(oid) or {}
@@ -195,6 +198,7 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
             continue
         sender = (_addresses(_v(row, "sender")) or [""])[0]
         mine = addresses_of.get(mailbox, set())
+        raw_body = autopilot_records.message_body(row, bodies)
         if not sender or sender in mine:
             skipped["not_inbound"] += 1
             if sender and outbound is not None and (_v(row, "sent_at") or _v(row, "received_at")):
@@ -204,11 +208,11 @@ def _mail_events(st: Any, oids: Sequence[str], typed: Mapping[str, tuple[str, st
                     "message_id": _v(row, "internet_message_id") or oid, "to": to,
                     "at": _v(row, "sent_at") or _v(row, "received_at"), "object_id": oid,
                     # what ``autopilot_waits`` keeps of a mail that may wait on an answer
-                    "subject": _v(row, "subject"), "text": pt._own(_v(row, "body_preview")),
-                    **routine_note(_v(row, "subject"), _v(row, "body_preview"), sender, to,
+                    "subject": _v(row, "subject"), "text": pt._own(raw_body),
+                    **routine_note(_v(row, "subject"), raw_body, sender, to,
                                    mine, domains, oid)})
             continue
-        subject, text = _v(row, "subject"), pt._own(_v(row, "body_preview"))
+        subject, text = _v(row, "subject"), pt._own(raw_body)
         if machine(sender, text, subject):
             skipped["automated"] += 1
             continue

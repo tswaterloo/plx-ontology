@@ -70,6 +70,8 @@ export interface Turn {
   steps?: string[];
   /** The answer's first line, sent once the answer gate accepted it (before the full answer). */
   verdict?: string;
+  /** Validated charts streamed early before the final answer payload arrives. */
+  charts?: Answer["charts"];
   sourcesFound?: number;
   streamed: string;
   answer?: Answer;
@@ -665,7 +667,7 @@ function whoToAsk(a: Answer): string | null {
 /** Words of a read that failed, as an answer or its not-found list says them. */
 const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
 
-type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void; noteRecord?: string; showNote?: boolean };
+type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void; noteRecord?: string; showNote?: boolean; hideClarify?: boolean };
 
 /** Pure: the turn is the simple Ask's (its answer carries ``cited``, or its words streamed whole). */
 export function isSimple(turn: Turn): boolean {
@@ -674,7 +676,7 @@ export function isSimple(turn: Turn): boolean {
 
 /** The simple Ask's turn shows the answer and its Sources line alone; every other turn the full card. */
 export function AnswerCard(props: CardProps) {
-  const { turn, onRetry, onDeeper, noteRecord, showNote } = props;
+  const { turn, onRetry, onDeeper, noteRecord, showNote, hideClarify } = props;
   if (!isSimple(turn)) return <FullAnswerCard {...props} />;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const canDeeper = turn.phase === "done" && !!onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable;
@@ -683,20 +685,23 @@ export function AnswerCard(props: CardProps) {
       <SimpleAnswer
         answer={turn.answer}
         streamed={turn.streamed}
+        charts={turn.charts}
+        question={turn.question}
         busy={busy}
         status={turn.status}
         progress={busy ? <Progress turn={turn} /> : undefined}
+        onAsk={props.onAsk}
         onDeeper={canDeeper ? onDeeper : undefined}
         noteRecord={noteRecord}
         showNote={showNote && turn.phase === "done"}
       />
-      {turn.phase === "done" && turn.answer?.clarify && <div className="mt-3 space-y-2"><p className="text-[15px] font-medium">{turn.answer.clarify.question}</p><ClarifyPart a={turn.answer} onReply={props.onClarify} /></div>}
+      {!hideClarify && turn.phase === "done" && turn.answer?.clarify && <div className="mt-3 space-y-2"><p className="text-[15px] font-medium">{turn.answer.clarify.question}</p><ClarifyPart a={turn.answer} onReply={props.onClarify} /></div>}
       {turn.phase === "error" && <ErrorNotice message={turn.error ?? "This answer didn't finish. Try again."} tone={turn.notice ? "notice" : "error"} onRetry={turn.notice === "off" ? undefined : onRetry} />}
     </>
   );
 }
 
-function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }: CardProps) {
+function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify, hideClarify }: CardProps) {
   const a = turn.answer;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const u = turn.understanding;
@@ -878,7 +883,7 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify }:
             ))}
             <AttachmentNotes items={a.attachments ?? []} />
             <AskDrafts drafts={a.drafts ?? []} record={a.subjects?.[0]?.object_id ?? null} />
-            {a.clarify && <ClarifyPart a={a} onReply={onClarify} />}
+            {!hideClarify && a.clarify && <ClarifyPart a={a} onReply={onClarify} />}
             {a.instruction && <InstructionPart part={a.instruction} answerId={a.answer_id} onInstruct={onInstruct} />}
             {ask && (
               <section data-testid="who-to-ask">

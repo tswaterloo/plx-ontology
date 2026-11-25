@@ -66,11 +66,14 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 SOURCES = ("mail", "teams")
 WAKE_DIR = Path("host") / "notify-wake"
+WEBHOOK_WAKE_FILE = Path("host") / "graph-notify.wake"
+RENEW_WAKE_FILE = Path("host") / "graph-subscriptions.wake"
 STATUS_FILE = Path("host") / "graph-notify.json"
 OFFSETS_FILE = Path("host") / "graph-notify-offsets.json"
 STATUS_SCHEMA = "plx-graph-notify/v1"
 WAKE_MIN_GAP_SECONDS = 30.0      # the ingest starts a woken source at most this often
 MAX_EVENT_BYTES = 1 << 20
+WEBHOOK_MAX_BYTES = 256 * 1024
 # outcomes that are a refusal (forged, foreign or malformed), not just "nothing to wake"
 REFUSED = frozenset({"client_state_mismatch", "tenant_mismatch", "subscription_unknown",
                      "change_type_unknown", "lifecycle_unknown", "malformed",
@@ -82,12 +85,20 @@ ENV_GROUP = "PLX_GRAPH_NOTIFY_CONSUMER_GROUP"
 ENV_CLIENT_STATE = "PLX_GRAPH_NOTIFY_CLIENT_STATE_SECRET"
 ENV_SUBSCRIPTIONS = "PLX_GRAPH_NOTIFY_SUBSCRIPTIONS"
 ENV_TENANT = "AZURE_TENANT_ID"
+ENV_GRAPH_TENANT = "MICROSOFT_GRAPH_TENANT_ID"
 SETTING_NAMES = (ENV_NAMESPACE, ENV_HUB, ENV_GROUP, ENV_CLIENT_STATE, ENV_SUBSCRIPTIONS)
 
 _ID = r"(?:\('[^'/]+'\)|/[^/()]+)"
 _MAIL = re.compile(rf"^/?users{_ID}(?:/mailfolders{_ID})?/messages{_ID}$", re.I)
 _TEAMS = re.compile(rf"^/?(?:chats{_ID}|teams{_ID}/channels{_ID})/messages{_ID}"
                     rf"(?:/replies{_ID})?$", re.I)
+_MAIL_SUB = re.compile(rf"^/?users{_ID}(?:/mailfolders{_ID})?/messages$", re.I)
+_TEAMS_SUB = re.compile(
+    rf"^/?(?:chats{_ID}/messages|chats/getallmessages|users{_ID}/chats/getallmessages|"
+    rf"teams{_ID}/channels{_ID}/messages|teams/getallmessages|"
+    rf"teams{_ID}/channels/getallmessages)$", re.I)
+_EXPIRY_RE = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)")
+_STATE_LOCK = threading.Lock()
 
 
 class NotConfigured(Exception):
@@ -128,6 +139,19 @@ class Settings:
                    tenant=(environ.get(ENV_TENANT) or "").strip().lower() or None,
                    subscriptions=subs)
 
+    @classmethod
+    def for_webhook(cls, environ: Mapping[str, str]) -> "Settings":
+        """Settings for the HTTP webhook receiver (``POST /graph/notify``). Does not require
+        Event Hubs settings. When ``PLX_GRAPH_NOTIFY_CLIENT_STATE_SECRET`` is unset or empty,
+        ``client_state`` is empty and ``judge`` fails closed (drops every notification)."""
+        state = (environ.get(ENV_CLIENT_STATE) or "").strip()
+        tenant = ((environ.get(ENV_TENANT) or "").strip()
+                  or (environ.get(ENV_GRAPH_TENANT) or "").strip()).lower() or None
+        subs = frozenset(s.strip().lower() for s in
+                         (environ.get(ENV_SUBSCRIPTIONS) or "").split(",") if s.strip())
+        return cls(connection="", hub="webhook", client_state=state,
+                   tenant=tenant, subscriptions=subs)
+
 
 # --- one notification ----------------------------------------------------------------
 
@@ -143,12 +167,28 @@ def source_of(resource: Any) -> str | None:
     return None
 
 
+def lifecycle_source_of(resource: Any) -> str | None:
+    """``mail``, ``teams`` or None for a lifecycle notification, which may name either a
+    message resource or a subscription-level resource (e.g. ``chats/getAllMessages``)."""
+    found = source_of(resource)
+    if found is not None:
+        return found
+    if not isinstance(resource, str) or len(resource) > 2048:
+        return None
+    path = resource.strip().split("?", 1)[0]
+    if _MAIL_SUB.match(path):
+        return "mail"
+    if _TEAMS_SUB.match(path):
+        return "teams"
+    return None
+
+
 def judge(note: Any, settings: Settings) -> tuple[str | None, str]:
     """(source to wake or None, outcome code) of one notification."""
     if not isinstance(note, Mapping):
         return None, "malformed"
     given = note.get("clientState")
-    if not isinstance(given, str) or not hmac.compare_digest(
+    if not settings.client_state or not isinstance(given, str) or not hmac.compare_digest(
             given.encode("utf-8"), settings.client_state.encode("utf-8")):
         return None, "client_state_mismatch"
     tenant = note.get("tenantId")
@@ -163,7 +203,8 @@ def judge(note: Any, settings: Settings) -> tuple[str | None, str]:
     lifecycle = note.get("lifecycleEvent")
     if lifecycle is not None:
         if lifecycle == "missed":
-            return source, "lifecycle_missed" if source else "ignored"
+            lsrc = source or lifecycle_source_of(note.get("resource"))
+            return lsrc, "lifecycle_missed" if lsrc else "ignored"
         if lifecycle in ("reauthorizationRequired", "subscriptionRemoved"):
             return None, "lifecycle_" + lifecycle
         return None, "lifecycle_unknown"
@@ -174,9 +215,9 @@ def judge(note: Any, settings: Settings) -> tuple[str | None, str]:
     return source, "accepted"
 
 
-def notifications(body: bytes) -> list[Any] | None:
+def notifications(body: bytes, *, max_bytes: int = MAX_EVENT_BYTES) -> list[Any] | None:
     """The notifications of one event body (None: not Graph's batch shape)."""
-    if len(body) > MAX_EVENT_BYTES:
+    if len(body) > max_bytes:
         return None
     try:
         data = json.loads(body.decode("utf-8"))
@@ -190,9 +231,125 @@ def notifications(body: bytes) -> list[Any] | None:
 
 def _write_json(path: Path, data: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
+
+
+@dataclass(frozen=True)
+class WebhookResult:
+    """Evaluated outcome of one HTTP webhook batch (no secrets, IDs, or resource paths)."""
+    accepted: int
+    dropped: int
+    counts: dict[str, int]
+    woken_sources: tuple[str, ...]
+    expiries: dict[str, str]
+    source_lifecycles: dict[str, str]
+    renewal_events: tuple[str, ...]
+
+
+_ACCEPTED_OUTCOMES = frozenset({
+    "accepted",
+    "lifecycle_missed",
+    "lifecycle_reauthorizationRequired",
+    "lifecycle_subscriptionRemoved",
+})
+_RENEWAL_OUTCOMES = frozenset({
+    "lifecycle_reauthorizationRequired",
+    "lifecycle_subscriptionRemoved",
+})
+
+
+def evaluate_webhook_body(body: bytes, settings: Settings) -> WebhookResult:
+    """Validate one HTTP webhook POST body in memory without touching disk."""
+    batch = notifications(body, max_bytes=WEBHOOK_MAX_BYTES)
+    if batch is None:
+        return WebhookResult(
+            accepted=0,
+            dropped=1,
+            counts={"event_malformed": 1},
+            woken_sources=(),
+            expiries={},
+            source_lifecycles={},
+            renewal_events=(),
+        )
+    counts: dict[str, int] = {}
+    woken: set[str] = set()
+    expiries: dict[str, str] = {}
+    source_lifecycles: dict[str, str] = {}
+    renewal_events: set[str] = set()
+    accepted = 0
+    dropped = 0
+    for note in batch:
+        source, outcome = judge(note, settings)
+        counts[outcome] = counts.get(outcome, 0) + 1
+        if outcome in _ACCEPTED_OUTCOMES:
+            accepted += 1
+        else:
+            dropped += 1
+        if outcome in _RENEWAL_OUTCOMES:
+            renewal_events.add(outcome)
+        if source is not None:
+            woken.add(source)
+            expiry = note.get("subscriptionExpirationDateTime") if isinstance(note, Mapping) else None
+            if isinstance(expiry, str) and _EXPIRY_RE.fullmatch(expiry):
+                expiries[source] = max(expiries.get(source) or "", expiry)
+            if outcome.startswith("lifecycle_"):
+                source_lifecycles[source] = outcome
+    return WebhookResult(
+        accepted=accepted,
+        dropped=dropped,
+        counts=counts,
+        woken_sources=tuple(sorted(woken)),
+        expiries=expiries,
+        source_lifecycles=source_lifecycles,
+        renewal_events=tuple(sorted(renewal_events)),
+    )
+
+
+def record_webhook_result(
+    state: Path,
+    result: WebhookResult,
+    *,
+    now: Callable[[], float] = time.time,
+) -> None:
+    """Atomically record a ``WebhookResult`` to ``<state>/host/graph-notify.json`` and
+    write wake markers for ingest and subscription renewal. Never writes IDs or secrets."""
+    state_path = Path(state)
+    ts = now()
+    with _STATE_LOCK:
+        status_path = state_path / STATUS_FILE
+        try:
+            held = json.loads(status_path.read_text(encoding="utf-8"))
+            if not isinstance(held, dict) or held.get("schema") != STATUS_SCHEMA:
+                held = {"schema": STATUS_SCHEMA, "counts": {}, "sources": {}}
+        except (OSError, ValueError):
+            held = {"schema": STATUS_SCHEMA, "counts": {}, "sources": {}}
+        held_counts = held.setdefault("counts", {})
+        held_sources = held.setdefault("sources", {})
+        for source in result.woken_sources:
+            entry = held_sources.setdefault(source, {})
+            entry["last_notified_at"] = ts
+            expiry = result.expiries.get(source)
+            if expiry:
+                entry["subscription_expires"] = max(entry.get("subscription_expires") or "", expiry)
+            lc = result.source_lifecycles.get(source)
+            if lc:
+                entry["last_lifecycle"] = lc
+        for name, count in result.counts.items():
+            held_counts[name] = held_counts.get(name, 0) + count
+            if name.startswith("lifecycle_") and name != "lifecycle_missed":
+                held["last_lifecycle"] = {"event": name, "at": ts}
+        held["last_event_at"] = ts
+        _write_json(status_path, held)
+        for source in result.woken_sources:
+            wake(state_path, source, now=lambda: ts)
+        if result.woken_sources:
+            _write_json(state_path / WEBHOOK_WAKE_FILE,
+                        {"at": ts, "sources": list(result.woken_sources)})
+        if result.renewal_events:
+            _write_json(state_path / RENEW_WAKE_FILE,
+                        {"at": ts, "events": list(result.renewal_events)})
 
 
 def wake(state: Path, source: str, *, now: Callable[[], float] = time.time) -> None:

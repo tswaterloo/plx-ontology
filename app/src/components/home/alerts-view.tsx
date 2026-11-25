@@ -1,6 +1,7 @@
 "use client";
 
 import { ALERTS_HREF, SectionTabs, useHash } from "@/components/shell";
+import { Loader2, RefreshCw } from "lucide-react";
 import { Pending } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AlertKindsSection, DataHealthSection } from "@/components/watching/alert-kinds";
@@ -8,7 +9,7 @@ import { AlertFeed, FiredKind, firedKinds } from "@/components/watching/fired";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadProblem } from "@/components/ui/notice";
-import { Toolbar } from "@/components/ui/toolbar";
+import { Toolbar, ToolbarButton } from "@/components/ui/toolbar";
 import { PageIntro } from "@/components/ui/page-intro";
 import { compileRule, createRule, deleteRule, getAlertKinds, getBriefing, getWatchlist, markAlertsRead, setFollowing } from "@/lib/api";
 import { ruleParams } from "@/lib/rule-params";
@@ -55,7 +56,10 @@ export function AlertsView() {
   const [draft, setDraft] = useState<WatchRuleDraft | null>(null);
   const [refused, setRefused] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [markingRead, setMarkingRead] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [unfollowing, setUnfollowing] = useState<string | null>(null);
+  const [followError, setFollowError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setProblem(null);
@@ -131,15 +135,47 @@ export function AlertsView() {
         }
         actions={
           <>
+            <ToolbarButton
+              onClick={() => {
+                load();
+                retryKinds();
+              }}
+              title="Refresh alerts"
+              aria-label="Refresh alerts"
+            >
+              <RefreshCw aria-hidden />
+              <span className="max-sm:sr-only">Refresh</span>
+            </ToolbarButton>
             {unread.length > 0 && (
-              <button type="button" className="inline-flex h-8 items-center rounded-lg px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer" onClick={() => run(async () => { await markAlertsRead(unread); load(); })}>
-                Mark all read
-              </button>
+              <ToolbarButton
+                disabled={busy || markingRead}
+                onClick={async () => {
+                  setMarkingRead(true);
+                  try {
+                    await run(async () => {
+                      await markAlertsRead(unread);
+                      load();
+                    });
+                  } finally {
+                    setMarkingRead(false);
+                  }
+                }}
+              >
+                {markingRead && <Loader2 className="animate-spin" aria-hidden />}
+                {markingRead ? "Marking" : "Mark all read"}
+              </ToolbarButton>
             )}
             {data?.configured !== false && (
-              <button type="button" className="ml-1 inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer" onClick={() => ruleInput.current?.focus()}>
+              <ToolbarButton
+                primary
+                className="dark:bg-surface"
+                onClick={() => {
+                  ruleInput.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  ruleInput.current?.focus();
+                }}
+              >
                 New rule
-              </button>
+              </ToolbarButton>
             )}
           </>
         }
@@ -220,9 +256,9 @@ export function AlertsView() {
               onChange={(e) => { setText(e.target.value); setDraft(null); }}
               onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) preview(); }}
               placeholder={EXAMPLES[0]}
-              className="h-9 min-w-0 shrink-0 rounded-lg border border-control bg-transparent px-3 text-[13px]"
+              className="h-9 min-w-0 shrink-0 rounded-md border border-border-strong bg-bg px-3 text-[13px] text-fg outline-none focus:border-accent dark:bg-surface"
             />
-            <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-8 self-start rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)] cursor-pointer disabled:opacity-50">
+            <button type="button" disabled={busy || !text.trim()} onClick={preview} className="h-8 self-start rounded-md border border-border bg-bg px-3 text-[13px] font-medium text-fg hover:border-border-strong hover:bg-hover dark:bg-surface cursor-pointer disabled:opacity-50">
               {busy && !draft ? "Checking" : "Check"}
             </button>
           </div>
@@ -248,10 +284,16 @@ export function AlertsView() {
               </dl>
               {draft.markings.length > 0 && <p className="text-[12px] text-muted">Reads {draft.markings.join(", ")} figures: only people cleared for them can set it or see its alerts.</p>}
               <div className="flex flex-col gap-2">
-                <button type="button" disabled={busy} onClick={confirm} className="h-8 rounded-lg bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-3 text-[13px] font-medium cursor-pointer">
-                  Keep this rule
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={confirm}
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[color-mix(in_srgb,var(--fg)_8%,transparent)] px-3 text-[13px] font-medium transition-colors hover:bg-[color-mix(in_srgb,var(--fg)_12%,transparent)] disabled:pointer-events-none disabled:opacity-50 cursor-pointer"
+                >
+                  {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+                  {busy ? "Saving" : "Keep this rule"}
                 </button>
-                <button type="button" onClick={() => setDraft(null)} className="h-8 rounded-lg px-3 text-[13px] text-muted hover:bg-hover cursor-pointer">
+                <button type="button" disabled={busy} onClick={() => setDraft(null)} className="h-8 rounded-lg px-3 text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer">
                   Cancel
                 </button>
               </div>
@@ -292,18 +334,39 @@ export function AlertsView() {
 
         <section aria-labelledby="follows" className="space-y-1" hidden={!data}>
           <h2 id="follows" className="text-[11px] font-semibold tracking-[0.04em] text-muted uppercase">Following</h2>
+          {followError && <p role="alert" className="text-[12px] text-late">{followError}</p>}
           {data && data.follows.length === 0 && <p className="text-[13px] text-muted">Use Follow on any record page.</p>}
           <ul className="divide-y divide-border">
-            {(data?.follows ?? []).map((f) => (
-              <li key={f.object_id} className="flex items-center gap-3 py-2.5">
-                <div className="min-w-0 flex-1 text-[13px]">
-                  {f.readable && f.object_type ? <Link href={objectHref(f.object_type, f.object_id)} className="hover:underline">{f.label ?? typeLabel(f.object_type)}</Link> : <span className="text-muted">A record you can no longer open</span>}
-                </div>
-                <button type="button" className="h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover cursor-pointer" onClick={() => run(async () => { await setFollowing(f.object_id, false); load(); })}>
-                  Unfollow
-                </button>
-              </li>
-            ))}
+            {(data?.follows ?? []).map((f) => {
+              const removing = unfollowing === f.object_id;
+              return (
+                <li key={f.object_id} className="flex items-center gap-3 py-2.5">
+                  <div className="min-w-0 flex-1 text-[13px]">
+                    {f.readable && f.object_type ? <Link href={objectHref(f.object_type, f.object_id)} className="truncate hover:underline">{f.label ?? typeLabel(f.object_type)}</Link> : <span className="text-muted">A record you can no longer open</span>}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy || removing}
+                    className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-fg disabled:pointer-events-none disabled:opacity-50 cursor-pointer"
+                    onClick={async () => {
+                      setUnfollowing(f.object_id);
+                      setFollowError(null);
+                      try {
+                        await setFollowing(f.object_id, false);
+                        load();
+                      } catch (err) {
+                        setFollowError(said(err));
+                      } finally {
+                        setUnfollowing(null);
+                      }
+                    }}
+                  >
+                    {removing && <Loader2 className="size-3 animate-spin" aria-hidden />}
+                    {removing ? "Removing" : "Unfollow"}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
         </>

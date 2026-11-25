@@ -83,4 +83,29 @@ describe("W1: the page's reads do not wait for the sign-in check", () => {
     expect(await plain).toMatchObject({ status: 401 });
     expect(sent).toHaveLength(3);
   });
+
+  it("ticket sign-in redeems the ticket before calling /api/me so no 401 occurs", async () => {
+    window.history.replaceState(null, "", "/?ticket=secret-123");
+    const order: string[] = [];
+    let loggedIn = false;
+    vi.stubGlobal("fetch", vi.fn((u: string) => {
+      const path = String(u);
+      order.push(path);
+      if (path === "/api/auth/config") return json(200, { mode: "dev", dev_login: true, sign_in: "access_link" });
+      if (path === "/api/auth/dev-login") {
+        loggedIn = true;
+        return json(200, { ok: true });
+      }
+      if (path === "/api/me") {
+        return loggedIn ? json(200, { principal: "plx:staff:ana" }) : json(401, { error: { code: "sign_in_required" } });
+      }
+      return json(200, { items: [] });
+    }));
+    render(<AuthProvider><RequireAuth fallback={<div>skeleton</div>}><div>signed-in-page</div></RequireAuth></AuthProvider>);
+    await waitFor(() => expect(order).toContain("/api/me"));
+    expect(order.indexOf("/api/auth/dev-login")).toBeGreaterThan(-1);
+    expect(order.indexOf("/api/auth/dev-login")).toBeLessThan(order.indexOf("/api/me"));
+    await waitFor(() => expect(screen.getByText("signed-in-page")).toBeTruthy());
+    expect(window.location.search).toBe("");
+  });
 });

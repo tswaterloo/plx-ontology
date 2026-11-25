@@ -63,9 +63,13 @@ class SqlDoor(unittest.TestCase):
         cls.store = tbv.build()
         cls.dsn = pg_store_mode._load("", cls.store.conn)
         with psycopg.connect(cls.dsn, autocommit=True) as c:
-            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql", "0041_business_views.sql"):
+            for name in ("0038_own_issued_documents.sql", "0040_people_excluded_objects.sql",
+                         "0041_business_views.sql", "0087_ar_daily_snapshots.sql"):
                 c.execute((MIGRATIONS_DIR / name).read_text())
         bv.build(cls.dsn, None, schema=tbv.SCHEMA, as_of=tbv.AS_OF)
+        from operating.pg import ar_daily_snapshots
+        with psycopg.connect(cls.dsn, autocommit=True) as c:
+            ar_daily_snapshots.snapshot(c, snapshot_date=tbv.AS_OF)
         for attempt in range(5):   # the role is the cluster's: parallel modules may race
             try:
                 cls.views = sql_views.install(cls.dsn)
@@ -151,11 +155,13 @@ class SqlDoor(unittest.TestCase):
         word = sorted(self.names())[0].split()[0]
         out = sqlt.SqlTool(self.base()).call("plx.sql", {"names": word}, FULL)
         self.assertNotIn("error", out, out)
-        self.assertEqual(out["columns"], ["kind", "status", "blocked", "active", "n", "example"])
+        self.assertEqual(out["columns"],
+                         ["kind", "status", "blocked", "active", "n", "kind_total", "example"])
         mine = [r["cells"] for r in out["rows"] if r["cells"][0] == "customer"]
         want = self.sql(f"SELECT count(*) FROM customers WHERE name ILIKE '%{word.lower()}%' "
                         f"OR customer_code ILIKE '%{word.lower()}%' OR codes ILIKE '%{word.lower()}%'")
         self.assertEqual(str(sum(int(c[4]) for c in mine)), self.column(want)[0])
+        self.assertEqual({c[5] for c in mine}, {self.column(want)[0]})
         self.assertTrue(out["scope"])
 
     def plain_rows(self, statement):

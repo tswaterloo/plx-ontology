@@ -279,5 +279,68 @@ class RealStore(unittest.TestCase):
         self.assertNotIn(seen.items[0].id, text)
 
 
+class StaleWhileRefresh(unittest.TestCase):
+    def test_data_health_serves_kept_page_when_refresh_returns_unread_or_503(self):
+        import threading
+        import time
+        from concurrent.futures import Future
+        from types import SimpleNamespace
+        from operator_api import errors, models as m
+        from operator_api.backend import WorkspaceBackend
+
+        class FakeBackend(WorkspaceBackend):
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._good = {}
+                self._refreshing = set()
+                self.page_cache = None
+                self.refreshed = 0
+
+            def inputs_stamp(self):
+                return None
+
+            def _access_later(self, *_a, **_k):
+                fut = Future()
+                fut.set_result((("pol-1", False, "ex-1", "mk-1"), True))
+                return fut
+
+            def _access_now(self, *_a, **_k):
+                return ("pol-1", False, "ex-1", "mk-1")
+
+            def _stale_copy(self, key, held, before):
+                return held[1].model_copy(update={"stale_since": "2026-11-25T15:00:00Z"})
+
+            def _refresh_later(self, *_a, **_k):
+                self.refreshed += 1
+
+            def _remember_read(self, *_a, **_k):
+                pass
+
+            def _after(self, fn):
+                fn()
+
+        b = FakeBackend()
+        reader = SimpleNamespace(key="emp:owner", mode="entra", session=SimpleNamespace(view_as=False))
+        good = m.DataHealth(status="read", as_of="2026-11-25T15:00:00Z", checks=[
+            m.DataHealthCheck(type="order_without_customer_po", label="Orders without PO", on=True, open=12)
+        ])
+        b._good[(reader.key, reader.mode, ("data_health", "counts"))] = (
+            time.time(), good, ("pol-1", False, "ex-1", "mk-1")
+        )
+        # During a views refresh, read returns status="unread" -> serves kept page marked stale
+        got_unread = b._serving(reader, ("data_health", "counts"),
+                                lambda: m.DataHealth(status="unread"))
+        self.assertEqual(got_unread.status, "read")
+        self.assertEqual(got_unread.stale_since, "2026-11-25T15:00:00Z")
+        self.assertEqual(got_unread.checks[0].open, 12)
+        # During a views refresh, read raises transient 503 page_unavailable -> serves kept page
+        def fail_503():
+            raise errors.UserFacing("page_unavailable", "Views refreshing", 503)
+        got_503 = b._serving(reader, ("data_health", "counts"), fail_503)
+        self.assertEqual(got_503.status, "read")
+        self.assertEqual(got_503.stale_since, "2026-11-25T15:00:00Z")
+        self.assertGreaterEqual(b.refreshed, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

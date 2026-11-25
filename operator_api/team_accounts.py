@@ -94,3 +94,18 @@ def is_shared(oid: str, row: Mapping[str, Any], state_dir: Any) -> bool:
         return True
     shared, bare = sets(state_dir)
     return oid in shared or (row.get("name_from") == "address" and oid in bare)
+
+
+def shared_ids(state_dir: Any, people: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """Every lower-cased object id that is a shared mailbox or unprofiled address-only account:
+    owner-confirmed shared logins (``PLX_TEAM_SHARED_ACCOUNTS``), mailboxes recorded as
+    ``shared`` in the mail capture, and (when ``people`` from the team snapshot is given)
+    address-only accounts with no org-chart profile."""
+    shared, bare = sets(state_dir)
+    out = set(confirmed()) | set(shared)
+    if people and bare:
+        for oid, row in people.items():
+            lo = str(oid).lower()
+            if lo in bare and isinstance(row, Mapping) and row.get("name_from") == "address":
+                out.add(lo)
+    return frozenset(out)

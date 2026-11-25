@@ -388,7 +388,7 @@ class EntryHolds:
         if kind not in PARTY or not preparer:
             raise ValueError("an order or PO held for a named person")
         if len(prefill.get("lines") or ()) > MAX_LINES:
-            raise ValueError(f"more than {MAX_LINES} lines")
+            raise ValueError(f"more than {MAX_LINES} lines")  # guard-ok: explicit stated refusal of the whole pre-fill, never a silent cut
         keep = {"header": dict(prefill.get("header") or {}),
                 "lines": list(prefill.get("lines") or ())}
         digest = _digest(kind, keep)

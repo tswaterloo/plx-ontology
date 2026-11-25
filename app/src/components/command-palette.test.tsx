@@ -120,4 +120,22 @@ describe("a record search that could not run", () => {
     expect(await screen.findByText("Records couldn't be searched just now. Ask still works.")).toBeInTheDocument();
     expect(screen.queryByText("No record by that name or number.")).toBeNull();
   });
+
+  it("clears the query with the clear button and navigates when clicking a result", async () => {
+    render(
+      <CommandPaletteProvider>
+        <Opener />
+      </CommandPaletteProvider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    const input = await screen.findByTestId("palette-input");
+    await userEvent.type(input, "90412");
+    await screen.findByText(/PO 90412/);
+    await userEvent.click(screen.getByTestId("palette-clear"));
+    expect(input).toHaveValue("");
+    await userEvent.type(input, "90412");
+    const hit = await screen.findByText(/PO 90412/);
+    await userEvent.click(hit);
+    expect(nav.push).toHaveBeenCalledWith("/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412");
+  });
 });

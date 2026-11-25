@@ -164,7 +164,7 @@ class MaterialCost(unittest.TestCase):
         self.assertEqual((cost.per_kg, cost.currency, cost.priced_share, cost.complete),
                          (format(want, "f"), "CAD", "100.00", True))
         price = sheet.components[0].last_price
-        self.assertEqual((price.price, price.uom, price.po.label), ("2.00", "kg", "PO PO-R-0101"))
+        self.assertEqual((price.price, price.uom, price.po.label), ("2.00", "kg", "PO-R-0101"))
 
     def test_a_missing_price_or_another_currency_is_never_filled_in_or_added(self) -> None:
         conn, product, _, _ = self.world({"R-0101": ("2.00", "kg", "CAD"),

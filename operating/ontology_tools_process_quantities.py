@@ -217,13 +217,13 @@ class _QuantitiesMixin:
                     f"the {role} side is decided from its BC records alone: the twin "
                     "system (Portal) was not captured, so its twin records and item "
                     "identities were not read and the cross-system conflict check did not "
-                    "run")[:600]))
+                    "run")))
             elif not side["proven"]:
                 cause = _side_cause(side)
                 unproven.append(_gap("unknown", cause, role, (
                     f"the {role} side's evidence (its own and twin records, their lines "
                     f"and item links) {_CAUSE_DETAIL[cause]}, so no comparison on it is "
-                    "decided")[:600]))
+                    "decided")))
         unproven += [_gap("unknown", _HELD_GAPS[state], role,
                           self._held_detail(side, state))
                      for role, side in sorted(sides.items())
@@ -236,9 +236,9 @@ class _QuantitiesMixin:
                     "unknown", "in_progress_not_counted", role,
                     (f"{len(side['in_progress'])} record(s) on the {role} side's path are in "
                      f"progress (status not {' or '.join(rule['values'])}: "
-                     + ", ".join(side["in_progress"][:3]) + f"): not yet {role}, so their "
+                     + ", ".join(side["in_progress"]) + f"): not yet {role}, so their "
                      f"lines are never counted as {role}; a difference they cover is open "
-                     "work, not a shortage claim")[:600]))
+                     "work, not a shortage claim")))
             # Seen only by a reader proven to see the whole side: a reader missing the
             # counted path could take a counted record for a lead-only one.
             if side["lead_only"] and side["proven"]:
@@ -247,18 +247,18 @@ class _QuantitiesMixin:
                     "unknown", "lead_evidence_not_counted", role,
                     (f"{len(side['lead_only'])} record(s) reach the {role} side only through "
                      "links below the tier floor (a text match, never counted in a sum: "
-                     + ", ".join(side["lead_only"][:3]) + ")"
+                     + ", ".join(side["lead_only"]) + ")"
                      + (f"; {note}" if note else "")
-                     + "; no comparison on this side is decided")[:600]))
+                     + "; no comparison on this side is decided")))
             if side["lineless"]:
                 unproven.append(_gap(
                     "unknown", "header_without_lines", role,
                     (f"{len(side['lineless'])} record(s) on the {role} side's path have no "
-                     "captured line (" + ", ".join(side["lineless"][:3]) + "), so a missing "
+                     "captured line (" + ", ".join(side["lineless"]) + "), so a missing "
                      "line is never read as zero"
                      + ("; the twin system's lines are not used in its place"
                         if side["twin_withheld"] else "")
-                     + "; no comparison on this side is decided")[:600]))
+                     + "; no comparison on this side is decided")))
         conflicts = [c for role, twin in sorted(twins.items())
                      for c in self._cross_system(ctx, check, role, sides[role], twin)]
         conflicts += [c for role, side in sorted(sides.items())
@@ -302,7 +302,7 @@ class _QuantitiesMixin:
                         rest = ""  # the side's sum adds several systems: never shown
                     item["note"] = (f"{group}: cross-system conflict on the {', '.join(hit)} "
                                     "side (see gaps): not decided" + (f"; {rest}" if rest
-                                                                      else ""))[:600]
+                                                                      else ""))
                 measured = [recorded[(r, group)] for r in cmp["roles"] if (r, group) in recorded]
                 if item is not None and measured and cmp["measure"] == "quantity" \
                         and by_figure is None:
@@ -318,7 +318,7 @@ class _QuantitiesMixin:
                         item.setdefault("undecided_reason", measured[0]["gap"]["reason"])
                     item["note"] = (f"{group}: not decided: " + "; ".join(
                         f"gap {m['gap']['reason']} '{m['role']} <item>'" for m in measured)
-                        + "; " + item["note"].removeprefix(f"{group}: "))[:600]
+                        + "; " + item["note"].removeprefix(f"{group}: "))
                 if item is not None:
                     if item["agree"] is None:   # undecided: no figure stated as settled
                         for key in ("sums", "difference", "unit"):
@@ -369,10 +369,10 @@ class _QuantitiesMixin:
                     outcome.detail = (
                         f"no {side['role']} record exists, yet {tid}.{name} records "
                         + ", ".join(f"{r['value']} {unit_text(r['unit'])}" if r["unit"]
-                                    else r["value"] for r in nonzero[:3])
-                        + f" {side['role']} (" + ", ".join(r["object_id"] for r in nonzero[:3])
-                        + "): two measures disagree, so the absence is not proven")[:600]
-                    outcome.citations += [c for c in (_cite(r) for r in nonzero[:10]) if c]
+                                    else r["value"] for r in nonzero)
+                        + f" {side['role']} (" + ", ".join(r["object_id"] for r in nonzero)
+                        + "): two measures disagree, so the absence is not proven")
+                    outcome.citations += [c for c in (_cite(r) for r in nonzero) if c]
                 else:
                     outcome.reason = "recorded_measure_unproven"
                     outcome.detail = (f"no {side['role']} record exists, but {tid}.{name}, "
@@ -443,8 +443,8 @@ class _QuantitiesMixin:
                         f"{tid}.{name} 0 on all {len(lines)} of its line(s), read completely "
                         f"at {_format_time(read_at)}"
                         + ("; its twin system (Portal) was not captured, so its twin records "
-                           "were not read" if past else ""))[:600]
-                    outcome.citations = [c for c in (_cite(r) for r in flat[:10]) if c]
+                           "were not read" if past else ""))
+                    outcome.citations = [c for c in (_cite(r) for r in flat) if c]
                     continue
                 if not proven or not (nonzero or figures is None):
                     continue  # nothing contradicts the proven absence: it stands as it was
@@ -455,10 +455,10 @@ class _QuantitiesMixin:
                     outcome.detail = (
                         f"no {side['role']} record exists, yet BC {tid}.{name} records "
                         + ", ".join(f"{r['value']} {unit_text(r['unit'])}" if r["unit"]
-                                    else r["value"] for r in nonzero[:3])
-                        + f" {side['role']} (" + ", ".join(r["object_id"] for r in nonzero[:3])
-                        + "): two measures disagree, so the absence is not proven")[:600]
-                    outcome.citations += [c for c in (_cite(r) for r in nonzero[:10]) if c]
+                                    else r["value"] for r in nonzero)
+                        + f" {side['role']} (" + ", ".join(r["object_id"] for r in nonzero)
+                        + "): two measures disagree, so the absence is not proven")
+                    outcome.citations += [c for c in (_cite(r) for r in nonzero) if c]
                 else:
                     outcome.reason = "recorded_measure_unproven"
                     outcome.detail = (f"no {side['role']} record exists, but a BC "
@@ -546,11 +546,11 @@ class _QuantitiesMixin:
             cited = _cite_rows(ctx, recorded)
             got = _line_total(recorded) if all(recorded) else None
             said = (f"{tid} lines record {_fmt(got[0])} {_one_unit(got[1]) or '?'} {role} "
-                    f"({name}: " + ", ".join(lines[:3]) + ")") if got else ""
+                    f"({name}: " + ", ".join(lines) + ")") if got else ""
             why = None
             if loose:
                 why = (f"a {subject} figure sits on a line without one visible item or "
-                       "attributable to the root (" + ", ".join(loose[:3]) + ")")
+                       "attributable to the root (" + ", ".join(loose) + ")")
             elif not all(recorded):
                 why = f"only some {tid} lines of this item record {name}"
             elif got is None:
@@ -623,20 +623,20 @@ class _QuantitiesMixin:
             if why is not None:
                 entry = self._recorded_entry(check, role, group, "unproven", why)
             if entry is not None:
-                entry.update(figure=got, values=cited[:50], alike_lines=alike_lines,
-                             figure_values=_cite_rows(ctx, recorded)[:10])  # ``_by_figure``
+                entry.update(figure=got, values=cited, alike_lines=alike_lines,
+                             figure_values=_cite_rows(ctx, recorded))  # ``_by_figure``
                 out.append(entry)
         return out
 
     @staticmethod
     def _recorded_entry(check: Mapping[str, Any], role: str, group: str, kind: str,
                         detail: str, **said: str) -> dict[str, Any]:
-        ident = f"{role} {group}"[:700]
+        ident = f"{role} {group}"
         reason = "recorded_measure_conflict" if kind == "conflict" else "recorded_measure_unproven"
         return dict(said, check=check["id"], role=role, group=group, id=ident, kind=kind,
                     conflict=kind == "conflict", figure=None, values=[], figure_values=[],
                     alike_lines=False,
-                    gap=_gap("unknown", reason, ident, detail[:600]))
+                    gap=_gap("unknown", reason, ident, detail))
 
     def _by_figure(self, ctx: _Ctx, cmp: Mapping[str, Any], on: Mapping[str, Any],
                    side: Mapping[str, Any], group: str, entry: Mapping[str, Any]
@@ -667,8 +667,8 @@ class _QuantitiesMixin:
                 f"records it; {text}; the {side['spec']['role']} lines' sum is in another unit "
                 "and was not compared (see gaps), so this is not proven by those lines")
         values = _cite_rows(ctx, rows) + list(entry["figure_values"])
-        return {"roles": roles, "values": _unique(values)[:50], "agree": agree,
-                "note": note[:600], "measured_by": declared["measure_id"]}
+        return {"roles": roles, "values": _unique(values), "agree": agree,
+                "note": note, "measured_by": declared["measure_id"]}
 
     @staticmethod
     def _record_classes(sources: Sequence[Mapping[str, Any]], chosen: Mapping[str, Any]
@@ -711,10 +711,10 @@ class _QuantitiesMixin:
                 values += [v for r in rows for v in
                            [_value_out(r, ctx.obj(r["object_id"])["object_type"], 200)[0]] if v]
             out.append({"check": check["id"], "role": role, "group": group, "mixed": True,
-                        "own": said[0], "twin": "; ".join(said[1:]), "values": values[:50],
-                        "gap": _gap("unknown", "cross_system_conflict", f"{role} {group}"[:700],
+                        "own": said[0], "twin": "; ".join(said[1:]), "values": values,
+                        "gap": _gap("unknown", "cross_system_conflict", f"{role} {group}",
                                     (f"{role}: lines from several systems ("
-                                     + "; ".join(said) + "); not summed and not decided")[:600])})
+                                     + "; ".join(said) + "); not summed and not decided"))})
         return out
 
     @staticmethod
@@ -739,11 +739,11 @@ class _QuantitiesMixin:
         if state == _MISSING:
             text = (f"{count} {role} line(s) are no longer returned by the source (key-only "
                     "scan; not proof they were deleted: " + ", ".join(
-                        side["held_states"][state][:3]) + "): cited, not summed, so no "
+                        side["held_states"][state]) + "): cited, not summed, so no "
                     "comparison of their item is decided")
         elif state == _DELETED:
             text = (f"{count} {role} line(s) are deleted in the source (its own soft-delete "
-                    "column: " + ", ".join(side["held_states"][state][:3]) + "): cited, not "
+                    "column: " + ", ".join(side["held_states"][state]) + "): cited, not "
                     "summed, so no comparison of their item is decided")
         elif state == _NOT_ATTRIBUTABLE:
             why = "; ".join(b["reason"] for b in side["spec"].get("not_attributable", ()))
@@ -752,7 +752,7 @@ class _QuantitiesMixin:
         else:
             text = (f"{count} {role} line(s) reach the root through a record whose status "
                     "decides whether they count, and it is not readable: not summed")
-        return text[:600]
+        return text
 
     def _cross_system(self, ctx: _Ctx, check: Mapping[str, Any], role: str,
                       own: Mapping[str, Any], twin: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -783,11 +783,11 @@ class _QuantitiesMixin:
                     for t, _, _ in sums]
             units = units_text(sums[0][1] | sums[1][1])
             out.append({"check": check["id"], "role": role, "group": group,
-                        "own": said[0], "twin": said[1], "values": values[:50],
-                        "gap": _gap("unknown", "cross_system_conflict", f"{role} {group}"[:700],
+                        "own": said[0], "twin": said[1], "values": values,
+                        "gap": _gap("unknown", "cross_system_conflict", f"{role} {group}",
                                     (f"{role}: the root's own system says {said[0]}, its twin "
                                      f"system says {said[1]} ({units}); not summed and not "
-                                     "decided")[:600])})
+                                     "decided"))})
         return out
 
     def _identity_causes(self, ctx: _Ctx, link_id: str | None, keys: set[str],
@@ -891,13 +891,13 @@ class _QuantitiesMixin:
         def finish(agree: bool | None, note: str, gap: str | None = None,
                    reason: str | None = None) -> dict[str, Any]:
             """A check item; an undecided one names its code (``reason``, else ``gap``)."""
-            item = {"roles": roles, "values": out_values[:50], "agree": agree,
-                    "note": (f"{label}: " + origin + note)[:600]}
+            item = {"roles": roles, "values": out_values, "agree": agree,
+                    "note": (f"{label}: " + origin + note)}
             if agree is None:
                 item["undecided_reason"] = reason or gap
             if gap:  # internal: the caller moves it to the answer's gaps
-                item["_gap"] = _gap("unknown", gap, f"{' vs '.join(roles)} {label}"[:700],
-                                    note[:600])
+                item["_gap"] = _gap("unknown", gap, f"{' vs '.join(roles)} {label}",
+                                    note)
             return item
 
         if not out_values:

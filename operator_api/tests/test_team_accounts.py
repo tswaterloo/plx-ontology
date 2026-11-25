@@ -72,6 +72,40 @@ class Accounts(unittest.TestCase):
         )
         self.assertEqual(row["team"], "Customer service, Purchasing, Receivables")
 
+    def test_shared_ids_collects_confirmed_directory_shared_and_bare_address_accounts(self):
+        one = "b649793b-2fdf-4cc5-a7bf-1deb248b43ba"
+        state = state_with(["s-1"])
+        org_rows = {"s-1": STAFF, "a-1": BARE, "t-1": BARE, "p-1": STAFF, one: STAFF}
+        people = {
+            "a-1": {"name_from": "address"},
+            "t-1": {"name_from": "teams"},
+            "p-1": {"name_from": "address"},
+        }
+        with mock.patch("integrations.capture_org.current_rows", return_value=org_rows), \
+                mock.patch.dict("os.environ", {ta.CONFIRMED_ENV: one}):
+            ta._CACHE.clear()
+            got = ta.shared_ids(state, people)
+            self.assertEqual(got, frozenset({one, "s-1", "a-1"}))
+            # without people snapshot, confirmed + directory shared are still returned
+            self.assertEqual(ta.shared_ids(state), frozenset({one, "s-1"}))
+
+    def test_insights_per_person_tiles_exclude_shared_and_warehouse_accounts(self):
+        from operator_api.tests import test_insights as ti
+        wh_oid = "b649793b-2fdf-4cc5-a7bf-1deb248b43ba"
+        state = state_with(["s-1"])
+        rows = [
+            ["Ana", "12", "5", "p-ana"],
+            ["TorontoWH", "40", "10", wh_oid],
+            ["SharedBox", "20", "0", "s-1"],
+        ]
+        b = ti.Backend(ti.sql_out(rows, ti.OUTPUT), everyone=True)
+        b.state_dir = state
+        with mock.patch("integrations.capture_org.current_rows", return_value={}), \
+                mock.patch.dict("os.environ", {ta.CONFIRMED_ENV: wh_oid}):
+            ta._CACHE.clear()
+            got = b.insight_result(ti.person("employee:owner"), "team_output")
+        self.assertEqual([r[0] for r in got.rows], ["Ana"])
+
 
 if __name__ == "__main__":
     unittest.main()

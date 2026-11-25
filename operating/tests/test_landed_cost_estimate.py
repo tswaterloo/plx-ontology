@@ -432,9 +432,9 @@ class EstimateEngineTests(unittest.TestCase):
                                  goods + Decimal("1000.01"))
                 self.assertEqual(Decimal(e["landed_cost_estimate"]["value"]),
                                  goods + Decimal("1000.01"))
-                for entry in out["entries"]:
-                    self.assertLessEqual(len(entry.get("steps") or ()), 40)
-                    self.assertLessEqual(len(entry.get("inputs") or ()), 50)
+                # no input or step is cut away: the estimate rests on every line, whole
+                self.assertEqual(e["landed_cost_estimate"]["inputs"],
+                                 ["landed_cost_estimate_subtotal"] + names)
         self.assertEqual(lc.prorate(Decimal("100"), [Decimal(1)] * 3),
                          [Decimal("33.34"), Decimal("33.33"), Decimal("33.33")])
         for bad in ([], [Decimal(0)], [Decimal(-1)]):

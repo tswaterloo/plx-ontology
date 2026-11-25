@@ -317,7 +317,7 @@ def customer_words(question: str) -> str:
     text = _CHAT_WORDS.sub(" ", text)
     text = _FILLER.sub(" ", text)
     text = re.sub(r"[?!.,;:'\"()]+", " ", text)
-    return " ".join(text.split())[:200]
+    return " ".join(text.split())
 
 
 _NAME_AFTER = re.compile(r"\b(?:on|for|with|from)\s+", re.IGNORECASE)
@@ -342,7 +342,7 @@ def customer_phrases(question: str) -> list[str]:
         phrase = re.sub(r"^\$\s*", "", phrase).strip()
         # a phrase of filler words alone ("for us") names nobody: never looked up
         if phrase and normal_name(phrase) and customer_words(phrase) and phrase not in out:
-            out.append(phrase[:200])
+            out.append(phrase)
         if len(out) >= MAX_NAME_PHRASES:
             break
     return out
@@ -658,7 +658,7 @@ def read_order(call: Call, order: Order) -> Order:
         if value is not None:
             line.currency = entry.get("currency") or line.currency
         elif entry.get("steps"):
-            line.gap = line.gap or str(entry["steps"][0])[:200]
+            line.gap = line.gap or str(entry["steps"][0])
         for input_name in entry.get("inputs") or ():
             _line_input(line, by_name.get(input_name), returns)
     order.lines = [lines[i] for i in sorted(lines)]
@@ -712,9 +712,9 @@ def read_order(call: Call, order: Order) -> Order:
             # provenance note, the order's only when the margin cites that file
             continue
         if code == "STALE_SOURCE":
-            order.stale = str(gap.get("detail") or "")[:300]
+            order.stale = str(gap.get("detail") or "")
             continue
-        order.gaps.append((code, str(gap.get("detail") or gap.get("subject") or "")[:400]))
+        order.gaps.append((code, str(gap.get("detail") or gap.get("subject") or "")))
     return order
 
 
@@ -896,7 +896,7 @@ def materials(call: Call, item: str, before: date | None, currency: str | None,
                       _text((values.get("po_number") or {}).get("value")) or po))
     dated.sort(reverse=True)
     out, gaps = [], []
-    for day, po, ids, number in dated[:MATERIAL_POS]:
+    for day, po, ids, number in dated:
         run = investigate(call, LANDED_FAMILY, po)
         row = {"po": po, "po_number": number,
                "date": None if day == date.min else day.isoformat(),
@@ -934,16 +934,16 @@ def materials(call: Call, item: str, before: date | None, currency: str | None,
                                      and unit_token(per_of) == unit_token(unit))
             row["handles"] = [h for h in (_handle(amount), _handle(ordered)) if h] + \
                 [h for h in _cited(run, entry) if h not in (_handle(amount), _handle(ordered))]
-            row["handles"] = row["handles"][:4]
+            row["handles"] = row["handles"]
             row["open"] = sorted({str(g.get("reason") or "").upper()
                                   for g in (run or {}).get("gaps") or ()
-                                  if label in str(g.get("subject") or "")})[:6]
+                                  if label in str(g.get("subject") or "")})
             break
         if row["per_unit"] is None:
             gaps.append(("LANDED_COST_NOT_ESTABLISHED",
                          f"purchase order {number}: no landed cost per unit is computed for "
                          "this item's line" + (" (" + ", ".join(
-                             c.lower().replace("_", " ") for c in row["open"][:3]) + ")"
+                             c.lower().replace("_", " ") for c in row["open"]) + ")"
                              if row["open"] else "") + "; freight and duty are never "
                          "assumed"))
         out.append(row)
@@ -1180,7 +1180,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     # an order list not read whole gives its count as a lower bound.
     in_period = len(orders)
     if len(orders) > MAX_ORDERS:
-        orders = sorted(orders, key=lambda o: o.dates[0], reverse=True)[:MAX_ORDERS]
+        orders = sorted(orders, key=lambda o: o.dates[0], reverse=True)
     # Within the time budget the order asked about is read first, then the most recent.
     key = re.sub(r"[^a-z0-9]", "", (focus or "").casefold())
     order_read = sorted(orders, key=lambda o: (
@@ -1265,7 +1265,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         margin = revenue - cost
         steps = [f"{o.number}: revenue {_plain(o.revenue)} - item cost {_plain(o.cost)} "
                  f"= margin on item cost only {_plain(o.margin)} {currency}"
-                 for o in decided][:40]
+                 for o in decided]
         steps.append(f"customer: revenue {_plain(revenue)} - item cost {_plain(cost)} = "
                      f"margin on item cost only {_plain(margin)} {currency} over "
                      f"{len(decided)} invoiced order(s)")
@@ -1278,7 +1278,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
     if excluded and covered:
         out["gaps"].append({"code": "ORDERS_NOT_INVOICED", "subject": "customer total",
                             "detail": f"{len(excluded)} order(s) not yet invoiced, excluded "
-                            "(" + ", ".join(o.number for o in excluded[:8])
+                            "(" + ", ".join(o.number for o in excluded)
                             + (", ..." if len(excluded) > 8 else "") + ")"})
     out["open_orders"] = open_orders(excluded) if covered else None
     without = [o for o in visible if not o.decided]
@@ -1293,7 +1293,7 @@ def profitability(call: Call, customer: str, *, today: date, question: str = "",
         focus_order = next((o for o in visible if o.object_id == focus
                             or re.sub(r"[^a-z0-9]", "", o.number.casefold()) == key), None)
         if focus_order is None:
-            out["gaps"].append({"code": "FOCUS_ORDER_NOT_FOUND", "subject": focus[:60],
+            out["gaps"].append({"code": "FOCUS_ORDER_NOT_FOUND", "subject": focus,
                                 "detail": "the order named is not one of this customer's "
                                 "orders in the period that you can see"})
     out["focus"] = focus_order.number if focus_order is not None else None
@@ -1389,7 +1389,7 @@ def products(decided: Sequence[Order], blocking: Sequence[Order], covered: bool
             row["unit_costs"].append(line.cost / line.quantity)
             if order.number not in row["orders"]:
                 row["orders"].append(order.number)
-            row["handles"] += [h for h in line.ledger_handles[:1] + line.invoice_handles[:1]
+            row["handles"] += [h for h in line.ledger_handles + line.invoice_handles
                                if h not in row["handles"]][:max(0, 4 - len(row["handles"]))]
     out = []
     for row in rows.values():
@@ -1400,7 +1400,7 @@ def products(decided: Sequence[Order], blocking: Sequence[Order], covered: bool
                    complete=covered and row["item"] not in open_items
                    and None not in open_items)
         out.append(row)
-    return sorted(out, key=lambda r: (r["margin"], str(r["item"])))[:30]
+    return sorted(out, key=lambda r: (r["margin"], str(r["item"])))
 
 
 # What an order's first gap says when it blocks the verdict ("1 invoiced order has no cost
@@ -1457,7 +1457,7 @@ def open_orders(excluded: Sequence[Order]) -> dict[str, Any] | None:
         steps.append(f"open order value before tax = {_plain(total)} {currency}")
     return {"count": len(excluded), "statuses": statuses, "valued": valued,
             "value": {c: v for c, v in sorted(by_currency.items())},
-            "steps": steps[:45], "handles": handles}
+            "steps": steps, "handles": handles}
 
 
 def open_words(open_: Mapping[str, Any] | None) -> str:
@@ -1507,7 +1507,7 @@ def blocking_words(blocking: Sequence[Order]) -> str:
         verb = {"has ": "have ", "is ": "are ", "rests ": "rest ", "could ": "could "}
         said = next((verb[k] + why[len(k):] for k in verb if many and why.startswith(k)), why)
         parts.append(f"{len(numbers)} invoiced order{'s' if many else ''} {said} ("
-                     + ", ".join(numbers[:6]) + (", ..." if len(numbers) > 6 else "") + ")")
+                     + ", ".join(numbers) + (", ..." if len(numbers) > 6 else "") + ")")
     return "; ".join(parts)
 
 
@@ -1516,7 +1516,7 @@ def _order_out(order: Order) -> dict[str, Any]:
             "dates": [d.isoformat() for d in order.dates], "currency": order.currency,
             "revenue": order.revenue, "booked_cost": order.cost, "margin": order.margin,
             "margin_pct": order.margin_pct, "decided": order.decided,
-            "gaps": [{"code": c, "detail": d} for c, d in order.gaps][:12],
+            "gaps": [{"code": c, "detail": d} for c, d in order.gaps],
             "lines": order.lines}
 
 
@@ -1536,7 +1536,7 @@ def _breakdown(call: Call, order: Order, items: dict[str, dict[str, Any]]) -> di
         if line.ledger_handles:
             sources.append({"kind": "item_ledger", "item": line.item, "label": row["label"],
                             "amount": line.cost, "currency": line.currency,
-                            "handles": line.ledger_handles[:4],
+                            "handles": line.ledger_handles,
                             "detail": f"booked item-ledger cost of {len(line.ledger_handles)}"
                             " shipment entr" + ("y" if len(line.ledger_handles) == 1 else
                                                 "ies")})
@@ -1544,19 +1544,19 @@ def _breakdown(call: Call, order: Order, items: dict[str, dict[str, Any]]) -> di
             many = len(line.cost_handles) != 1
             sources.append({"kind": "sage_cost_of_sales", "item": line.item,
                             "label": row["label"], "amount": line.cost,
-                            "currency": line.currency, "handles": line.cost_handles[:4],
+                            "currency": line.currency, "handles": line.cost_handles,
                             "detail": f"cost Sage posted to cost of sales for "
                             f"{len(line.cost_handles)} invoice line{'s' if many else ''}"})
         if line.credit_handles:
             sources.append({"kind": "credit_memo", "item": line.item, "label": row["label"],
                             "amount": line.credit_amount, "currency": line.currency,
-                            "handles": line.credit_handles[:4],
+                            "handles": line.credit_handles,
                             "detail": f"credited {_plain(line.credited, Decimal('1'))} "
                             f"{line.unit or ''}".strip()})
         if line.return_handles:
             sources.append({"kind": "return", "item": line.item, "label": row["label"],
                             "amount": None, "currency": line.currency,
-                            "handles": line.return_handles[:4],
+                            "handles": line.return_handles,
                             "detail": "returned goods' cost taken back on the item ledger"})
     gaps: list[tuple[str, str]] = []
     material_rows = []
@@ -1586,7 +1586,7 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
     out: list[dict[str, Any]] = []
     cur = order.currency
     priced = [r for r in breakdown["lines"] if r["line"].margin is not None]
-    for row in sorted(priced, key=lambda r: r["line"].margin)[:2]:
+    for row in sorted(priced, key=lambda r: r["line"].margin):
         line = row["line"]
         if line.margin >= 0 and out:
             break
@@ -1611,7 +1611,7 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
         out.append({"kind": "line_margin", "item": line.item, "text": text + ".",
                     "short": short + ".",
                     "handles": (line.ledger_handles + line.cost_handles
-                                + line.invoice_handles)[:4]})
+                                + line.invoice_handles)})
     for row in breakdown.get("previous") or ():
         out.append(_previous_driver(row, order, items))
     credited = [r for r in breakdown["lines"] if r["line"].credit_amount]
@@ -1620,7 +1620,7 @@ def drivers(breakdown: Mapping[str, Any], items: Mapping[str, Mapping[str, Any]]
         out.append({"kind": "credit", "item": credited[0]["line"].item,
                     "text": f"Credit memos took {money_words(amount, cur)} off the invoiced "
                     "revenue.", "handles": [h for r in credited
-                                           for h in r["line"].credit_handles][:4]})
+                                           for h in r["line"].credit_handles]})
     for row in (breakdown.get("quote") or {}).get("lines") or ():
         label = item_label(items.get(row["item"] or "", {}))
         if row["cost_change_pct"] is not None and row["cost_change_pct"] > 0:
@@ -1696,7 +1696,7 @@ def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[st
                         f"{'s' if len(mine) != 1 else ''} lost money: "
                         f"{_signed(lost, cur)} in all ({MARGIN_BASIS}); worst "
                         f"{worst.number}, {_signed(worst.margin, cur)}." + unchecked_words,
-                "handles": [o.handle for o in losing if o.handle][:4]})
+                "handles": [o.handle for o in losing if o.handle]})
         credited = [ln for o in mine for ln in o.lines if ln.credit_amount]
         if credited:
             amount = _sum([ln.credit_amount for ln in credited])
@@ -1705,11 +1705,11 @@ def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[st
                 "kind": "credit", "established": True, "amount": -amount, "currency": cur,
                 "text": f"Credit memos took {money_words(amount, cur)} off invoiced revenue "
                         f"on {len(orders)} order{'s' if len(orders) != 1 else ''}.",
-                "handles": [h for ln in credited for h in ln.credit_handles][:4]})
-    loss_items = [r for r in product_rows if r["margin"] < 0][:2]
+                "handles": [h for ln in credited for h in ln.credit_handles]})
+    loss_items = [r for r in product_rows if r["margin"] < 0]
     if not loss_items and len(product_rows) > 1:
         priced = [r for r in product_rows if r.get("margin_pct") is not None]
-        loss_items = sorted(priced, key=lambda r: (r["margin_pct"], str(r["item"])))[:1]
+        loss_items = sorted(priced, key=lambda r: (r["margin_pct"], str(r["item"])))[:1]  # guard-ok: the single worst-margin item, a semantic selection not a cap
     for row in loss_items:
         label = item_label(items.get(row["item"], {}))
         verb = "lost" if row["margin"] < 0 else "made the lowest margin,"
@@ -1722,7 +1722,7 @@ def customer_drivers(decided: Sequence[Order], product_rows: Sequence[Mapping[st
                     f"{money_words(abs(row['margin']), row['currency'])}{pct} on "
                     f"{_plain(row['quantity'], Decimal('1'))} {row['unit'] or 'units'} over "
                     f"{n} order{'s' if n != 1 else ''}.",
-            "handles": list(row.get("handles") or ())[:4]})
+            "handles": list(row.get("handles") or ())})
     out.append({"kind": "discount", "established": False, "amount": None, "currency": None,
                 "text": "Discounts are already taken off the revenue above; their amounts "
                         "are not broken out.",
@@ -1843,8 +1843,8 @@ def _previous_driver(row: Mapping[str, Any], order: Order,
                 f"as on {then} ({row['then_date']}), the {row['relation']} order with it.")
     line, was = row["line"], row["then_line"]
     return {"kind": kind, "item": row["item"], "text": text, "short": _previous_short(row),
-            "handles": (line.ledger_handles[:1] + line.invoice_handles[:1]
-                        + was.ledger_handles[:1] + was.invoice_handles[:1])}
+            "handles": (line.ledger_handles + line.invoice_handles
+                        + was.ledger_handles + was.invoice_handles)}
 
 
 def next_action(out: Mapping[str, Any], orders: Sequence[Order],
@@ -1893,7 +1893,7 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
         return {"text": f"Review the price for {name} on {item_label(items.get(item, {}))}: "
                 f"{said} ({numbers}){after}.",
                 "rule": "item_below_cost_on_repeat_orders",
-                "basis": [o.object_id for o in named[:5]]
+                "basis": [o.object_id for o in named]
                 + ([latest.object_id] if after else []), "writes": 0}
     breakdown = out.get("breakdown")
     if breakdown and breakdown["order"].margin is not None and breakdown["order"].margin < 0:
@@ -1925,10 +1925,10 @@ def next_action(out: Mapping[str, Any], orders: Sequence[Order],
                          else f"Ask Finance to complete the {len(undecided)} orders, starting "
                          f"with {first.number},")
                 + " in " + " and ".join(systems) + " (" + ", ".join(c.lower().replace("_", " ")
-                                                       for c in codes[:2])
+                                                       for c in codes)
                 + ") so their margin can be stated.",
                 "rule": "orders_without_margin",
-                "basis": [o.object_id for o in undecided[:5]], "writes": 0}
+                "basis": [o.object_id for o in undecided], "writes": 0}
     return None
 
 
@@ -1974,7 +1974,7 @@ def trail(out: Mapping[str, Any]) -> list[dict[str, Any]]:
     elif totals.get("blocking"):
         steps.append({"label": f"{totals['orders']} order(s) in {out['period']['words']}",
                       "value": "no verdict: " + "; ".join(
-                          f"{n} {why}" for n, why in totals["blocking"][:6]),
+                          f"{n} {why}" for n, why in totals["blocking"]),
                       "handle": None, "check": "gap"})
     else:
         steps.append({"label": f"{totals['orders']} order(s) in {out['period']['words']}",

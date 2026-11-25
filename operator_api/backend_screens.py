@@ -83,6 +83,35 @@ class ScreensMixin:
                              autopilot_prepared_list(self, reader),
                              self._screen_inputs(files=(self._grants_file,), autopilot=True))
 
+    def _assist_heartbeat_stamp(self) -> Any:
+        from . import assist_routes
+        pool = assist_routes._pool(self)
+        if pool is None:
+            return "not_connected"
+        try:
+            with pool.connection() as pg:
+                row = pg.execute("SELECT last_cycle_at FROM assist.matters_heartbeat").fetchone()
+            return row[0].isoformat() if row and row[0] is not None else "never"
+        except Exception as exc:  # noqa: BLE001 - the read itself says failed
+            return f"unknown:{type(exc).__name__}"
+
+    def assist_drafts(self, reader: Reader, *, all_ages: bool = False) -> m.AutopilotDrafts:
+        """Assist's unified drafts & matters queue (``GET /api/autopilot/drafts``), kept per
+        reader as a main screen: served immediately from the last-good cache and refreshed in
+        the background when the Assist cycle, autopilot queue/decisions, or in-process matter
+        writes move."""
+        from . import assist_routes
+
+        def stamp() -> Any:
+            return (self._assist_heartbeat_stamp(), getattr(self, "_assist_drafts_ver", 0))
+
+        return self._serving(
+            reader,
+            ("assist_drafts", bool(all_ages)),
+            lambda: assist_routes.matters_list(self, reader, all_ages=all_ages),
+            self._screen_inputs(files=(self._grants_file,), extra=stamp, autopilot=True),
+        )
+
     def workload(self, reader: Reader) -> m.Workload:
         return self._serving(reader, ("workload",), lambda: BriefsMixin.workload(
             self, reader), self._screen_inputs(files=(self._grants_file,)))
@@ -206,19 +235,8 @@ class ScreensMixin:
         main screen: served immediately from the last-good cache and refreshed in the background
         when the hour, alerts, Assist cycle, autopilot state, feedback store, or gap list moves."""
         from operating import gap_list
-        from . import assist_routes
         from . import home_needs
-
-        def assist_stamp() -> Any:
-            pool = assist_routes._pool(self)
-            if pool is None:
-                return "not_connected"
-            try:
-                with pool.connection() as pg:
-                    row = pg.execute("SELECT last_cycle_at FROM assist.matters_heartbeat").fetchone()
-                return row[0].isoformat() if row and row[0] is not None else "never"
-            except Exception as exc:  # noqa: BLE001 - the read itself says failed
-                return f"unknown:{type(exc).__name__}"
+        feedback_store = feedback_store or getattr(self, "feedback_store", None)
 
         files = tuple(
             p for p in (
@@ -231,7 +249,12 @@ class ScreensMixin:
             reader,
             ("home_needs",),
             lambda: home_needs.build(self, reader, feedback_store),
-            self._screen_inputs(files=files, extra=assist_stamp, autopilot=True, alerts=True),
+            self._screen_inputs(
+                files=files,
+                extra=self._assist_heartbeat_stamp,
+                autopilot=True,
+                alerts=True,
+            ),
             reading=home_needs.reading,
         )
 
@@ -377,20 +400,44 @@ class ScreensMixin:
                              reading=lambda: m.DataHealth(status="unread"))
 
     def data_health_all(self, reader: Reader) -> m.DataHealth:
-        """Every on check's findings (the spreadsheet): one trimmed read per check."""
+        """Every on check's findings (the spreadsheet): skips checks with 0 open findings
+        and reads all remaining checks in one cached single-pass trimmed read."""
         from . import data_health
         first = self.data_health(reader)
         if first.status != "read":
             return first
+        needed = [c.type for c in first.checks if c.on and c.open != 0]
+        if not needed:
+            checks = [
+                c if not c.on else c.model_copy(update={"read": True, "count": 0, "hidden": 0,
+                                                        "items": [], "more": 0})
+                for c in first.checks
+            ]
+            return first.model_copy(update={"checks": checks})
+        if len(needed) == 1:
+            got = self.data_health(reader, needed[0])
+            if got.status != "read":
+                return got
+            by_type = {c.type: c for c in got.checks}
+        else:
+            def read_all() -> m.DataHealth:
+                return self.reads.run(reader, lambda v: data_health.page(v, checks=needed),
+                                      timeout=READ_TIMEOUT_SECONDS)
+            got = self._serving(reader, ("data_health", "all"), read_all,
+                                self._screen_inputs(alerts=True),
+                                reading=lambda: m.DataHealth(status="unread"))
+            if got.status != "read":
+                return got
+            by_type = {c.type: c for c in got.checks}
         checks = []
         for c in first.checks:
             if not c.on:
                 checks.append(c)
-                continue
-            got = self.data_health(reader, c.type)
-            if got.status != "read":
-                return got
-            checks.extend(x for x in got.checks if x.type == c.type)
+            elif c.open == 0:
+                checks.append(c.model_copy(update={"read": True, "count": 0, "hidden": 0,
+                                                   "items": [], "more": 0}))
+            elif c.type in by_type:
+                checks.append(by_type[c.type])
         return first.model_copy(update={"checks": checks})
 
     def late_list(self, reader: Reader, *, offset: int = 0, limit: int = 25,
@@ -701,11 +748,26 @@ class ScreensMixin:
             return None
 
         def read(view: Any) -> Optional[dict[str, Any]]:
+            # O(1) single-gap permission-checked read instead of scanning READ_LIMIT rows
+            if hasattr(view, "data_health_gap_one"):
+                return view.data_health_gap_one(check, gap_id)
             found = view.gap_inbox(kinds=[check], limit=data_health.READ_LIMIT)
             if found.get("status") != "read":
                 return None
             return next((g for g in found.get("gaps") or () if g.get("id") == gap_id), None)
-        gap = self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+
+        # Short O(1) lookup: prefer the fast check/access worker so it never queues behind
+        # multi-second page scans on self.reads.
+        worker = None
+        for name in ("check_worker", "access_worker"):
+            cand = getattr(self, name, None)
+            if cand is not None and not cand.stopped.is_set():
+                worker = cand
+                break
+        if worker is None:
+            gap = self.reads.run(reader, read, timeout=READ_TIMEOUT_SECONDS)
+        else:
+            gap = worker.run(reader, read, timeout=READ_TIMEOUT_SECONDS, priority=-1)
         if gap is None:
             return None
         words = str(gap.get("summary") or known[check].get("label") or "Finding")

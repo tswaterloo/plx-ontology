@@ -1,6 +1,6 @@
 "use client";
 
-import { Search } from "lucide-react";
+import { RefreshCw, Search, X } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth";
@@ -99,11 +99,17 @@ function WorkLog() {
           </>
         }
         actions={
-          owner ? (
-            <ToolbarButton aria-pressed={everyone} onClick={() => setEveryone((v) => !v)} className={cn(everyone && "text-fg")}>
-              {everyone ? "Everyone" : "Only mine"}
+          <div className="flex items-center gap-1">
+            <ToolbarButton onClick={refresh} title="Refresh work log" aria-label="Refresh work log">
+              <RefreshCw className={cn("size-3.5", main.at !== null && "animate-spin")} strokeWidth={1.9} aria-hidden />
+              <span className="max-sm:sr-only">Refresh</span>
             </ToolbarButton>
-          ) : undefined
+            {owner && (
+              <ToolbarButton aria-pressed={everyone} onClick={() => setEveryone((v) => !v)} className={cn(everyone && "text-fg")}>
+                {everyone ? "Everyone" : "Only mine"}
+              </ToolbarButton>
+            )}
+          </div>
         }
         className="bg-list"
       />
@@ -120,8 +126,34 @@ function WorkLog() {
         }}
       >
         <label className="flex h-8 min-w-[240px] flex-1 items-center gap-2 rounded-lg bg-bg px-2.5 shadow-lift focus-within:shadow-[0_0_0_1px_var(--accent)]">
-          <Search className="size-[15px] text-muted" aria-hidden />
-          <input value={q} onChange={(ev) => setQ(ev.target.value)} placeholder="Search your work: a PO, a person, a question" className="w-full bg-transparent text-[13px] outline-none" aria-label="Search your work log" />
+          <Search className="size-[15px] shrink-0 text-muted" aria-hidden />
+          <input
+            value={q}
+            onChange={(ev) => setQ(ev.target.value)}
+            onKeyDown={(ev) => {
+              if (ev.key === "Escape" && (q || query)) {
+                ev.preventDefault();
+                setQ("");
+                setQuery("");
+              }
+            }}
+            placeholder="Search your work: a PO, a person, a question"
+            className="w-full bg-transparent text-[13px] outline-none"
+            aria-label="Search your work log"
+          />
+          {(q || query) && (
+            <button
+              type="button"
+              onClick={() => {
+                setQ("");
+                setQuery("");
+              }}
+              aria-label="Clear search"
+              className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted transition-colors hover:bg-hover hover:text-fg"
+            >
+              <X className="size-3.5" aria-hidden />
+            </button>
+          )}
         </label>
         <div className="flex flex-wrap gap-1" role="group" aria-label="Show">
           {[undefined, ...KINDS].map((k) => (
@@ -130,7 +162,7 @@ function WorkLog() {
               type="button"
               aria-pressed={kind === k}
               onClick={() => setKind(k)}
-              className={cn("h-7 rounded-md px-2 text-[12px] cursor-pointer", kind === k ? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
+              className={cn("h-7 rounded-md px-2 text-[12px] transition-colors cursor-pointer", kind === k ? "bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
             >
               {k ? KIND_LABEL[k] : "All"}
               {k && counts ? <span className={cn("ml-1 tabular-nums", counts[k] ? "text-muted" : "text-faint")}>{counts[k] ?? 0}</span> : null}
@@ -138,7 +170,7 @@ function WorkLog() {
           ))}
         </div>
         {record && (
-          <button type="button" onClick={() => router.push("/work-log")} className="h-7 rounded-md px-2 text-[12px] text-muted hover:bg-hover hover:text-fg cursor-pointer">
+          <button type="button" onClick={() => router.push("/work-log")} className="h-7 rounded-md px-2 text-[12px] text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer">
             On one record only: show all
           </button>
         )}
@@ -179,11 +211,27 @@ function WorkLog() {
             </section>
           )}
           {days.length === 0 ? (
-            <p className="px-6 py-10 text-[13px] text-muted">{query || kind || record ? "Nothing in your work log matches." : "Nothing yet. What you ask, read, approve, send, note, save and watch shows up here."}</p>
+            <div className="flex flex-wrap items-center gap-3 px-6 py-10 text-[13px] text-muted">
+              <p>{query || kind || record ? "Nothing in your work log matches." : "Nothing yet. What you ask, read, approve, send, note, save and watch shows up here."}</p>
+              {(query || kind || record) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQ("");
+                    setQuery("");
+                    setKind(undefined);
+                    if (record) router.push("/work-log");
+                  }}
+                  className="cursor-pointer rounded-md border border-border bg-bg px-2.5 py-1 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
           ) : (
             days.map((d) => (
               <section key={d.key} aria-label={d.label}>
-                <div className="sticky top-[52px] z-10 flex h-9 items-end bg-list px-6 pb-1.5">
+                <div className="sticky top-12 z-10 flex h-9 items-end bg-list px-6 pb-1.5">
                   <h2 className="text-[12px] font-medium text-muted">
                     {d.label} <span className="font-normal tabular-nums text-faint">{d.rows.length}</span>
                   </h2>

@@ -1324,11 +1324,7 @@ class Availability(Fixture):
                         "bc_expected_receipt_date": "2026-10-30"})
                     self.w.link(autopilot_queue.PO_LINE_ITEM, pol2, split_item)
                     got = self.availability(order)
-                    if n > autopilot_queue.MAX_LINES:   # lines one check cannot read: no promise at all
-                        self.assertIsNone(got["date"])
-                        self.assertIn("lines_not_read", got["unknown_reasons"])
-                    else:
-                        self.assertEqual(got["date"], "2026-10-30")
+                    self.assertEqual(got["date"], "2026-10-30")  # every line read, any count
 
     def test_quantities_in_two_units_are_never_compared(self):
         for stock, line in ((("50", "KG"), "EA"), (("50", "EA"), "CASE"), (("50", None), "EA")):
@@ -1405,16 +1401,15 @@ class Availability(Fixture):
                 self.w.link(autopilot_queue.PO_LINE_OF, pol, po)
                 self.assertIsNone(self.availability(order)["date"])
 
-    def test_an_order_with_more_lines_than_one_check_reads_is_never_promised(self):
+    def test_an_order_of_any_size_is_read_whole_and_short_supply_still_blocks(self):
         order, item = self.bare_order(("1000", "EA"))
-        self.lines(order, item, *[("1",)] * autopilot_queue.MAX_LINES)
+        self.lines(order, item, *[("1",)] * 60)
         other = self.w.obj("Product", {"code": "SYN-3", "quantity_on_hand": ("0", "EA")})
-        self.lines(order, other, ("5",))                    # the 51st line: unfulfillable
+        self.lines(order, other, ("5",))                    # the 61st line: unfulfillable
         got = self.availability(order)
         self.assertIsNone(got["date"])
-        self.assertEqual((got["lines_read"], got["lines_total"]),
-                         (autopilot_queue.MAX_LINES, autopilot_queue.MAX_LINES + 1))
-        self.assertEqual(got["unknown_reasons"]["lines_not_read"], 1)
+        self.assertEqual(len(got["lines"]), 61)             # every line read, however many
+        self.assertEqual(got["unknown_reasons"]["supply_short"], 1)
 
 
 class PreparedClaims(Fixture):

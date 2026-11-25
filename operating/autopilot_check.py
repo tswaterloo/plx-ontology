@@ -107,6 +107,11 @@ PREPARED_OPTIONS = ("An answer option is a choice open to {person} given the mes
                     "promising a step is supported when the choice is the person's to make (they decide "
                     "before anything is sent).")
 MESSAGE_MOMENT = "A message just arrived for them (below), with the conversation before it."
+JOB_MOMENT = ("{person} explicitly handed the assistant a job to prepare (below). A step, "
+              "message, or promise that {person}'s own job instruction asks for is supported; "
+              "every record fact (dates, amounts, quantities, ids, names, recipient addresses "
+              "or Teams chat ids, and what people said in mail or Teams) must come from what "
+              "the assistant read.")
 LOOK_MOMENT = ("No message arrived: this is a time-driven look. The moment below is the list "
                "of what changed for them, computed from the records as of the look: each line "
                "is a record that reached the step they usually take next, with its state then "
@@ -117,6 +122,8 @@ NOW = ("It is {when}. What the records show happening after that (a later status
 FITS_MESSAGE = ("it is on the record and to the people the material names, and it is not a "
                 "step someone else took or will take, or one {person} already took (whether "
                 "a reply is due at all is decided elsewhere: judge only what it says).")
+FITS_JOB = ("it carries out the piece of {person}'s job instruction on the records and to "
+            "the people (including email addresses or Teams chat ids) that what was read names.")
 FITS_LOOK = ("it acts on records the list names and is the step its line states that {person} "
              "takes on them (enter the results, release or hold, enter the invoice, chase what "
              "is late, complete or reschedule the task, answer the invitation), as {person} "
@@ -185,10 +192,13 @@ def prompt(got: Any, what: str, looked: Sequence[Any], person: str, look: bool,
     state the records show after it never counts against an item (a replayed moment reads
     today's records)."""
     who = person or "the person"
+    is_job = not look and str(what or "").startswith("This is one piece of a whole job")
+    moment = LOOK_MOMENT if look else (JOB_MOMENT.format(person=who) if is_job else MESSAGE_MOMENT)
+    fits = (FITS_LOOK if look else (FITS_JOB if is_job else FITS_MESSAGE)).format(person=who)
     return PROMPT.replace("{options_rule}", (PREPARED_OPTIONS if prepared else LIVE_OPTIONS)).format(
-        person=who, moment=LOOK_MOMENT if look else MESSAGE_MOMENT,
+        person=who, moment=moment,
         now=(" " + NOW.format(when=when)) if str(when).strip() else "",
-        fits=(FITS_LOOK if look else FITS_MESSAGE).format(person=who),
+        fits=fits,
         what=shown(what or "(no message)", MESSAGE_CHARS), read=read_text(looked),
         items="\n\n".join(f"[{i}] {t}" for i, t in items_of(got)))
 

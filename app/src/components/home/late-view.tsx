@@ -1,11 +1,13 @@
 "use client";
 
 import { SectionTabs } from "@/components/shell";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ChartNoAxesColumn, ChevronDown, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, Check, ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview, nextStep } from "@/components/late/overview";
 import { CloseControl } from "@/components/late/close-control";
 import { stepWords, TodayDetail, type QueueRow } from "@/components/today-detail";
+import { Button } from "@/components/ui/button";
 import { DoneRing, lateEdge, lateFigure, OpenRing, StatusGlyph } from "@/components/ui/glyphs";
 import { FeedNote } from "@/components/feed-note";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
@@ -79,12 +81,12 @@ function useDesktop() {
 /** A native select drawn as a quiet toolbar control. */
 function Pick({ label, value, onChange, children, className }: { label: string; value: string; onChange: (v: string) => void; children: React.ReactNode; className?: string }) {
   return (
-    <label className={cn("relative inline-flex h-8 min-w-0 items-center rounded-lg hover:bg-hover", className)}>
+    <label className={cn("relative inline-flex h-8 min-w-0 items-center rounded-md border border-border bg-bg transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover dark:bg-surface", className)}>
       <select
         aria-label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-full w-full min-w-0 cursor-pointer appearance-none truncate rounded-lg bg-transparent pr-7 pl-2.5 text-[13px] text-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="h-full w-full min-w-0 cursor-pointer appearance-none truncate rounded-md bg-transparent pr-7 pl-2.5 text-[12.5px] font-medium text-fg outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         {children}
       </select>
@@ -121,7 +123,21 @@ function promiseText(po: LatePo, c: Chase): string | null {
   return null;
 }
 
-function Row({ po, on, onPick, chase }: { po: LatePo; on: boolean; onPick: (() => void) | null; chase: Chase }) {
+function Row({
+  po,
+  on,
+  onPick,
+  onClose,
+  chase,
+  detail,
+}: {
+  po: LatePo;
+  on: boolean;
+  onPick: (() => void) | null;
+  onClose?: () => void;
+  chase: Chase;
+  detail?: React.ReactNode;
+}) {
   const eta = listShown(po);
   const promise = promiseText(po, chase);
   const facts = [
@@ -133,60 +149,82 @@ function Row({ po, on, onPick, chase }: { po: LatePo; on: boolean; onPick: (() =
   ].filter(Boolean);
   const next = chase.next ? stepWords(chase.rule, chase.next, po.supplier ?? null) : nextStep(po);
   const needed = po.due_date ? `Needed ${formatDate(po.due_date, { short: true })}` : "No due date";
+  const href = hrefOf(po);
   return (
     <li>
-      <a
-        href={hrefOf(po)}
-        onClick={(e) => {
-          if (!onPick || e.metaKey || e.ctrlKey || e.shiftKey) return;
-          e.preventDefault();
-          onPick();
-        }}
-        aria-current={on ? "true" : undefined}
-        data-row-link=""
-        data-testid="late-row"
+      <div
         className={cn(
-          "flex gap-3 rounded-[3px] px-3 py-2.5 outline-none transition-[background-color,box-shadow] duration-100",
+          "group relative flex items-start gap-2 px-3 py-2.5 transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] sm:px-4",
           typeof po.days_late === "number" && lateEdge(po.days_late),
-          on ? "bg-row-on shadow-[var(--lift),inset_2px_0_0_var(--accent)]" : "hover:bg-hover",
-          "focus-visible:ring-2 focus-visible:ring-ring/50",
+          on ? "bg-row-on before:absolute before:inset-y-0 before:left-0 before:w-[2px] before:bg-accent" : "hover:bg-hover",
         )}
       >
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="num shrink-0 text-[13px] font-semibold leading-[18px]" data-testid="late-po">
-              {recordLabel("PurchaseOrder", po.label)}
+        <a
+          href={href}
+          onClick={(e) => {
+            if (!onPick || e.metaKey || e.ctrlKey || e.shiftKey) return;
+            e.preventDefault();
+            if (on && onClose) onClose();
+            else onPick();
+          }}
+          aria-current={on ? "true" : undefined}
+          aria-expanded={onPick ? on : undefined}
+          data-row-link=""
+          data-testid="late-row"
+          className="flex min-w-0 flex-1 gap-3 rounded-xs outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <span className="min-w-0 flex-1">
+            <span className="flex items-baseline gap-2">
+              <span className="num shrink-0 text-[13.5px] font-semibold leading-5 text-fg" data-testid="late-po">
+                {recordLabel("PurchaseOrder", po.label)}
+              </span>
+              <span className="min-w-0 truncate text-[13.5px] leading-5 text-fg/80" title={po.supplier ?? "No supplier"}>{po.supplier ?? "No supplier"}</span>
+              <span className={cn("ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium num", typeof po.days_late === "number" && lateFigure(po.days_late))}>
+                {typeof po.days_late === "number" ? `${po.days_late}d` : "–"}
+              </span>
             </span>
-            <span className="min-w-0 truncate text-[13px] leading-[18px] text-fg/80">{po.supplier ?? "No supplier"}</span>
-            <span className={cn("ml-auto flex shrink-0 items-center gap-1.5 self-center pl-2 text-[12px] leading-4 font-medium num", typeof po.days_late === "number" && lateFigure(po.days_late))}>
-              {typeof po.days_late === "number" ? `${po.days_late}d` : "–"}
+            <span className="mt-0.5 flex items-center gap-2 text-[12px] leading-4 text-muted tabular-nums">
+              <span className="min-w-0 truncate">
+                {needed}
+                {po.amount && <span aria-hidden> · </span>}
+                <Value po={po} />
+              </span>
+              {eta && (
+                <span className="ml-auto shrink-0" title={eta.label} data-testid="late-eta" data-status={eta.status}>
+                  {po.confirmation === "confirmed" ? <DoneRing size={13} /> : <OpenRing size={13} tone="neutral" />}
+                  <span className="sr-only">{eta.label}</span>
+                </span>
+              )}
             </span>
-          </span>
-          <span className="mt-0.5 flex items-center gap-2 text-[12px] leading-4 text-muted tabular-nums">
-            <span className="min-w-0 truncate">
-              {needed}
-              {po.amount && <span aria-hidden> · </span>}
-              <Value po={po} />
-            </span>
-            {eta && (
-              <span className="ml-auto shrink-0" title={eta.label} data-testid="late-eta" data-status={eta.status}>
-                {po.confirmation === "confirmed" ? <DoneRing size={13} /> : <OpenRing size={13} tone="neutral" />}
-                <span className="sr-only">{eta.label}</span>
+            {facts.length > 0 && (
+              <span className="mt-0.5 block truncate text-[12px] leading-4 text-muted tabular-nums" data-testid="late-chase" title={facts.join(" · ")}>
+                {facts.join(" · ")}
+              </span>
+            )}
+            {next && (
+              <span className="mt-0.5 block truncate text-[12px] leading-4 text-fg/80" data-testid="late-next" title={next}>
+                {next}
               </span>
             )}
           </span>
-          {facts.length > 0 && (
-            <span className="mt-0.5 block truncate text-[12px] leading-4 text-muted tabular-nums" data-testid="late-chase">
-              {facts.join(" · ")}
+        </a>
+        <div className="mt-0.5 flex shrink-0 items-center gap-0.5">
+          <Link
+            href={href}
+            aria-label={`Open ${recordLabel("PurchaseOrder", po.label)}`}
+            title="Open PO"
+            className="hidden size-6 shrink-0 items-center justify-center rounded-sm text-faint opacity-0 transition-opacity duration-150 hover:bg-hover hover:text-fg focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 group-hover:opacity-100 sm:inline-flex"
+          >
+            <ArrowUpRight className="size-3.5" strokeWidth={2} aria-hidden />
+          </Link>
+          {onPick && (
+            <span className="inline-flex size-5 items-center justify-center text-faint transition-colors group-hover:text-muted" aria-hidden>
+              {on ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
             </span>
           )}
-          {next && (
-            <span className="mt-0.5 block truncate text-[12px] leading-4 text-fg/80" data-testid="late-next" title={next}>
-              {next}
-            </span>
-          )}
-        </span>
-      </a>
+        </div>
+      </div>
+      {on && detail}
     </li>
   );
 }
@@ -199,7 +237,7 @@ function LateGlance({ items }: { items: LatePo[] }) {
   const toCheck = items.filter((p) => p.confirmation === "found_unverified" || p.confirmation === "needs_check").length;
   const noValue = items.filter((p) => !p.amount || p.amount_suspect || !DEC.test(String(p.amount.amount).trim())).length;
   return (
-    <p className="flex flex-wrap gap-x-4 gap-y-0.5 border-b border-border px-5 py-2 text-[12px] leading-4 text-muted" data-testid="late-glance">
+    <p className="flex flex-wrap gap-x-4 gap-y-0.5 text-[12px] leading-4 text-muted" data-testid="late-glance">
       <span>
         <span className="num font-semibold text-fg">{suppliers}</span> {suppliers === 1 ? "supplier" : "suppliers"}
       </span>
@@ -246,11 +284,14 @@ export function LateView() {
   const [staleItems, setStaleItems] = useState<LatePo[] | null>(null);
   const [staleOpen, setStaleOpen] = useState(false);
   const [staleError, setStaleError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [statusNote, setStatusNote] = useState<string | null>(null);
 
-  const load = useCallback(() => {
+  const load = useCallback((soft = false) => {
     const c = new AbortController();
     setError(null);
-    setTotal(null);
+    if (soft) setRefreshing(true);
+    else setTotal(null);
     (async () => {
       // every page, so filters and sorting cover the whole list, not the first 25
       const all = await readAllLate((offset, size) => getLateList(offset, c.signal, size), PAGE, MOST);
@@ -260,14 +301,23 @@ export function LateView() {
       setItems(all.items);
       setStaleTotal(all.staleTotal);
       setStaleItems(null);
-    })().catch((e) => {
-      if (c.signal.aborted) return;
-      setBusy(noticeKind(e) === "busy");
-      setError(plainError(e));
-    });
+    })()
+      .catch((e) => {
+        if (c.signal.aborted) return;
+        setBusy(noticeKind(e) === "busy");
+        setError(plainError(e));
+      })
+      .finally(() => {
+        if (!c.signal.aborted) setRefreshing(false);
+      });
     return () => c.abort();
   }, []);
-  useEffect(() => load(), [load]);
+  useEffect(() => load(false), [load]);
+  useEffect(() => {
+    if (!statusNote) return;
+    const t = window.setTimeout(() => setStatusNote(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [statusNote]);
   // "Late by supplier" links here with ?supplier=; ?sel= reopens a PO
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
@@ -283,11 +333,11 @@ export function LateView() {
     return () => c.abort();
   }, []);
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop && !picked) return;
     const c = new AbortController();
     getActionStates(c.signal).then((r) => setStates(r.cards ?? {}), () => undefined);
     return () => c.abort();
-  }, [desktop]);
+  }, [desktop, picked]);
 
   // the stale group is read when it is opened (and again after a close changes it)
   useEffect(() => {
@@ -368,6 +418,10 @@ export function LateView() {
     listRef.current?.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "nearest" });
   }, [picked]);
 
+  const clearFilters = useCallback(() => {
+    setFilter({ supplier: null, days: "all", value: "all", state: "all" });
+  }, []);
+
   const ready = total !== null && !error;
   const overview = (parts: "all" | "figures" | "chart") =>
     ready && items.length > 0 ? (
@@ -384,117 +438,135 @@ export function LateView() {
   );
 
   const controls = ready && items.length > 0 && (
-    <div className="shrink-0 border-b border-border" data-testid="late-filters">
-      <div role="tablist" aria-label="Days late" className="flex h-10 gap-4 overflow-x-auto px-5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {DAY_BANDS.map((b) => {
-          const n = dayCount(b.id);
-          // a band with nothing in it is no choice (as Home's chips): only All, or the band picked
-          if (n === 0 && b.id !== "all" && filter.days !== b.id) return null;
-          return (
-            <button
-              key={b.id}
-              type="button"
-              role="tab"
-              aria-selected={filter.days === b.id}
-              aria-label={`${b.label} ${n}`}
-              title={b.label}
-              onClick={() => setFilter((f) => ({ ...f, days: b.id }))}
-              className={cn(
-                "relative flex h-full shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap cursor-pointer",
-                filter.days === b.id ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-px after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
-              )}
-            >
-              {BAND_SHORT[b.id]}
-              <span className="text-[12px] font-normal num text-faint">{n}</span>
-            </button>
-          );
-        })}
-      </div>
-      <div className="flex min-h-11 flex-wrap items-center gap-x-0.5 gap-y-0.5 border-t border-border px-3 py-1.5">
-        <Pick label="Supplier" value={filter.supplier ?? "\u0000all"} onChange={(v) => setSupplier(v === "\u0000all" ? null : v)} className="min-w-[10rem] flex-1">
-          <option value={"\u0000all"}>All suppliers</option>
-          {suppliers.map(([name, n]) => (
-            <option key={name || "\u0000none"} value={name}>
-              {name || "No supplier"} ({n})
-            </option>
-          ))}
-        </Pick>
-        <Pick label="Value" value={filter.value} onChange={(v) => setFilter((f) => ({ ...f, value: v as ValueBand }))} className="w-[7.5rem] shrink-0">
-          {VALUE_BANDS.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.label}
-            </option>
-          ))}
-        </Pick>
-        {/* the supplier date state filters only where some PO has one: with none known every
-            choice but one would list nothing */}
-        {(items.some((p) => p.confirmation) || (filter.state ?? "all") !== "all") && (
-          <Pick label="Supplier date" value={filter.state ?? "all"} onChange={(v) => setFilter((f) => ({ ...f, state: v as StateBand }))} className="w-[9rem] shrink-0">
-            {STATE_BANDS.map((b) => (
+    <div className="space-y-2.5" data-testid="late-filters">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+        <div role="tablist" aria-label="Days late" className="flex items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {DAY_BANDS.map((b) => {
+            const n = dayCount(b.id);
+            // a band with nothing in it is no choice (as Home's chips): only All, or the band picked
+            if (n === 0 && b.id !== "all" && filter.days !== b.id) return null;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                role="tab"
+                aria-selected={filter.days === b.id}
+                aria-label={`${b.label} ${n}`}
+                title={b.label}
+                onClick={() => setFilter((f) => ({ ...f, days: b.id }))}
+                className={cn(
+                  "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] whitespace-nowrap transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.98] cursor-pointer",
+                  filter.days === b.id ? "bg-selected font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                )}
+              >
+                {BAND_SHORT[b.id]}
+                <span className="text-[11.5px] font-normal num text-faint">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pick label="Supplier" value={filter.supplier ?? "\u0000all"} onChange={(v) => setSupplier(v === "\u0000all" ? null : v)} className="min-w-[9.5rem] max-w-[14rem]">
+            <option value={"\u0000all"}>All suppliers</option>
+            {suppliers.map(([name, n]) => (
+              <option key={name || "\u0000none"} value={name}>
+                {name || "No supplier"} ({n})
+              </option>
+            ))}
+          </Pick>
+          <Pick label="Value" value={filter.value} onChange={(v) => setFilter((f) => ({ ...f, value: v as ValueBand }))} className="w-[7.5rem] shrink-0">
+            {VALUE_BANDS.map((b) => (
               <option key={b.id} value={b.id}>
-                {b.label} ({b.id === "all" ? items.length : items.filter((p) => inStateBand(p, b.id)).length})
+                {b.label}
               </option>
             ))}
           </Pick>
-        )}
-        <span className="flex shrink-0 items-center">
-          <Pick label="Sort by" value={sort.key} onChange={(v) => setSort({ key: v as SortKey, desc: false })} className="w-[7.25rem]">
-            {SORTS.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.label}
-              </option>
-            ))}
-          </Pick>
-          <button
-            type="button"
-            onClick={() => setSort((s) => ({ ...s, desc: !s.desc }))}
-            aria-label={falling(sort) ? "Sorted largest or latest first" : "Sorted smallest or earliest first"}
-            title={falling(sort) ? "Largest first" : "Smallest first"}
-            className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-hover hover:text-fg cursor-pointer"
-          >
-            {falling(sort) ? <ArrowDownWideNarrow className="size-4" aria-hidden /> : <ArrowUpNarrowWide className="size-4" aria-hidden />}
-          </button>
-        </span>
+          {/* the supplier date state filters only where some PO has one: with none known every
+              choice but one would list nothing */}
+          {(items.some((p) => p.confirmation) || (filter.state ?? "all") !== "all") && (
+            <Pick label="Supplier date" value={filter.state ?? "all"} onChange={(v) => setFilter((f) => ({ ...f, state: v as StateBand }))} className="w-[9rem] shrink-0">
+              {STATE_BANDS.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.label} ({b.id === "all" ? items.length : items.filter((p) => inStateBand(p, b.id)).length})
+                </option>
+              ))}
+            </Pick>
+          )}
+          <span className="flex shrink-0 items-center gap-1">
+            <Pick label="Sort by" value={sort.key} onChange={(v) => setSort({ key: v as SortKey, desc: false })} className="w-[7.25rem]">
+              {SORTS.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.label}
+                </option>
+              ))}
+            </Pick>
+            <button
+              type="button"
+              onClick={() => setSort((s) => ({ ...s, desc: !s.desc }))}
+              aria-label={falling(sort) ? "Sorted largest or latest first" : "Sorted smallest or earliest first"}
+              title={falling(sort) ? "Largest first" : "Smallest first"}
+              className="flex size-8 items-center justify-center rounded-md border border-border bg-bg text-muted transition-[background-color,border-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] cursor-pointer"
+            >
+              {falling(sort) ? <ArrowDownWideNarrow className="size-4" aria-hidden /> : <ArrowUpNarrowWide className="size-4" aria-hidden />}
+            </button>
+          </span>
+          {filtered && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              data-testid="late-clear-filters"
+              className="h-8 rounded-md px-2 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
       </div>
+      <LateGlance items={filtered ? shown : items} />
     </div>
   );
 
-  const list = (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col border-border bg-list lg:w-[400px] lg:flex-none lg:shrink-0 lg:border-r xl:w-[420px]" aria-label="Late POs">
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar
         heading
         title="Late POs"
         testId="late-header"
-        className="bg-list"
         actions={
-          desktop && ready && items.length > 0 ? (
-            <ToolbarButton onClick={() => pick(null)} aria-pressed={!selected} title="Overview (Esc)" className={cn(!selected && "bg-hover text-fg")}>
-              <ChartNoAxesColumn aria-hidden />
-              Overview
-            </ToolbarButton>
-          ) : undefined
+          <ToolbarButton disabled={total === null || refreshing} onClick={() => load(true)} title="Refresh late POs" aria-label="Refresh late POs">
+            <RefreshCw className={cn(refreshing && "animate-spin")} aria-hidden />
+            <span className="max-sm:sr-only">{refreshing ? "Refreshing" : "Refresh"}</span>
+          </ToolbarButton>
         }
       />
       <SectionTabs section="home" />
       <PageIntro path="/?show=late" />
-      {!desktop && ready && items.length > 0 && <div className="@container border-b border-border px-5 pt-4 pb-5">{overview("figures")}</div>}
-      {controls}
-      {ready && items.length > 0 && <LateGlance items={filtered ? shown : items} />}
-      <StaleNote since={staleSince} className="px-5 py-1.5" />
-      <FeedNote feed="late_pos" />
-      <div ref={listRef} className="min-h-0 flex-1 pb-6 lg:overflow-y-auto" data-testid="late-all">
-        <div ref={desktop ? undefined : phoneRef}>
-          {error ? (
-            <div className="p-4">
-              <LoadProblem message={error} busy={busy} onRetry={load} />
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="late-all">
+        <div ref={desktop ? undefined : phoneRef} className="mx-auto w-full max-w-[980px] space-y-5 px-4 py-5 pb-12 sm:px-6">
+          <StaleNote since={staleSince} />
+          {statusNote && (
+            <div role="status" className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface/60 px-3 py-2 text-[12.5px] text-fg">
+              <span className="flex min-w-0 items-center gap-2">
+                <Check className="size-3.5 shrink-0 text-ok" strokeWidth={2.2} aria-hidden />
+                <span className="truncate">{statusNote}</span>
+              </span>
+              <button type="button" aria-label="Dismiss notice" onClick={() => setStatusNote(null)} className="inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg cursor-pointer">
+                <X className="size-3" aria-hidden />
+              </button>
             </div>
+          )}
+          <FeedNote feed="late_pos" className="text-[12px] text-muted" />
+          {ready && items.length > 0 && <div className="@container">{overview("figures")}</div>}
+          {controls}
+          {error ? (
+            <LoadProblem message={error} busy={busy} onRetry={() => load(false)} />
           ) : total === null ? (
             <ListSkeleton />
           ) : items.length === 0 ? (
-            <p className="px-5 py-10 text-[13px] text-muted">{staleTotal ? "No late POs that show signs of life." : "No late POs."}</p>
+            <p className="py-8 text-[13px] text-muted">{staleTotal ? "No late POs that show signs of life." : "No late POs."}</p>
           ) : (
-            <>
-              <div className="flex h-9 items-end justify-between gap-3 px-5 pb-1.5 text-[12px] text-muted">
+            <section className="space-y-2" aria-label="Late POs">
+              <div className="flex items-baseline justify-between gap-3 text-[12px] text-muted">
                 {count}
                 {filter.supplier !== null && (
                   <button type="button" onClick={() => setSupplier(null)} className="inline-flex min-w-0 items-center gap-1 rounded-md text-muted hover:text-fg cursor-pointer" aria-label="Show every supplier">
@@ -504,52 +576,101 @@ export function LateView() {
                 )}
               </div>
               {shown.length === 0 ? (
-                <p className="px-5 py-6 text-[13px] text-muted" data-testid="late-none-match">
-                  No POs match these filters.
-                </p>
+                <div className="py-6 text-[13px] text-muted" data-testid="late-none-match">
+                  <p>No POs match these filters.</p>
+                  <Button size="sm" variant="secondary" onClick={clearFilters} className="mt-2">
+                    Clear filters
+                  </Button>
+                </div>
               ) : (
-                <div data-testid="late-table" aria-label="Late purchase orders" role="group">
+                <div data-testid="late-table" aria-label="Late purchase orders" role="group" className="space-y-4">
                   {groups.map((g) => (
                     <div key={g.name ?? "all"}>
                       {g.name !== null && (
-                        <div className="sticky top-0 z-10 flex h-9 items-end gap-2 bg-list px-5 pb-1.5">
+                        <div className="flex items-baseline gap-2 pb-1.5">
                           <h2 className="truncate text-[12px] font-medium text-muted">
                             {g.name || "No supplier"} <span className="font-normal num text-faint">{g.rows.length}</span>
                           </h2>
                         </div>
                       )}
-                      <ul className="px-2">
-                        {g.rows.map((po) => (
-                          <Row key={po.object_id} po={po} chase={chaseOf(bySubject.get(po.object_id))} on={desktop && po.object_id === picked} onPick={desktop ? () => pick(po.object_id) : null} />
-                        ))}
+                      <ul className="divide-y divide-border border-y border-border">
+                        {g.rows.map((po) => {
+                          const isExpanded = po.object_id === picked;
+                          return (
+                            <Row
+                              key={po.object_id}
+                              po={po}
+                              chase={chaseOf(bySubject.get(po.object_id))}
+                              on={isExpanded}
+                              onPick={() => pick(po.object_id)}
+                              onClose={() => pick(null)}
+                              detail={
+                                isExpanded ? (
+                                  <div className="border-t border-border/60 bg-surface/40">
+                                    <div className="flex items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
+                                      <CloseControl
+                                        key={po.object_id}
+                                        order={{ handle: po.sources?.[0]?.handle, object_id: po.object_id }}
+                                        onChanged={(res) => {
+                                          if (res.closed) {
+                                            setItems((cur) => cur.filter((x) => x.object_id !== po.object_id));
+                                            setTotal((t) => (t != null ? Math.max(0, t - 1) : t));
+                                            setStatusNote(`Closed ${recordLabel("PurchaseOrder", po.label)}`);
+                                            pick(null);
+                                          }
+                                          load(true);
+                                        }}
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => pick(null)}
+                                        aria-label="Close details"
+                                        title="Close (Esc)"
+                                        className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-faint hover:bg-hover hover:text-fg cursor-pointer"
+                                      >
+                                        <X className="size-3.5" aria-hidden />
+                                      </button>
+                                    </div>
+                                    <TodayDetail
+                                      key={po.object_id}
+                                      row={lateRow(po, bySubject.get(po.object_id))}
+                                      state={bySubject.get(po.object_id) ? states[bySubject.get(po.object_id)!.id] : null}
+                                      onDone={(r) => setStates((prev) => ({ ...prev, [r.card_id]: r }))}
+                                    />
+                                  </div>
+                                ) : undefined
+                              }
+                            />
+                          );
+                        })}
                       </ul>
                     </div>
                   ))}
                 </div>
               )}
-            </>
+            </section>
           )}
           {ready && !!staleTotal && (
-            <details className="mt-4 border-t border-border px-2" open={staleOpen} onToggle={(e) => setStaleOpen((e.currentTarget as HTMLDetailsElement).open)} data-testid="late-stale">
-              <summary className="cursor-pointer px-3 py-3 text-[13px] font-medium text-fg" data-testid="late-stale-summary">
+            <details className="border-t border-border pt-3" open={staleOpen} onToggle={(e) => setStaleOpen((e.currentTarget as HTMLDetailsElement).open)} data-testid="late-stale">
+              <summary className="cursor-pointer py-1.5 text-[13px] font-medium text-fg" data-testid="late-stale-summary">
                 Probably closed or missed in the data: check and close <span className="num font-normal text-muted">({staleTotal})</span>
               </summary>
-              <p className="px-3 pb-2 text-[12px] leading-4 text-muted">
+              <p className="pb-2 text-[12px] leading-4 text-muted">
                 Very late, and nothing shows them alive since their needed-by date: no receipt, no message from the supplier or in Teams, no change to the order. They are not counted above.
               </p>
               {staleError ? (
-                <p className="px-3 py-2 text-[13px] text-late">{staleError}</p>
+                <LoadProblem message={staleError} onRetry={() => { setStaleError(null); setStaleItems(null); }} />
               ) : staleItems === null ? (
-                <p className="px-3 py-2 text-[13px] text-muted">Reading them</p>
+                <p className="py-2 text-[13px] text-muted">Reading them</p>
               ) : (
-                <ul className="pb-2">
+                <ul className="divide-y divide-border border-y border-border">
                   {staleItems.map((po) => (
                     <li key={po.object_id} data-testid="late-stale-row">
                       <ul>
                         <Row po={po} chase={chaseOf(undefined)} on={false} onPick={null} />
                       </ul>
-                      <div className="px-3 pb-2">
-                        <CloseControl order={{ handle: po.sources?.[0]?.handle, object_id: po.object_id }} compact onChanged={() => load()} />
+                      <div className="px-3 pb-2.5 sm:px-4">
+                        <CloseControl order={{ handle: po.sources?.[0]?.handle, object_id: po.object_id }} compact onChanged={() => load(true)} />
                       </div>
                     </li>
                   ))}
@@ -557,50 +678,11 @@ export function LateView() {
               )}
             </details>
           )}
-          {!desktop && ready && items.length > 1 && <div className="mt-6 border-t border-border px-5 pt-6">{overview("chart")}</div>}
-        </div>
-      </div>
-    </section>
-  );
-
-  return (
-    <div className="flex h-full min-h-0 flex-1 lg:h-dvh">
-      {list}
-      {desktop && (
-        <div className="hidden min-w-0 flex-1 lg:flex">
-          {selected ? (
-            <div className="flex min-w-0 flex-1 flex-col">
-            <div className="shrink-0 border-b border-border px-5 py-2">
-              <CloseControl key={selected.object_id} order={{ handle: selected.sources?.[0]?.handle, object_id: selected.object_id }} onChanged={() => { pick(null); load(); }} />
-            </div>
-            <TodayDetail
-              key={selected.object_id}
-              row={lateRow(selected, bySubject.get(selected.object_id))}
-              state={bySubject.get(selected.object_id) ? states[bySubject.get(selected.object_id)!.id] : null}
-              onDone={(r) => setStates((prev) => ({ ...prev, [r.card_id]: r }))}
-            />
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col bg-bg">
-              <div className="flex h-[52px] shrink-0 items-center gap-1 border-b border-border px-5 text-[13px] text-muted">
-                Late POs <span className="px-0.5 text-faint">›</span> <span className="font-medium text-fg">Overview</span>
-              </div>
-              <div className="@container min-h-0 flex-1 overflow-y-auto">
-                <div className="max-w-[880px] px-6 pt-6 pb-12 sm:px-8 sm:pt-7">
-                  {overview("all") ||
-                    (ready ? (
-                      <p className="text-[13px] text-muted">Nothing to sum up: no PO is late.</p>
-                    ) : error ? (
-                      <p className="text-[13px] text-muted">The overview waits until the list can be read.</p>
-                    ) : (
-                    <Pending label="Reading the overview" />
-                    ))}
-                </div>
-              </div>
-            </div>
+          {ready && items.length > 1 && (
+            <div className="border-t border-border pt-5">{overview("chart")}</div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

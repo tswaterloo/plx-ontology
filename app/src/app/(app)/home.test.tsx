@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HomeNeedItem, HomeNeeds } from "@/lib/types";
+import { forgetKeptReads } from "@/lib/use-read";
 
 const nav = vi.hoisted(() => ({
   search: "",
@@ -78,6 +79,7 @@ function rowTexts() {
 }
 
 beforeEach(() => {
+  forgetKeptReads();
   nav.search = "";
   nav.push.mockReset();
   nav.replace.mockReset();
@@ -222,24 +224,41 @@ describe("Unified Needs-you list and inline filters", () => {
   });
 });
 
-describe("Right-hand detail panel opens on click and closes on Close button or Escape", () => {
-  it("opens an item on click, closes smoothly with Escape, and closes with the Close button", async () => {
+describe("Inline detail expansion on Home rows and canonical record links", () => {
+  it("opens clean without an empty split pane, expands a row inline on click, normalizes 1-segment object hrefs, and closes on Escape or Close button", async () => {
     api.needs.mockResolvedValue(
       needs([
-        item(1, { title: "PO 90412", line: "Confirm supplier ship date.", object_id: "PurchaseOrder:demo:90412", object_type: "PurchaseOrder", href: "/po/90412" }),
-        item(2, { title: "SO 77120", line: "Customer waiting on update.", object_id: "SalesOrder:demo:77120", object_type: "SalesOrder", href: "/order/77120" }),
+        item(1, {
+          title: "PO 90412",
+          line: "Confirm supplier ship date.",
+          object_id: "PurchaseOrder:demo:90412",
+          object_type: "PurchaseOrder",
+          href: "/object/PurchaseOrder:demo:90412",
+        }),
+        item(2, {
+          title: "SO 77120",
+          line: "Customer waiting on update.",
+          object_id: "SalesOrder:demo:77120",
+          object_type: "SalesOrder",
+          href: "/order/77120",
+        }),
       ]),
     );
 
     render(<HomePage />);
     await waitFor(() => expect(rowTexts()).toHaveLength(2));
+    // Starts clean as a full-width list with no pre-opened detail pane.
     expect(screen.queryByTestId("need-detail")).toBeNull();
 
-    // Open by clicking the first item.
+    // Click first row to expand inline detail with canonical 2-segment /object/<Type>/<id> link.
     fireEvent.click(screen.getAllByTestId("need-row")[0]);
     const detail = await screen.findByTestId("need-detail");
     expect(detail).toHaveTextContent("PO 90412");
     expect(detail).toHaveTextContent("Confirm supplier ship date.");
+    expect(within(detail).getByRole("link", { name: /Open the full record/ })).toHaveAttribute(
+      "href",
+      "/object/PurchaseOrder/PurchaseOrder%3Ademo%3A90412",
+    );
 
     // Close by pressing Escape.
     fireEvent.keyDown(window, { key: "Escape" });
@@ -339,7 +358,7 @@ describe("Error and empty states", () => {
     expect(await screen.findByText("Nothing needs you right now.")).toBeInTheDocument();
   });
 
-  it("formats Mission Control label, human dates, separate privacy badges, and alert next steps cleanly", async () => {
+  it("formats Mission Control label, human dates, quiet private lock indicator, ops grouping, and alert next steps cleanly", async () => {
     api.needs.mockResolvedValue(
       needs([
         item(1, {
@@ -348,7 +367,7 @@ describe("Error and empty states", () => {
           source: "mc",
           source_label: "MC",
           title: "Mission Control task due 2026-10-29",
-          line: "Mission Control task TASK-3601\nOnly you can see this.",
+          line: "Still open? Nothing has happened on it since it was due 29 Oct. Mission Control task TASK-3601\nOnly you can see this.",
         }),
         item(2, {
           id: "alert:price1",
@@ -359,6 +378,22 @@ describe("Error and empty states", () => {
           line: "Price for Bottle 500ml dropped 28 % since 2026-06-24",
           ask: "Check the customer's agreed price for the product.",
         }),
+        item(3, {
+          id: "ops:1",
+          kind: "reply",
+          source: "mail",
+          source_label: "Mail",
+          title: "Workbench API health 14 Nov: ALERT",
+          line: "Investigate the 8 unavailable Workbench API relations per the runbook.",
+        }),
+        item(4, {
+          id: "ops:2",
+          kind: "reply",
+          source: "mail",
+          source_label: "Mail",
+          title: "Workbench API health 15 Nov: ALERT",
+          line: "Investigate the 8 unavailable Workbench API relations per the runbook.",
+        }),
       ]),
     );
     render(<HomePage />);
@@ -367,12 +402,161 @@ describe("Error and empty states", () => {
     expect(rowTexts()[0]).not.toMatch(/· MC ·/);
     expect(rowTexts()[0]).toContain("29 Oct");
     expect(rowTexts()[0]).not.toContain("2026-10-29");
-    expect(screen.getByTestId("need-scope")).toHaveTextContent("Only you can see this");
+    expect(rowTexts()[0]).not.toContain("Still open? Nothing has happened");
+    expect(screen.getByTestId("need-private")).toHaveAttribute("aria-label", "Only you can see this");
     expect(rowTexts()[1]).toContain("28%");
     expect(rowTexts()[1]).not.toContain("28 %");
     expect(rowTexts()[1]).toContain("24 Jun");
+
+    // Repetitive internal ops alerts are collapsed into System and ops notices.
+    const opsToggle = screen.getByTestId("ops-notices-toggle");
+    expect(opsToggle).toHaveTextContent("System and ops notices (2)");
+    fireEvent.click(opsToggle);
+    expect(screen.getByTestId("ops-notices-list")).toHaveTextContent("Workbench API health 14 Nov: ALERT");
+
     fireEvent.click(screen.getAllByTestId("need-row")[1]);
     const detail = await screen.findByTestId("need-detail");
     expect(within(detail).getByTestId("need-next-step")).toHaveTextContent("Check the customer's agreed price for the product.");
+  });
+});
+
+describe("Compact Financials block and consolidated Holds group (PLAN-P2-C6)", () => {
+  it("folds price_drop and below_cost alerts into one compact expandable Financials block without dropping any row", async () => {
+    const priceDrops = Array.from({ length: 24 }, (_, i) =>
+      item(100 + i, {
+        id: `alert:pd:${i + 1}`,
+        kind: "alert",
+        source: "alerts",
+        source_label: "Alerts",
+        title: `Customer Drop ${i + 1}`,
+        line: `Customer Drop ${i + 1}'s price dropped 18% (CAD per EA) against the 180 days before.`,
+        event_type: "customer_price_drop",
+        alert_kind: "price_exception",
+        section: "financials",
+        badge: "Price drop",
+        action: "decide",
+        action_label: "Decide",
+      }),
+    );
+    const belowCosts = Array.from({ length: 67 }, (_, i) =>
+      item(200 + i, {
+        id: `alert:bc:${i + 1}`,
+        kind: "alert",
+        source: "alerts",
+        source_label: "Alerts",
+        title: `Customer Cost ${i + 1}`,
+        line:
+          i === 0
+            ? "Customer Cost 1 paid 23% of cost for Serum 30ml (CAD per EA) over the last 180 days."
+            : `Customer Cost ${i + 1} paid 82% of cost for Bottle 500ml (CAD per EA) over the last 180 days.`,
+        ask: i === 0 ? "Booked cost is over 2x revenue; verify unit cost before treating as margin loss." : undefined,
+        event_type: "price_below_cost",
+        alert_kind: "margin_loss",
+        section: "financials",
+        badge: i === 0 ? "Verify unit cost" : "Below cost",
+        action: "decide",
+        action_label: "Decide",
+      }),
+    );
+    const regular = [
+      item(1, { kind: "reply", source: "mail", source_label: "Mail", title: "Urgent supplier reply", action: "reply", action_label: "Reply" }),
+      item(2, { kind: "late_po", source: "pos", source_label: "POs", title: "PO 90412", action: "check", action_label: "Check", days_late: 5 }),
+    ];
+
+    api.needs.mockResolvedValue(needs([...regular, ...priceDrops, ...belowCosts]));
+    render(<HomePage />);
+
+    // Regular items lead the queue; the 91 financial alerts fold into one compact summary row.
+    await waitFor(() => expect(rowTexts()).toHaveLength(2));
+    expect(rowTexts()[0]).toContain("Urgent supplier reply");
+    expect(rowTexts()[1]).toContain("PO 90412");
+
+    const toggle = screen.getByTestId("financials-toggle");
+    expect(toggle).toHaveTextContent("Financials · 24 price drops, 67 below cost");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("financials-list")).toBeNull();
+
+    // Expanding exposes every single one of the 91 financial alerts (zero silent drops).
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const finList = screen.getByTestId("financials-list");
+    const finRows = within(finList).getAllByTestId("need-row");
+    expect(finRows).toHaveLength(91);
+    expect(finRows[24]).toHaveTextContent("Verify unit cost");
+
+    // Clicking a row inside Financials opens its detail panel cleanly.
+    fireEvent.click(finRows[24]);
+    const detail = await screen.findByTestId("need-detail");
+    expect(detail).toHaveTextContent("Customer Cost 1");
+    expect(within(detail).getByTestId("need-detail-badge")).toHaveTextContent("Verify unit cost");
+    expect(detail.textContent).not.toContain("—");
+  });
+
+  it("merges QC holds, batch holds, and order holds into one Holds group while preserving each item's specific badge", async () => {
+    api.needs.mockResolvedValue(
+      needs([
+        item(1, { kind: "late_po", source: "pos", source_label: "POs", title: "PO 90412", action: "check", action_label: "Check" }),
+        item(2, {
+          id: "matter:qc1",
+          kind: "alert",
+          source: "alerts",
+          source_label: "Alerts",
+          title: "QC hold: Lot L-100",
+          line: "Lot L-100 is on-hold; 1 open order affected.",
+          event_type: "qc_hold",
+          alert_kind: "quality_hold",
+          section: "holds",
+          badge: "QC hold",
+          action: "decide",
+          action_label: "Decide",
+        }),
+        item(3, {
+          id: "alert:lot1",
+          kind: "alert",
+          source: "alerts",
+          source_label: "Alerts",
+          title: "Batch B-204",
+          line: "Batch B-204 is on quality hold since it was made on 14 Nov.",
+          event_type: "lot_on_hold",
+          alert_kind: "quality_hold",
+          section: "holds",
+          badge: "Batch hold",
+          action: "decide",
+          action_label: "Decide",
+        }),
+        item(4, {
+          id: "alert:ord1",
+          kind: "alert",
+          source: "alerts",
+          source_label: "Alerts",
+          title: "SO 77120",
+          line: "Order SO 77120 is on hold.",
+          event_type: "order_hold",
+          alert_kind: "quality_hold",
+          section: "holds",
+          badge: "Order hold",
+          action: "decide",
+          action_label: "Decide",
+        }),
+      ]),
+    );
+
+    render(<HomePage />);
+    const holdsGroup = await screen.findByTestId("holds-group");
+    const holdsToggle = within(holdsGroup).getByTestId("holds-toggle");
+    expect(holdsToggle).toHaveTextContent("Holds (3)");
+    expect(holdsToggle).toHaveAttribute("aria-expanded", "true");
+
+    const holdsList = within(holdsGroup).getByTestId("holds-list");
+    const badges = within(holdsList)
+      .getAllByTestId("need-badge")
+      .map((el) => el.textContent);
+    expect(badges).toEqual(["QC hold", "Batch hold", "Order hold"]);
+
+    // Collapsing and expanding Holds works cleanly.
+    fireEvent.click(holdsToggle);
+    expect(within(holdsGroup).queryByTestId("holds-list")).toBeNull();
+    fireEvent.click(holdsToggle);
+    expect(within(holdsGroup).getAllByTestId("need-row")).toHaveLength(3);
   });
 });

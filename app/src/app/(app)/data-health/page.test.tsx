@@ -106,7 +106,7 @@ describe("Data health page", () => {
     const rough = within(screen.getByTestId("trust-alerts")).getByText("Customer order later than this customer's orders usually are").closest("tr")!;
     expect(rough).toHaveTextContent("59");
     expect(rough).toHaveTextContent("21.0%");
-    expect(rough).toHaveTextContent("—");
+    expect(rough).toHaveTextContent("–");
     expect(screen.getByText("2 types not measured yet (off until hand-checked)")).toBeInTheDocument();
     const sw = screen.getByTestId("trust-switches");
     expect(within(sw).getByText("Business Central").closest("tr")).toHaveTextContent("Off");

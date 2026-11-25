@@ -27,9 +27,9 @@ export function ShowAll<T>({
     <>
       {shown.map((item, i) => children(item, i))}
       {cut ? (
-        <p className="text-sm text-neutral-600">
+        <p className="text-sm text-muted">
           {limit.toLocaleString("en-US")} of {total.toLocaleString("en-US")} {noun} shown{say ? ` (${say})` : ""}.{" "}
-          <button type="button" className="underline" onClick={() => setAll(true)}>
+          <button type="button" className="underline hover:text-fg cursor-pointer" onClick={() => setAll(true)}>
             Show all {total.toLocaleString("en-US")}
           </button>
         </p>

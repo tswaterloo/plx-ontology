@@ -1312,6 +1312,9 @@ class AlertCards(unittest.TestCase):
         self.assertGreaterEqual(seen, 3)
         mine = {i["item_id"]: i for i in items}
         self.assertEqual(mine["ap_old"]["links"][0]["href"], object_href(order))
+        from operator_api.autopilot_area import card_href
+        self.assertEqual(card_href("/object/SalesOrder:s1#documents"),
+                         "/object/SalesOrder/SalesOrder%3As1#documents")
         root = Path(__file__).resolve().parents[2]
         for path in [*(root / "operating").glob("*.py"), *(root / "operator_api").glob("*.py")]:
             for n, line in enumerate(path.read_text().splitlines(), 1):

@@ -24,6 +24,14 @@ from typing import Any, Iterable, Iterator, Mapping, Optional, Sequence
 from . import models as m
 from .errors import RecordNotFound
 from . import presentation
+from .page_core import (
+    clean_enum,
+    clean_number_text,
+    clean_person,
+    clean_subject,
+    clean_text,
+    fix_po_prefix,
+)
 from operating import sales_order_status as so_status
 from .serving import (MAX_SOURCES_PER_FACT, citation_handle, object_url, plain,
     record_words, system_of)
@@ -284,7 +292,7 @@ def impact_change_words(change: Mapping[str, Any]) -> str:
     if kind == "price_change":
         return f"price changed {change.get('percent')}%"
     return {"out_of_stock": "out of stock", "customer_lost": "customer lost"}.get(
-        str(kind), str(kind))
+        str(kind), clean_enum(kind) or str(kind))
 
 
 # The plan (``ontology/plans``) each section runs, if any.
@@ -349,7 +357,7 @@ def page_knows(view: Any, oid: str) -> Optional[m.PersonKnows]:
             # the record's name arrives as source text in its envelope (shown, never run)
             label = r.get("label")
             label = label.get("untrusted_text") if isinstance(label, Mapping) else label
-            out.append(m.KnownRecord(object_id=rid, label=str(label or "")[:120],
+            out.append(m.KnownRecord(object_id=rid, label=clean_text(label),
                                      url=object_url(rid.split(":", 1)[0], rid),
                                      messages=int(r.get("messages") or 0)))
         return out
@@ -368,7 +376,7 @@ def _text(value: Any, limit: int) -> str:
     """A sheet's own text (an ``untrusted_text`` envelope's text): shown, never run."""
     if isinstance(value, Mapping):
         value = value.get("untrusted_text")
-    return "" if value is None else str(value)[:limit]
+    return "" if value is None else clean_text(value, max_len=limit)
 
 
 def _decimal_text(value: Any) -> Optional[str]:
@@ -377,7 +385,7 @@ def _decimal_text(value: Any) -> Optional[str]:
         return None
     if isinstance(value, Mapping):
         value = value.get("value")
-    return None if value is None else str(value)[:40]
+    return None if value is None else clean_number_text(value, max_decimals=6)
 
 
 def page_formula(view: Any, oid: str) -> Optional[m.ProductFormula]:
@@ -452,7 +460,7 @@ def _price_components(view: Any, sheets: list[m.FormulaSheet]) -> None:
     view ``item_po_prices`` as this reader: a price the reader may not read is not shown),
     and per sheet the material cost per kg of the product (``m.MaterialCost``)."""
     wanted = list(dict.fromkeys(c.item.object_id for sh in sheets for c in sh.components
-                                if c.item is not None))[:200]
+                                if c.item is not None))
     if not wanted:
         return
     got = view._call("plx.aggregate", {"mode": "business_documents", "view": "item_po_prices",
@@ -477,7 +485,7 @@ def _price_components(view: Any, sheets: list[m.FormulaSheet]) -> None:
             price=str(one["price"]), currency=one.get("currency"), uom=one.get("uom"),
             dated=one.get("dated"),
             po=m.ObjectRef(object_id=po, type=po.split(":", 1)[0],
-                           label=f"PO {one.get('po_number')}" if one.get("po_number")
+                           label=fix_po_prefix("PO", one.get("po_number")) if one.get("po_number")
                            else record_words(po), open_url=object_url(po.split(":", 1)[0], po))
             if isinstance(po, str) and po else None)
     for sh in sheets:
@@ -521,7 +529,7 @@ def _material_cost(sheet: m.FormulaSheet, unsettled: set[str] = frozenset()
     return m.MaterialCost(per_kg=format(total.quantize(Decimal("0.0001")), "f")
                           if priced else None,
                           currency=next(iter(currencies), None),
-                          priced_share=format(priced, "f"), missing=missing[:50],
+                          priced_share=format(priced, "f"), missing=missing,
                           complete=complete)
 
 
@@ -665,7 +673,7 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
             if open_states:
                 out.open_list = _order_worth(backend, view, rows_of(
                     [{"property": "status", "op": "in",
-                      "value": open_states[:50]}])[:CUSTOMER_ROWS])
+                      "value": open_states}]))
         else:
             out.not_established.append("Open orders: no order status is recorded")
     elif not out.revenue:
@@ -682,12 +690,14 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
         seen.add(str(obj.get("object_id")))
         if isinstance(obj, Mapping) and isinstance(obj.get("object_id"), str) \
                 and obj["object_id"] != oid:
+            otype = str(obj.get("object_type") or "Customer")
+            disp = clean_text(presentation.record_label(plain(obj.get("display")), otype, obj["object_id"]))
+            sys_word = system_word(obj["object_id"])
+            twin_lbl = disp if f"({sys_word})" in disp else f"{disp} ({sys_word})"
             out.also_in.append(m.ObjectRef(
-                object_id=obj["object_id"], type=str(obj.get("object_type") or "Customer"),
-                label=f"{plain(obj.get('display')) or obj['object_id']} "
-                      f"({system_word(obj['object_id'])})"[:200],
-                open_url=object_url(str(obj.get("object_type") or "Customer"),
-                                    obj["object_id"])))
+                object_id=obj["object_id"], type=otype,
+                label=twin_lbl,
+                open_url=object_url(otype, obj["object_id"])))
     out.contacts = _contacts(view, [oid, *(r.object_id for r in out.also_in)])
     if not out.contacts:
         out.not_established.append(
@@ -700,7 +710,6 @@ def customer_summary(backend: "WorkspaceBackend", view: Any, oid: str
 # names the customer), at corroborated or better, never a lead
 CONTACT_PATH = ({"link_type": "Email.sent_by_customer", "direction": "reverse"},
                 {"link_type": "Email.sent_by_person", "direction": "forward"})
-CONTACT_ROWS = 8
 # How an order's value is said when it is not the order's own total (``operating.order_value``)
 WORTH_NOTES = {"invoices": "from its invoices, before tax", "order_lines": "from its lines"}
 
@@ -711,14 +720,14 @@ def _contacts(view: Any, roots: Sequence[str]) -> list[m.Person]:
     people: dict[str, m.Person] = {}
     for root in dict.fromkeys(roots):
         got = view._call("plx.around", {"from": root, "tier_floor": "corroborated",
-                                        "limit": CONTACT_ROWS, "path": list(CONTACT_PATH)})
+                                        "path": list(CONTACT_PATH)})
         for obj in (got or {}).get("objects") or ():
-            name = plain(obj.get("display")) if isinstance(obj, Mapping) else None
+            name = clean_person(plain(obj.get("display"))) if isinstance(obj, Mapping) else None
             if not name or obj.get("object_id") in people:
                 continue
             people[str(obj.get("object_id"))] = m.Person(
-                name=str(name)[:200], role="wrote from the customer's mail")
-    return list(people.values())[:CONTACT_ROWS]
+                name=name, role="wrote from the customer's mail")
+    return list(people.values())
 
 
 def _order_worth(backend: "WorkspaceBackend", view: Any, rows: Sequence[m.OrderRow]
@@ -763,7 +772,7 @@ def label_timeline(view: Any, page: m.ObjectPage, labels: Mapping[str, str],
         # it, never as its own last change
         row.own = not objects or page.object_id in objects
     labels, read_status = dict(labels), {}
-    for oid in list(dict.fromkeys(o for o in about_of if o and not labels.get(o)))[:40]:
+    for oid in list(dict.fromkeys(o for o in about_of if o and not labels.get(o))):
         card = view._call("plx.object", {"object_id": oid, "properties": ["status"]}) or {}
         labels[oid] = plain((card.get("object") or {}).get("display"))
         read_status[oid] = next((plain(v.get("value")) for v in card.get("values") or ()
@@ -772,14 +781,15 @@ def label_timeline(view: Any, page: m.ObjectPage, labels: Mapping[str, str],
     for row, about in zip(page.timeline, about_of):
         if about is None:
             continue
-        name = labels.get(about)
+        name = clean_text(labels.get(about))
         if not name or name == about:
             continue   # no display to name it by: the row stays as it was
         kind = words_of(re.sub(r"(?<=[a-z])(?=[A-Z])", " ", about.split(":", 1)[0])).lower()
-        row.title = f"{row.title}: {kind} {name}"[:200]
+        base_title = clean_text(row.title)
+        row.title = f"{base_title}: {kind} {name}" if name.lower() not in base_title.lower() else base_title
         state = status.get(name) or words_of(read_status.get(about)).capitalize()
         if state:
-            row.summary = f"Status: {state}"
+            row.summary = f"Status: {clean_enum(state, 'status') or state}"
 
 
 def page_handles(value: Any) -> set[str]:
@@ -981,10 +991,10 @@ def landed_cost_of(backend: "WorkspaceBackend", view: Any,
     answerability = ((ran.get("investigation") or {}).get("answerability") or {}).get("state")
     status = ("computed" if total is not None and answerability == "answerable"
               else "partial" if total is not None or lines else "not_established")
-    return m.LandedCost(status=status, total=total, lines=lines[:20],
-                        missing=[str(f.get("missing"))[:300]
+    return m.LandedCost(status=status, total=total, lines=lines,
+                        missing=[str(f.get("missing"))
                                  for f in verdict.get("follow_ups") or ()
-                                 if f.get("missing")][:10])
+                                 if f.get("missing")])
 
 
 def people_of(backend: "WorkspaceBackend", view: Any, ran: Mapping[str, Any]
@@ -1009,11 +1019,11 @@ def people_of(backend: "WorkspaceBackend", view: Any, ran: Mapping[str, Any]
             continue
         roles = [part.split(" ", 1)[0] for part in roles_step[len("roles: "):].split(", ")]
         roles = [r for r in roles if r in ROLE_WEIGHTS]
-        name = plain(value)
+        name = clean_person(plain(value))
         if name and roles:
-            people.append(m.Person(name=name[:120], role=", ".join(roles),
+            people.append(m.Person(name=name, role=", ".join(r.replace("_", " ") for r in roles),
                                    sources=[backend._source(view, handle)]))
-    return people[:20] or None
+    return people or None
 
 
 def page_hidden(backend: "WorkspaceBackend", view: Any, oid: str) -> Optional[m.Hidden]:
@@ -1041,14 +1051,14 @@ def late_of(backend: "WorkspaceBackend", view: Any, ran: Mapping[str, Any]
     late = ran.get("verdict")
     if not isinstance(late, Mapping) or late.get("state") in (None, "not_established"):
         return None, []
-    cited = [(str(f.get("text") or "")[:300], f["citation"])
+    cited = [(str(f.get("text") or ""), f["citation"])
              for f in late.get("facts") or ()
              if isinstance(f, Mapping) and isinstance(f.get("citation"), str)
              and f.get("openable")]
-    lines = [m.LateLine(line=text, sources=[backend._source(view, h)])
-             for text, h in cited][:20]
-    return m.ObjectStatus(state=str(late.get("state")), text=str(late.get("text"))[:600],
-                          sources=[backend._source(view, h) for _, h in cited][:4]), lines
+    lines = [m.LateLine(line=clean_text(text), sources=[backend._source(view, h)])
+             for text, h in cited]
+    return m.ObjectStatus(state=str(late.get("state")), text=clean_text(late.get("text")),
+                          sources=[backend._source(view, h) for _, h in cited]), lines
 
 
 # What a missing stage is called, and words a message about it uses (a reminder about a
@@ -1148,7 +1158,7 @@ def order_state(backend: Any, view: Any, oid: str) -> Optional[m.Fact]:
                          "read)"}[order.cls]
     return m.Fact(text=f"Order state: {words}",
                   sources=[backend._source(view, h) for h in dict.fromkeys(
-                      closing if order.cls == so.CLOSED and closing else handles)][:4],
+                      closing if order.cls == so.CLOSED and closing else handles)],
                   check="read_from_record")
 
 
@@ -1230,7 +1240,7 @@ def sales_order_view(label: str, values: Sequence[Mapping[str, Any]],
     if isinstance(ordered, str) and re.match(r"\d{4}-\d{2}-\d{2}", ordered) \
             and not any("import date" in f.text for f in facts
                         if f.text.startswith(presentation.field_label("order_date"))):
-        parts.append(f"ordered {ordered[:10]}")
+        parts.append(f"ordered {ordered[:10]}")  # guard-ok: an ISO timestamp's first ten characters are its date, not a cut
     if disputed:
         parts.append("its total and its lines disagree")
     elif shown is not None:
@@ -1293,7 +1303,7 @@ def raw_type_label(kind: str) -> str | None:
         return None
     # "Portal silver supplier": the data layer's name is no business word
     label = re.sub(r"\s+", " ", re.sub(r"\bsilver\b", "", label or "", flags=re.I)).strip()
-    return label[:80] if label else None
+    return label if label else None
 
 
 def link_words(name: str) -> str:
@@ -1394,8 +1404,8 @@ def link_groups(backend: "WorkspaceBackend", view: Any, oid: str, around: Mappin
             tier = tiers_of.get(o["object_id"])
             records.append(m.LinkRef(
                 object_id=o["object_id"], type=kind_of,
-                label=presentation.record_label(plain(o.get("display")), kind_of,
-                                                o["object_id"])[:200],
+                label=clean_text(presentation.record_label(plain(o.get("display")), kind_of,
+                                                           o["object_id"])),
                 open_url=object_url(kind_of, o["object_id"]),
                 tier=tier if isinstance(tier, str) else ("lead" if is_lead else None),
                 possible=is_lead, evidence=evidence))
@@ -1411,8 +1421,8 @@ def link_groups(backend: "WorkspaceBackend", view: Any, oid: str, around: Mappin
                     ".same_record_as")
                 else "customer" if other_type == "Customer" and direction == "forward"
                 else "fulfilment" if other_type in FULFILMENT_TYPES else "related")
-        out.append(m.LinkGroup(link_type=link_type[:120], direction=direction, name=name[:80],
-                               words=link_words(name)[:80], type=other_type[:80],
+        out.append(m.LinkGroup(link_type=link_type, direction=direction, name=name,
+                               words=link_words(name), type=other_type,
                                type_label=raw_type_label(other_type), role=role,
                                count=count, possible=n_leads, records=records))
     return out
@@ -1487,7 +1497,7 @@ def record_fields(row: Mapping[str, Any], limit: int = 60) -> dict[str, str]:
             for key, item in value.items():
                 add(f"{prefix}.{key}", item, depth + 1)
         elif not isinstance(value, list):
-            out[prefix[:80]] = plain(value) or ""
+            out[prefix] = plain(value) or ""
     for key, value in row.items():
         add(str(key), value, 0)
     return out
@@ -1509,7 +1519,7 @@ def source_records(view: Any, handle: str) -> m.SourceRecords:
         out.append(m.SourceRecord(
             record=m.ObjectRef(object_id=item["object_id"], type=kind,
                                label=presentation.record_label(plain(item.get("display")),
-                                                               kind, item["object_id"])[:200],
+                                                               kind, item["object_id"]),
                                open_url=object_url(kind, item["object_id"])),
             how="linked" if item.get("how") == "linked" else "from",
             link=presentation.plain_words(str(link).replace("_", " ")) if link else None))
@@ -1530,14 +1540,14 @@ def source_payload(handle: str, got: Mapping[str, Any], text_offset: int) -> m.S
     page = got.get("page") or {}
     following = page.get("next_text_offset") if isinstance(page, Mapping) else \
         got.get("next_text_offset")
-    title = plain(got.get("title")) if got.get("title") else None
+    title = clean_subject(plain(got.get("title")), max_len=200) if got.get("title") else None
     if title is None:
         # a message or file titled by its own subject or name (an email's subject line)
         for key in ("subject", "row.subject", "title", "row.title", "name", "row.name"):
             for source in (got, fields or {}):
                 value = source.get(key) if isinstance(source, Mapping) else None
                 if title is None and value not in (None, "") and not isinstance(value, list):
-                    title = (plain(value) or "")[:300] or None
+                    title = clean_subject(plain(value), max_len=200) or None
     if handle.startswith("original://") and isinstance(text, str):
         # A captured original's page reads as its text, titled by its file name; the
         # receipt's fields (hash, byte count) are no reading matter.
@@ -1548,7 +1558,7 @@ def source_payload(handle: str, got: Mapping[str, Any], text_offset: int) -> m.S
     return m.SourceView(handle=handle, system=system_of(handle), label=record_words(handle),
                         kind="text" if text is not None and not fields else "record",
                         title=title,
-                        text=text[:200_000] if isinstance(text, str) else None,
+                        text=text[:200_000] if isinstance(text, str) else None,  # guard-ok: one page's payload bound; the server pages the text and next_offset carries the rest
                         fields=fields or None,
                         as_of=got.get("captured_at") if isinstance(got.get("captured_at"),
                                                                   str) else None,

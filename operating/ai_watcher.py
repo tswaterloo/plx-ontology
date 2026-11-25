@@ -494,17 +494,17 @@ def _values_of(conn: sqlite3.Connection, ids: Sequence[str], props: Sequence[str
 def _props(values: Mapping[str, Sequence[Any]]) -> dict[str, str]:
     """property -> a digest of its values (what a change compares)."""
     return {prop: hashlib.sha256(json.dumps(sorted(str(v) for _, v in vals))
-                                 .encode("utf-8")).hexdigest()[:16]
+                                 .encode("utf-8")).hexdigest()[:16]  # guard-ok: fixed-length derived identifier, not content
             for prop, vals in values.items()}
 
 
 def _event_at(values: Mapping[str, Sequence[Any]], recorded: str, now: str) -> str:
     """A record's own newest time not after now (its timestamps and dates), else when its
     version was recorded."""
-    times = [str(v)[:19] for vals in values.values() for kind, v in vals
-             if kind in TIME_TYPES and isinstance(v, str) and str(v)[:19] <= now[:19]
+    times = [str(v)[:19] for vals in values.values() for kind, v in vals  # guard-ok: ISO seconds-precision comparison shape, not content
+             if kind in TIME_TYPES and isinstance(v, str) and str(v)[:19] <= now[:19]  # guard-ok: ISO seconds-precision comparison shape, not content
              and re.match(r"\d{4}-\d{2}-\d{2}", str(v))]
-    return max(times) if times else recorded[:19]
+    return max(times) if times else recorded[:19]  # guard-ok: ISO seconds-precision comparison shape, not content
 
 
 def _thread(values: Mapping[str, Sequence[Any]]) -> str | None:
@@ -522,7 +522,7 @@ def _key(text: str, salt: bytes) -> str:
     """A lowered address, domain or message id as the watcher keeps it: a keyed digest
     under the store's own salt (``key_salt``), never the text."""
     return hmac.new(salt, text.strip().lower().encode("utf-8"), hashlib.sha256
-                    ).hexdigest()[:32]
+                    ).hexdigest()[:32]  # guard-ok: fixed-length derived identifier, not content
 
 
 def _addresses(values: Mapping[str, Sequence[Any]], props: Sequence[str]) -> list[str]:
@@ -622,7 +622,7 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
     # the change feed's commit, once the batch is recorded here (``_postgres_changes``)
     recorded = postgres[4] if postgres is not None and len(postgres) > 4 else None
     if postgres is not None:
-        digest, layers, open_layer, owned_of = postgres[:4]
+        digest, layers, open_layer, owned_of = postgres[:4]  # guard-ok: fixed tuple unpack, not content
     else:
         (digest, layers), open_layer, owned_of = _pointer(store), _ro, _layer_owned
     fresh = [layer for layer in layers if not ws.execute(
@@ -729,7 +729,7 @@ def discover(ws: sqlite3.Connection, store: Path, *, now: dt.datetime,
                         counts["restamped"] += 1
                         continue
                 event = _event_at(vals, row["recorded_at"], now_text)
-                if change == "new" and event < since[:19]:
+                if change == "new" and event < since[:19]:  # guard-ok: ISO seconds-precision comparison shape, not content
                     counts["old_news"] += 1
                     continue
                 message = is_message(row["l1_handle"])
@@ -876,7 +876,7 @@ def pick(ws: sqlite3.Connection, *, now: dt.datetime, max_reads: int = MAX_READS
     entries it takes; the others stay queued. Aged entries leave the queue
     (``aged_out``). ``origin``: object type -> ``curated`` or ``generated`` (the schema's
     ``origin_of_type``)."""
-    since = _iso(now - dt.timedelta(hours=window_hours))[:19]
+    since = _iso(now - dt.timedelta(hours=window_hours))[:19]  # guard-ok: ISO seconds-precision comparison shape, not content
     aged = ws.execute("DELETE FROM queue WHERE event_at < ? AND change = 'new' AND "
                       "claimed IS NULL", (since,)).rowcount
     aged += ws.execute("DELETE FROM queue WHERE queued_at < ? AND claimed IS NULL",
@@ -931,7 +931,7 @@ def reads_for(batch: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
             else list(row["changed"])
         args: dict[str, Any] = {"object_id": row["object_id"], "response_format": "concise"}
         if changed:
-            args["properties"] = changed[:50]
+            args["properties"] = changed
         out.append(("plx.object", args))
         if row["change"] == "changed" and changed and row.get("since"):
             out.append(("plx.object", {**args, "as_known_at": row["since"]}))
@@ -942,7 +942,7 @@ def reads_for(batch: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
             continue
         args = {"object_id": sample["object_id"], "response_format": "concise"}
         if group["changed"]:
-            args["properties"] = group["changed"][:50]
+            args["properties"] = group["changed"]
         out.append(("plx.object", args))
     return out
 
@@ -1039,15 +1039,15 @@ def task(batch: Mapping[str, Any], events: Sequence[Mapping[str, str]],
          ) -> str:
     """The session's whole task for one batch (its reads follow, made in the session)."""
     lines = [INSTRUCTION, "",
-             f"Now: {_iso(now)[:16]}Z. The changes of this batch, each read for you below "
+             f"Now: {_iso(now)[:16]}Z. The changes of this batch, each read for you below "  # guard-ok: minute-precision clock shape in prose, not content
              "as this session's reader (\"changed\" lists the properties that changed; a "
              "second read shows the values before, as known at the time given):"]
     for n, row in enumerate(batch["entries"], start=1):
         changed = json.loads(row["changed"]) if isinstance(row["changed"], str) \
             else row["changed"]
-        what = row["change"] + (f" ({', '.join(changed[:12])})" if changed else "")
+        what = row["change"] + (f" ({', '.join(changed)})" if changed else "")
         lines.append(f"{n}. {row['object_type']} {row['object_id']}: {what}, "
-                     f"{row['event_at'][:16]}{_about(row)}")
+                     f"{row['event_at'][:16]}{_about(row)}")  # guard-ok: minute-precision clock shape in prose, not content
     for group in batch["bulk"]:
         if group.get("messages"):
             lines.append(f"- {group['count']} {group['object_type']} messages from one "
@@ -1055,17 +1055,17 @@ def task(batch: Mapping[str, Any], events: Sequence[Mapping[str, str]],
                          "company does not write to (one stream; one sample read: "
                          f"{group['sample']['object_id']})")
             continue
-        what = (f"changed {', '.join(group['changed'][:8])}" if group["changed"]
+        what = (f"changed {', '.join(group['changed'])}" if group["changed"]
                 else "new")
         lines.append(f"- {group['count']} {group['object_type']} records {what} together "
                      f"(one bulk run; one sample read: {group['sample']['object_id']})")
     if events:
         lines += ["", "Already flagged by the rule-based checks (do not raise these again "
                   "unless a change here makes them materially different):"]
-        lines += [f"- {e['kind']} on {e['object_id']}" for e in events[:60]]
+        lines += [f"- {e['kind']} on {e['object_id']}" for e in events]
     if own:
         lines += ["", "Already raised by you earlier and still open (do not raise again):"]
-        lines += [f"- {o['title']} ({o['subject']})" for o in own[:40]]
+        lines += [f"- {o['title']} ({o['subject']})" for o in own]
     lines += ["", "Read more (plx.read, plx.object, plx.around, plx.find) only where an "
               "item needs it: the thread a message continues, the order or customer it "
               "names, the other system's record it contradicts.", "", GATE_RULE, "",
@@ -1113,7 +1113,7 @@ def retry_task(title: str, retry: Mapping[str, Any], refusals: Sequence[str], *,
     for key, label in (("subject", "Subject record"), ("text", "Submitted text"),
                        ("why", "Why it was raised"), ("next_step", "Suggested next step")):
         if isinstance(retry.get(key), str) and retry[key].strip():
-            lines.append(f"{label}: {retry[key].strip()[:1500]}")
+            lines.append(f"{label}: {retry[key].strip()}")
     if retry.get("cited"):
         lines += ["Records it cited:", *(f"- {h}" for h in retry["cited"])]
     rule = (OUTPUT_RULE.replace("{codes}", ", ".join(sorted(departments)))
@@ -1144,7 +1144,7 @@ def final_items(final_text: str) -> list[dict[str, Any]]:
             continue
         items = value.get("items") if isinstance(value, dict) else None
         if isinstance(items, list):
-            return [i for i in items if isinstance(i, dict)][:MAX_ITEMS]
+            return [i for i in items if isinstance(i, dict)]
     return []
 
 
@@ -1215,7 +1215,7 @@ def submissions(events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]
             "cited": list(dict.fromkeys(
                 h for c in answer.get("claims") or () if isinstance(c, Mapping)
                 for h in _cited({"citations": c.get("citations"),
-                                 "value_claims": [c]}))) [:MAX_RETRY_CITES]}
+                                 "value_claims": [c]})))}
     return out
 
 
@@ -1379,8 +1379,8 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
         if question not in named:
             items.append({"title": question})
     out = []
-    for item in items[:MAX_ITEMS * 2]:
-        title = str(item.get("title") or "").strip()[:300]
+    for item in items:
+        title = str(item.get("title") or "").strip()
         decision = decisions.get(title)
         claims = decision["claims"] if decision else []
         if decision is None:
@@ -1424,7 +1424,7 @@ def proposals(run: Any, *, departments: Iterable[str]) -> list[dict[str, Any]]:
             "text": text,
             "why": why,
             "next_step": next_step,
-            "departments": [d for d in item.get("departments") or () if d in codes][:4],
+            "departments": [d for d in item.get("departments") or () if d in codes],
             "priority": priority, "claim_kind": kind, "gate": gate,
             "claims": [{"id": c.get("id"), "text": _plain(c.get("text")),
                         "citations": c["citations"]} for c in claims],
@@ -1625,7 +1625,7 @@ def _test_marked(src: Any, object_id: str) -> list[dict[str, Any]]:
     texts = [str(v) for v in item["row"].values() if isinstance(v, (str, int))]
     hits = sorted({m.group(0) for text in texts for m in tc.TEST_MARK.finditer(text)})
     return [{"rule": "T1", "text": "the record carries test/UAT/demo marks: "
-             + "; ".join(hits)[:200], "citations": [item["citation"]]}] if hits else []
+             + "; ".join(hits), "citations": [item["citation"]]}] if hits else []
 
 
 def truth(src: Any, item: Mapping[str, Any], objects: Sequence[str]) -> dict[str, Any]:
@@ -1676,16 +1676,16 @@ def truth(src: Any, item: Mapping[str, Any], objects: Sequence[str]) -> dict[str
     else:
         name = "not_checkable"
     return {"verdict": name, "contradicted": contradicted, "checks": verdicts,
-            "reasons": [{"rule": r.get("rule"), "text": str(r.get("text"))[:300],
-                         "citations": list(r.get("citations") or ())[:4]}
-                        for r in reasons][:8]}
+            "reasons": [{"rule": r.get("rule"), "text": str(r.get("text")),
+                         "citations": list(r.get("citations") or ())}
+                        for r in reasons]}
 
 
 # --------------------------------------------------------------------------- fold
 
 def fingerprint(subject: str, groups: Sequence[Sequence[str]]) -> str:
     roots = sorted({handle_root(h) for group in groups for h in group})
-    return hashlib.sha256(json.dumps([subject, roots]).encode("utf-8")).hexdigest()[:20]
+    return hashlib.sha256(json.dumps([subject, roots]).encode("utf-8")).hexdigest()[:20]  # guard-ok: fixed-length derived cache key, not content
 
 
 def detector_covers(inbox: Path, subject: str, groups: Sequence[Sequence[str]]) -> bool:
@@ -1761,7 +1761,7 @@ def fold(ws: sqlite3.Connection, items: Sequence[Mapping[str, Any]], *, run_id: 
                                    _cite_rows(same[0], item))
                     counts["refreshed"] += 1
                     continue
-            item_id = "aw-" + hashlib.sha256(f"{fp}|{state}|{at}".encode()).hexdigest()[:16]
+            item_id = "aw-" + hashlib.sha256(f"{fp}|{state}|{at}".encode()).hexdigest()[:16]  # guard-ok: fixed-length derived identifier, not content
             ws.execute(
                 "INSERT OR REPLACE INTO items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                 "?, ?, ?, ?)",
@@ -2036,7 +2036,7 @@ def set_item_state(store: Path, item_id: str, *, reader: str, state: str,
         else:
             ws.execute("INSERT OR REPLACE INTO item_states VALUES (?, ?, ?, ?, ?, ?)",
                        (item_id, reader, state, until,
-                        (reason or "").strip()[:500] or None, _iso(now)))
+                        (reason or "").strip() or None, _iso(now)))
     return {"item_id": item_id, "state": state, "until": until, "at": _iso(now)}
 
 
@@ -2154,7 +2154,7 @@ def _rollback_store(path: Path) -> bool:
             header = handle.read(20)
     except OSError:
         return False
-    return header[:16] == b"SQLite format 3\x00" and header[18] == 1
+    return header[:16] == b"SQLite format 3\x00" and header[18] == 1  # guard-ok: fixed binary-format check, not content
 
 
 def isolated_state(real: Path, scratch: Path, *, copy_bytes: int = ISOLATE_COPY_BYTES
@@ -2178,14 +2178,14 @@ def isolated_state(real: Path, scratch: Path, *, copy_bytes: int = ISOLATE_COPY_
                                                     for d in dirs)
     for here, dirs, files in os.walk(real):
         rel = Path(here).relative_to(real)
-        if rel.parts[:1] == (WATCH_DIR,):
-            dirs[:] = []
+        if rel.parts[:1] == (WATCH_DIR,):  # guard-ok: fixed binary-format check, not content
+            dirs[:] = []  # guard-ok: in-place os.walk pruning, not content
             continue
         if rel.parts and held[here] > ISOLATE_DIR_ENTRIES:
             # a content store (blobs by digest): read where it is, never walked
             if not (scratch / rel).is_symlink():
                 (scratch / rel).symlink_to(here)
-            dirs[:] = []
+            dirs[:] = []  # guard-ok: in-place os.walk pruning, not content
             continue
         (scratch / rel).mkdir(parents=True, exist_ok=True)
         os.chmod(scratch / rel, os.stat(here).st_mode & 0o777)
@@ -2215,7 +2215,7 @@ def isolated_state(real: Path, scratch: Path, *, copy_bytes: int = ISOLATE_COPY_
                 shutil.copy2(source, target)
             else:   # a capture's content or a large store: read where it is
                 target.symlink_to(source)
-        dirs[:] = [d for d in dirs if not (Path(here) / d).is_symlink()]
+        dirs[:] = [d for d in dirs if not (Path(here) / d).is_symlink()]  # guard-ok: in-place os.walk pruning, not content
     return scratch
 
 
@@ -2607,7 +2607,7 @@ def _note_code(ws: sqlite3.Connection, run_id: int, now: dt.datetime) -> None:
 def report(runs: Sequence[Mapping[str, Any]], *, hours: float, now: dt.datetime) -> str:
     """The dry run's report: per run what it reviewed, and per raised item what it is, why
     it matters, its citations and whether the gate and the truth check passed it."""
-    lines = [f"# AI watcher dry run ({_iso(now)[:16]}Z, last {hours:g} h of deltas)", "",
+    lines = [f"# AI watcher dry run ({_iso(now)[:16]}Z, last {hours:g} h of deltas)", "",  # guard-ok: minute-precision clock shape in prose, not content
              "Read-only: the watcher read the served projection and its delta layers, made "
              "its reads as its one reader through the host's tools, and wrote only its own "
              "store in this folder. Nothing was sent.", ""]

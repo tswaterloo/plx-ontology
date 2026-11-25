@@ -412,3 +412,59 @@ class WhyDidItChange(unittest.TestCase):
             (filtered,) = list(b.insight_why_stream(owner, "measure_invoices_issued",
                                                     drill="customer", filter={"status": "posted"}))
             self.assertEqual((filtered["source"], len(live_calls)), ("statement", 1))
+
+
+class LastGoodDiskAndStoredFallback(unittest.TestCase):
+    def test_last_good_reads_from_disk_after_restart_and_respects_age(self):
+        stamp, offset = [7], [0.0]
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PageStore(pathlib.Path(tmp), code="c1")
+            a = ("employee:a",)
+            api = ic.Kept(lambda: stamp[0], fresh=300.0, disk=store,
+                          wall=lambda: time.time() + offset[0])
+            api.get((a, "S"), lambda: {"rows": "A7", "access": "acc-1"})
+            # fresh process with empty memory: last_good finds the disk copy
+            restarted = ic.Kept(lambda: stamp[0], fresh=300.0, disk=store,
+                                wall=lambda: time.time() + offset[0])
+            self.assertEqual(restarted.last_good((a, "S"))["rows"], "A7")
+            # expired past LAST_GOOD_SECONDS: returns None
+            offset[0] = ic.LAST_GOOD_SECONDS + 10
+            self.assertIsNone(restarted.last_good((a, "S")))
+
+    def test_stored_only_serves_last_good_with_as_of_instead_of_504(self):
+        from operator_api import insights as ins
+        from operator_api.tests import test_insights as ti
+        stamp = [7]
+        out = ti.sql_out(ti.Mixin.rows, ti.OUTPUT)
+        out["as_of"] = None
+        b = ti.Backend(out, everyone=True)
+        later = ti.Later()
+        keeper = ic.Keeper(ic.Kept(lambda: stamp[0], fresh=300.0),
+                           lambda r, sql: b._insight_read(r, sql), pool=later)
+        b._insight_keep = keeper
+        owner = ti.person("employee:owner")
+        first = b.insight_result(owner, "team_output")
+        # simulate door stamp unreadable and background read failing with 504 timeout
+        stamp[0] = None
+        slot = (ic.reader_key(owner), ins.ref(next(s for s in ins.builtin() if s.id == "team_output")))
+        keeper.failed[slot] = ins.Refused("insight_too_slow", "30-second")
+        got = b.insight_result(owner, "team_output", stored_only=True)
+        self.assertEqual(got.rows, first.rows)
+        self.assertEqual(got.as_of, first.read_at)
+        # access state changed: refuses stale fallback and raises the 504
+        b.access = ("policy-2", False, "excl-1", "marks-1")
+        with self.assertRaises(ins.Refused) as ctx:
+            b.insight_result(owner, "team_output", stored_only=True)
+        self.assertEqual(ctx.exception.status, 504)
+
+    def test_fixed_dates_formats_plain_english_dates(self):
+        from operator_api import insights as ins
+        self.assertEqual(
+            ins.fixed_dates("SELECT * FROM sales WHERE d >= '2026-01-01' AND d <= '2026-11-25'"),
+            "1 Jan 2026 to 25 Nov 2026",
+        )
+        self.assertEqual(
+            ins.fixed_dates("SELECT * FROM sales WHERE d = '2026-11-25'"),
+            "25 Nov 2026",
+        )
+        self.assertIsNone(ins.fixed_dates("SELECT * FROM sales WHERE d >= now() - interval '7 days'"))

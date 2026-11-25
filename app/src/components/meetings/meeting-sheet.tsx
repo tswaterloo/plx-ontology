@@ -6,12 +6,13 @@ import { useEffect, useState } from "react";
 import { deltaText, figureText } from "@/components/brief-view";
 import { SourceChips } from "@/components/source-chip";
 import { Sheet } from "@/components/ui/sheet";
+import { LoadProblem } from "@/components/ui/notice";
 import { getMeetingBrief } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDate, formatMoney, objectHref, readable, safeHref } from "@/lib/format";
 import type { Brief, BriefSection, MeetingInvitee, UpcomingMeeting } from "@/lib/types";
-import { clock, dayTitle, durationText, endOf, minutes, relative, startOf, whenOf } from "./calendar";
+import { cleanMeetingAgenda, clock, dayTitle, durationText, endOf, minutes, relative, startOf, whenOf } from "./calendar";
 import { PartyLink } from "./upcoming";
 
 const ROLE: Record<MeetingInvitee["role"], string> = { organizer: "Organizer", required: "Required", optional: "Optional", resource: "Room" };
@@ -63,6 +64,7 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
   const title = m ? (m.private ? "Private event" : m.object.label) : "Meeting";
   const people = m ? [m.organizer, ...(m.attendees ?? [])].filter((p): p is MeetingInvitee => !!p) : [];
   const accepted = people.filter((p) => p.response === "accepted" || p.response === "organizer").length;
+  const agendaLines = m ? cleanMeetingAgenda(m.agenda) : [];
   return (
     <Sheet
       open={!!m}
@@ -72,18 +74,26 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
       footer={
         m && !m.private ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Link href={safeHref(m.brief_url) ?? "/meetings"} className="inline-flex h-8 items-center rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]">
+            <Link
+              href={safeHref(m.brief_url) ?? "/meetings"}
+              className="inline-flex h-8 items-center rounded-md border border-border-strong bg-bg px-3 text-[13px] font-medium text-fg transition-[background-color,border-color,transform] hover:border-control hover:bg-hover active:scale-[0.98]"
+            >
               Open full prep
             </Link>
             {m.join_url && whenOf(m, now) !== "past" && (
-              <a href={safeHref(m.join_url) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] font-medium text-accent hover:bg-hover">
+              <a
+                href={safeHref(m.join_url) ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3 text-[13px] font-medium text-accent-fg transition-[filter,transform] hover:brightness-[1.06] active:scale-[0.98]"
+              >
                 <Video className="size-[15px]" strokeWidth={1.8} aria-hidden />
                 Join in Teams
               </a>
             )}
             <Link
               href={`/ask?q=${encodeURIComponent(`Prepare me for the meeting "${m.object.label}"`)}&object=${encodeURIComponent(m.object.object_id)}&brief=${encodeURIComponent(m.object.type)}`}
-              className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[13px] text-muted hover:bg-hover hover:text-fg"
+              className="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[13px] text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg active:scale-[0.98]"
             >
               <MessageCircle className="size-[15px]" strokeWidth={1.8} aria-hidden />
               Ask about it
@@ -101,7 +111,7 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
             </p>
             <p className="num text-muted">
               {s ? dayTitle(s, now) : "Time not read"}
-              {s && !m.all_day && ` · ${clock(s)}${e ? ` – ${clock(e)}` : ""}`}
+              {s && !m.all_day && ` · ${clock(s)}${e ? ` - ${clock(e)}` : ""}`}
               {m.all_day && " · all day"}
               {durationText(minutes(m)) && ` · ${durationText(minutes(m))}`}
               {relative(m, now) && <span className={cn("ml-1", whenOf(m, now) === "now" ? "text-accent" : "text-live")}> · {relative(m, now)}</span>}
@@ -147,7 +157,16 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
               )}
 
               <div>
-                <H count={people.length}>People{people.length > 0 && <span className="font-normal normal-case">· {accepted} accepted</span>}</H>
+                <H>
+                  {people.length > 0 ? (
+                    <span className="normal-case">
+                      {people.length} {people.length === 1 ? "person" : "people"}
+                      <span className="font-normal"> · {accepted} accepted</span>
+                    </span>
+                  ) : (
+                    "People"
+                  )}
+                </H>
                 {m.people_withheld ? (
                   <p className="text-muted">Not shown right now. Try again in a few minutes.</p>
                 ) : people.length === 0 ? (
@@ -158,7 +177,18 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
                       {people.map((p) => (
                         <tr key={`${p.role}-${p.address ?? p.name}`}>
                           <td className="py-1.5 pr-3">
-                            <span className="font-medium">{p.name}</span>
+                            {!p.outside && p.role !== "resource" && p.name ? (
+                              <Link
+                                href={`/team?person=${encodeURIComponent(p.name)}`}
+                                onClick={onClose}
+                                className="font-medium text-fg hover:text-accent hover:underline"
+                                title={`Open ${p.name} on Team`}
+                              >
+                                {p.name}
+                              </Link>
+                            ) : (
+                              <span className="font-medium">{p.name}</span>
+                            )}
                             {p.address && <span className="block text-[12px] text-muted">{p.address}</span>}
                           </td>
                           <td className="py-1.5 pr-3 text-[12px] text-muted">
@@ -175,10 +205,10 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
                 )}
               </div>
 
-              {m.agenda && (
+              {agendaLines.length > 0 && (
                 <div>
                   <H>Agenda</H>
-                  <p className="whitespace-pre-line leading-[21px]">{m.agenda}</p>
+                  <p className="whitespace-pre-line leading-[21px]" data-testid="meeting-agenda">{agendaLines.join("\n")}</p>
                 </div>
               )}
 
@@ -217,6 +247,7 @@ export function MeetingSheet({ meeting: m, now, onClose }: { meeting: UpcomingMe
 function PrepPack({ meeting }: { meeting: UpcomingMeeting }) {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [round, setRound] = useState(0);
   useEffect(() => {
     const ctl = new AbortController();
     setBrief(null);
@@ -225,8 +256,8 @@ function PrepPack({ meeting }: { meeting: UpcomingMeeting }) {
       if (!ctl.signal.aborted) setError(e);
     });
     return () => ctl.abort();
-  }, [meeting.object.type, meeting.object.object_id]);
-  if (error) return <p className="text-[12px] text-muted">Prep pack not read: {plainError(error)}</p>;
+  }, [meeting.object.type, meeting.object.object_id, round]);
+  if (error) return <LoadProblem message={`Prep pack not read: ${plainError(error)}`} onRetry={() => setRound((n) => n + 1)} />;
   if (!brief) return <p className="text-[12px] text-muted" role="status">Reading the prep pack</p>;
   const shown = brief.sections.filter((s) => (s.rows ?? []).length > 0 || (s.figures ?? []).length > 0);
   const quiet = brief.sections.filter((s) => !shown.includes(s) && s.state !== "finance_marked");

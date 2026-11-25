@@ -691,7 +691,7 @@ class AlertRules(unittest.TestCase):
 
     def test_the_migration_is_the_runners_ddl_and_a_run_works_on_it(self):
         sql = "".join((Path(al.__file__).parent / "migrations" / name).read_text()
-                      for name in ("0044_alerts.sql", "0045_alerts_read_time.sql"))
+                      for name in ("0044_alerts.sql", "0045_alerts_read_time.sql", "0086_alerts_int_classes.sql"))
         body = "\n".join(ln for ln in sql.splitlines() if not ln.startswith("--"))
         self.assertEqual([st.strip().rstrip(";") for st in body.split(";\n") if st.strip()],
                          [st.strip() for st in al._ddl("biz")])
@@ -964,10 +964,19 @@ class AlertRules(unittest.TestCase):
         got = self.fire("customer_demand_drop")["customer_demand_drop"]
         self.assertEqual(got["open"], 1)
         self.assertEqual(set(self.rows("customer_demand_drop")), {"big"})
-        got = self.conn.execute(f"SELECT source_table, sources, record_shows FROM {S}.alerts "
+        got = self.conn.execute(f"SELECT source_table, sources, record_shows, why FROM {S}.alerts "
                                 "WHERE rule = 'customer_demand_drop'").fetchone()
         self.assertEqual((got[0], sorted(got[1]), got[2]),
                          ("sales_orders", [f"b{i}" for i in range(6)], ["name"]))
+        self.assertIn("Big Co has no orders in the last 90 days (down from a usual CAD", got[3])
+        self.assertNotIn("ordered CAD 0.00", got[3])
+        # when the customer does have positive recent spend below half the run-rate, state it
+        self.put("sales_orders", "b-low", customer_handle="big", status="open",
+                 value=Decimal(100), value_currency="CAD", order_date=dt.date(2026, 11, 1))
+        self.fire("customer_demand_drop")
+        low_summary = self.conn.execute(f"SELECT why FROM {S}.alerts "
+                                        "WHERE rule = 'customer_demand_drop'").fetchone()[0]
+        self.assertIn("Big Co ordered CAD 100.00 in the last 90 days against a usual CAD", low_summary)
         self.put("sales_orders", "b-back", customer_handle="big", status="open",
                  value=Decimal(5000), value_currency="CAD", order_date=dt.date(2026, 11, 1))
         self.assertEqual(self.fire("customer_demand_drop")["customer_demand_drop"]["resolved"], 1)

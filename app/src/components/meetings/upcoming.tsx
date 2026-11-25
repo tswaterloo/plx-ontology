@@ -1,10 +1,11 @@
 "use client";
 
-import { Building2, ChevronLeft, ChevronRight, ListChecks, Lock, MapPin, Truck, Users, Video } from "lucide-react";
+import { Building2, ChevronLeft, ChevronRight, ListChecks, Lock, MapPin, Search, Truck, Users, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRead } from "@/lib/use-read";
 import { StoredAge } from "@/components/ui/stored-age";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Pending } from "@/components/ui/skeleton";
 import { LoadProblem } from "@/components/ui/notice";
@@ -16,6 +17,7 @@ import type { ObjectRef, UpcomingMeeting, UpcomingMeetings } from "@/lib/types";
 import {
   addDays,
   byDay,
+  cleanMeetingAgenda,
   clock,
   dayKey,
   dayTitle,
@@ -36,6 +38,7 @@ import {
 import { MeetingSheet } from "./meeting-sheet";
 
 type Layout = "agenda" | "week";
+type MeetingFilter = "all" | "external" | "carried";
 
 /** The current minute, ticking once a minute so "in 40 min" and the now line stay true. */
 function useNow(): Date {
@@ -52,30 +55,143 @@ function useNow(): Date {
 export function Upcoming() {
   const { data: list, error, retry, at } = useRead<UpcomingMeetings>("/api/brief/meetings", (s) => getUpcomingMeetings(s));
   const [layout, setLayout] = useState<Layout>("agenda");
+  const [filter, setFilter] = useState<MeetingFilter>("all");
+  const [query, setQuery] = useState("");
   const [open, setOpen] = useState<UpcomingMeeting | null>(null);
   const now = useNow();
+
+  const meetings = list?.meetings ?? [];
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return meetings.filter((m) => {
+      if (filter === "external" && (m.parties ?? []).length === 0 && outsideDomains(m).length === 0) return false;
+      if (filter === "carried" && (m.open_items ?? []).length === 0) return false;
+      if (!q) return true;
+      const hay = [
+        m.private ? "private event" : m.object.label,
+        m.location ?? "",
+        m.organizer?.name ?? "",
+        ...(m.attendees ?? []).map((a) => `${a.name} ${a.address ?? ""}`),
+        ...(m.parties ?? []).map((p) => p.label),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [meetings, filter, query]);
+
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!list) return <Pending label="Reading your calendar" />;
-  if (list.meetings.length === 0)
+  if (meetings.length === 0)
     return <EmptyState title="No meetings today or in the next two weeks." line="A customer or supplier page has a Prep button for any meeting." />;
+
+  const hasFilter = filter !== "all" || query.trim().length > 0;
+  const externalCount = meetings.filter((m) => (m.parties ?? []).length > 0 || outsideDomains(m).length > 0).length;
+  const carriedCount = meetings.filter((m) => (m.open_items ?? []).length > 0).length;
+
   return (
     <div className="space-y-4" data-testid="upcoming-meetings">
       <StoredAge at={at} />
-      <Summary meetings={list.meetings} now={now} layout={layout} onLayout={setLayout} />
-      {layout === "agenda" ? (
+      <Summary meetings={meetings} now={now} layout={layout} onLayout={setLayout} onOpen={setOpen} />
+      <div className="flex flex-wrap items-center gap-2" data-testid="meetings-filters">
+        <div role="group" aria-label="Filter meetings" className="inline-flex flex-wrap items-center gap-1">
+          {(
+            [
+              ["all", "All", meetings.length],
+              ...(externalCount > 0 ? [["external", "External", externalCount] as const] : []),
+              ...(carriedCount > 0 ? [["carried", "With action items", carriedCount] as const] : []),
+            ] as const
+          ).map(([key, label, count]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={filter === key}
+              onClick={() => setFilter(key)}
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] transition-colors cursor-pointer",
+                filter === key ? "bg-surface-2 font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
+              )}
+            >
+              {label}
+              <span className="num text-[11px] text-faint">{count}</span>
+            </button>
+          ))}
+        </div>
+        <label className="relative ml-auto inline-flex items-center">
+          <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" strokeWidth={2} aria-hidden />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter meetings or people"
+            aria-label="Filter meetings or people"
+            className="h-8 w-56 max-w-full rounded-md border border-border bg-bg pl-8 pr-7 text-[12.5px] text-fg outline-none transition-colors hover:border-border-strong focus:border-accent placeholder:text-faint"
+          />
+          {query && (
+            <button
+              type="button"
+              aria-label="Clear meeting filter"
+              onClick={() => setQuery("")}
+              className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg cursor-pointer"
+            >
+              <X className="size-3" aria-hidden />
+            </button>
+          )}
+        </label>
+        {hasFilter && (
+          <button
+            type="button"
+            onClick={() => {
+              setFilter("all");
+              setQuery("");
+            }}
+            className="h-7 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      {filtered.length === 0 ? (
+        <div className="py-10 text-center text-[13px] text-muted">
+          <p>No meetings match these filters.</p>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="mt-3"
+            onClick={() => {
+              setFilter("all");
+              setQuery("");
+            }}
+          >
+            Clear filters
+          </Button>
+        </div>
+      ) : layout === "agenda" ? (
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
-          <Agenda meetings={list.meetings} now={now} onOpen={setOpen} />
-          <Rail meetings={list.meetings} now={now} onOpen={setOpen} />
+          <Agenda meetings={filtered} now={now} onOpen={setOpen} />
+          <Rail meetings={filtered} now={now} onOpen={setOpen} />
         </div>
       ) : (
-        <Week meetings={list.meetings} now={now} onOpen={setOpen} />
+        <Week meetings={filtered} now={now} onOpen={setOpen} />
       )}
       <MeetingSheet meeting={open} now={now} onClose={() => setOpen(null)} />
     </div>
   );
 }
 
-function Summary({ meetings, now, layout, onLayout }: { meetings: UpcomingMeeting[]; now: Date; layout: Layout; onLayout: (l: Layout) => void }) {
+function Summary({
+  meetings,
+  now,
+  layout,
+  onLayout,
+  onOpen,
+}: {
+  meetings: UpcomingMeeting[];
+  now: Date;
+  layout: Layout;
+  onLayout: (l: Layout) => void;
+  onOpen: (m: UpcomingMeeting) => void;
+}) {
   const today = meetings.filter((m) => startOf(m) && dayKey(startOf(m)!) === dayKey(now));
   const left = today.filter((m) => whenOf(m, now) !== "past");
   const outside = meetings.filter((m) => (m.parties ?? []).length > 0 || outsideDomains(m).length > 0);
@@ -93,8 +209,15 @@ function Summary({ meetings, now, layout, onLayout }: { meetings: UpcomingMeetin
           <div className="min-w-0">
             <dt className="text-muted">Next</dt>
             <dd className="max-w-[28ch] truncate text-[13px] font-medium">
-              <span className={cn("num mr-1.5", whenOf(next, now) === "now" ? "text-accent" : "text-live")}>{relative(next, now)}</span>
-              {next.object.label}
+              <button
+                type="button"
+                onClick={() => onOpen(next)}
+                className="max-w-full truncate text-left hover:underline cursor-pointer"
+                title={next.private ? "Private event" : next.object.label}
+              >
+                <span className={cn("num mr-1.5", whenOf(next, now) === "now" ? "text-accent" : "text-live")}>{relative(next, now)}</span>
+                {next.private ? "Private event" : next.object.label}
+              </button>
             </dd>
           </div>
         )}
@@ -138,7 +261,7 @@ function Agenda({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: D
         const total = day.meetings.reduce((n, m) => n + (minutes(m) ?? 0), 0);
         return (
           <section key={day.key} aria-label={dayTitle(day.date, now)} data-today={isToday || undefined}>
-            <h3 className={cn("sticky top-[52px] z-10 flex items-baseline justify-between border-b bg-bg py-1.5 text-[13px] font-semibold", isToday ? "border-accent text-accent" : "border-border")}>
+            <h3 className={cn("sticky top-12 z-10 flex items-baseline justify-between border-b bg-canvas py-1.5 text-[13px] font-semibold", isToday ? "border-accent text-accent" : "border-border")}>
               <span>{dayTitle(day.date, now)}</span>
               <span className="num text-[12px] font-normal text-muted">
                 {day.meetings.length} · {durationText(total) ?? "0 min"}
@@ -166,7 +289,7 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
   const { names, more } = peopleLine(m);
   const domains = outsideDomains(m);
   const items = m.open_items ?? [];
-  const agenda = m.agenda?.split(/\n+/).map((l) => l.trim()).filter(Boolean) ?? [];
+  const agenda = cleanMeetingAgenda(m.agenda);
   return (
     <li
       className={cn(
@@ -179,7 +302,7 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
       onClick={() => onOpen(m)}
     >
       <div className="num text-[12px] leading-5">
-        <div className={cn("font-medium", when === "past" ? "text-muted" : "text-fg")}>{s ? clock(s) : "—"}</div>
+        <div className={cn("font-medium", when === "past" ? "text-muted" : "text-fg")}>{s ? clock(s) : "-"}</div>
         <div className="text-faint">{m.all_day ? "all day" : e ? clock(e) : null}</div>
         {rel && <div className={cn(when === "now" ? "text-accent" : when === "soon" ? "text-live" : "text-faint")}>{rel}</div>}
       </div>
@@ -336,16 +459,25 @@ export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; n
   const anyAllDay = inWeek.some((m) => m.all_day);
   return (
     <div className="min-w-0 space-y-2" data-testid="meetings-week">
-      <div className="flex items-center gap-1 text-[13px]">
-        <button type="button" aria-label="Earlier week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset <= bounds.min} onClick={() => setOffset((o) => o - 1)}>
+      <div className="flex items-center gap-1.5 text-[13px]">
+        <button type="button" aria-label="Earlier week" className="flex size-7 items-center justify-center rounded-md border border-border bg-bg transition-colors hover:border-border-strong hover:bg-hover disabled:pointer-events-none disabled:opacity-40 cursor-pointer" disabled={offset <= bounds.min} onClick={() => setOffset((o) => o - 1)}>
           <ChevronLeft className="size-4" aria-hidden />
         </button>
         <span className="min-w-[11rem] text-center font-medium">
           Week of {monday.toLocaleDateString("en-GB", { day: "numeric", month: "short" }).replace("Sept", "Sep")}
         </span>
-        <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md hover:bg-hover disabled:opacity-40 cursor-pointer" disabled={offset >= bounds.max} onClick={() => setOffset((o) => o + 1)}>
+        <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md border border-border bg-bg transition-colors hover:border-border-strong hover:bg-hover disabled:pointer-events-none disabled:opacity-40 cursor-pointer" disabled={offset >= bounds.max} onClick={() => setOffset((o) => o + 1)}>
           <ChevronRight className="size-4" aria-hidden />
         </button>
+        {offset !== 0 && (
+          <button
+            type="button"
+            onClick={() => setOffset(0)}
+            className="ml-1 inline-flex h-7 items-center rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer"
+          >
+            This week
+          </button>
+        )}
       </div>
       <div className="overflow-x-auto">
         <div className="grid min-w-[880px] grid-cols-[52px_repeat(7,minmax(0,1fr))] border-t border-l border-border">

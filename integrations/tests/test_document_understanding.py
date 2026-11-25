@@ -1068,6 +1068,9 @@ class BrokenPdfParserTest(unittest.TestCase):
                         patch.object(du.child_process, "run", side_effect=poppler(opened)):
                     if layer is None:
                         self.assertIsNone(du.local_pdf_text_layer(b"%PDF-1.4\n"))
+                    elif layer == "PDF page count exceeds bound":
+                        with self.assertRaisesRegex(ValidationError, f"^{layer}$"):
+                            du.local_pdf_text_layer(b"%PDF-1.4\n", max_pages=du.MAX_PAGES)
                     else:
                         with self.assertRaisesRegex(ValidationError, f"^{layer}$"):
                             du.local_pdf_text_layer(b"%PDF-1.4\n")
@@ -1238,32 +1241,30 @@ class OcrPageCapTest(unittest.TestCase):
         record = {"name": "big.pdf", "mime_type": "application/pdf"}
         with patch("integrations.doc_convert.installed_backend", return_value=None), \
                 patch.object(du, "local_ocr_available", return_value=False):
-            document = extract_document(pdf, "application/pdf", original_url=URL)
+            # Default extraction has no 200-page cap (ASK-GENIE §20 #7): all 250 pages read.
+            whole_doc = extract_document(pdf, "application/pdf", original_url=URL)
+            document = extract_document(pdf, "application/pdf", original_url=URL,
+                                        max_pages=du.MAX_PAGES)
             status, text = ct.capture_text(pdf, record)
             reading = ct.read_text(pdf, "application/pdf", filename="big.pdf")
             pinned = ct.read_text(pdf, "application/pdf", filename="big.pdf", text=text)
             container = read_container(box.getvalue(), "box.zip")
-            with patch.object(du, "pdf_page_count", return_value=None), \
-                    self.assertRaisesRegex(ValidationError, "^PDF page count unknown$"):
-                ct.read_text(pdf, "application/pdf", filename="big.pdf", text=text)
+        self.assertEqual((whole_doc.status, whole_doc.skipped_pages, len(whole_doc.pages)),
+                         ("extracted", None, 250))
         self.assertEqual((document.status, document.skipped_pages,
                           [page["page"] for page in document.pages]),
                          ("extracted", (201, 250), list(range(1, 201))))
         self.assertIn("pdf_pages_skipped_by_cap:201-250", document.warnings)
         self.assertEqual(document.evidence_attributes(URL)["extraction"]["skipped_by_cap"], gap)
-        self.assertEqual((status, len(text_pages(text))), ("extracted", 200))
-        self.assertIn("M200", text_pages(text)[-1])
-        self.assertNotIn("M201", text)
+        self.assertEqual((status, len(text_pages(text))), ("extracted", 250))
+        self.assertIn("M250", text_pages(text)[-1])
         for found in (reading, pinned):
             self.assertEqual((found.status, len(found.pages), found.skipped_by_cap),
-                             ("extracted", 200, gap))
-            self.assertEqual(found.page(200), text_pages(text)[-1])
+                             ("extracted", 250, None))
+            self.assertEqual(found.page(250), text_pages(text)[-1])
         (member,) = container.members
         self.assertEqual((member.path, member.text_status, member.reading.skipped_by_cap),
-                         ("big.pdf", "extracted", gap))
-        self.assertIn({"path": "big.pdf!/page/201-250", "kind": "pdf_page",
-                       "state": "skipped_by_cap", "cap": "pages", "limit": du.MAX_PAGES},
-                      container.gaps)
+                         ("big.pdf", "extracted", None))
         # Within the bound nothing is skipped. A pinned text of a paged file is counted
         # (page-capped OCR text holds fewer pages than the file, c3d7cfa93d): one page
         # of one is no cap, and an unknown count under the bound is no refusal.
@@ -1285,11 +1286,15 @@ class OcrPageCapTest(unittest.TestCase):
 
         pdf = make_pdf([[f"Page marker M{n:03d}"] for n in range(1, du.MAX_PAGES + 7)])
         with unittest.mock.patch.object(du.platform, "system", return_value="Linux"):
+            # Default OCR reads every page (no 200-page cap); explicit max_pages caps cleanly.
+            whole = extract_document(pdf, "application/pdf", original_url=URL,
+                                     local_pdf_ocr=True)
             document = extract_document(pdf, "application/pdf", original_url=URL,
-                                        local_pdf_ocr=True)
-            # The capture stores the OCR text of pages 1-200; its readings name the rest.
+                                        local_pdf_ocr=True, max_pages=du.MAX_PAGES)
             captured = capture_text(pdf, {"name": "big.pdf", "mime_type": "application/pdf"})
             reread = read_text(pdf, "application/pdf", filename="big.pdf", local_pdf_ocr=True)
+        self.assertEqual((whole.status, whole.method, whole.skipped_pages, len(whole.pages)),
+                         ("extracted", "poppler-tesseract", None, du.MAX_PAGES + 6))
         self.assertEqual((document.status, document.method, document.skipped_pages),
                          ("extracted", "poppler-tesseract", (201, 206)))
         self.assertEqual([page["page"] for page in document.pages], list(range(1, 201)))
@@ -1300,9 +1305,9 @@ class OcrPageCapTest(unittest.TestCase):
         self.assertEqual(document.evidence_attributes(URL)["extraction"]["skipped_by_cap"],
                          {"first_page": 201, "last_page": 206, "cap": "pages",
                           "limit": du.MAX_PAGES})
-        self.assertEqual((captured[0], len(text_pages(captured[1]))), ("extracted", 200))
-        self.assertEqual((len(reread.pages), reread.skipped_by_cap["first_page"],
-                          reread.skipped_by_cap["last_page"]), (200, 201, 206))
+        self.assertEqual((captured[0], len(text_pages(captured[1]))),
+                         ("extracted", du.MAX_PAGES + 6))
+        self.assertEqual((len(reread.pages), reread.skipped_by_cap), (du.MAX_PAGES + 6, None))
         # Within the bound nothing is skipped.
         within = extract_document(make_pdf([["Petra PO: PPO-200"]]), "application/pdf",
                                   original_url=URL, local_pdf_ocr=True)
@@ -1335,19 +1340,19 @@ class OcrPageCapTest(unittest.TestCase):
         with unittest.mock.patch.object(du.platform, "system", return_value="Darwin"), \
                 unittest.mock.patch.object(du, "_local_ocr_backend", return_value="macos"), \
                 unittest.mock.patch.object(du.Path, "is_file", return_value=True):
-            reading = read(200, 250, first_pages=True)
+            reading = read(200, 250, max_pages=du.MAX_PAGES, first_pages=True)
             self.assertEqual(commands[-1][-1], "200")
             self.assertEqual((len(reading.pages), reading.skipped_pages,
                               reading.method), (200, (201, 250), "macos-pdfkit-vision"))
-            self.assertIsNone(read(3, 3, first_pages=True).skipped_pages)
+            self.assertIsNone(read(3, 3, max_pages=du.MAX_PAGES, first_pages=True).skipped_pages)
             self.assertEqual(read(2, 9, max_pages=2, first_pages=True).skipped_pages, (3, 9))
             self.assertEqual(commands[-1][-1], "2")
             with self.assertRaisesRegex(ValidationError, "^PDF page count exceeds bound$"):
-                read(200, 250)
+                read(200, 250, max_pages=du.MAX_PAGES)
             for rows, count in ((199, 250), (5, 4), (3, None), (0, 0)):
                 with self.subTest(rows=rows, count=count), \
                         self.assertRaisesRegex(ValidationError, "local_pdf_ocr_pages_invalid"):
-                    read(rows, count, first_pages=True)
+                    read(rows, count, max_pages=du.MAX_PAGES, first_pages=True)
 
 
 def process_gone(pid: int, wait: float = 10.0) -> bool:

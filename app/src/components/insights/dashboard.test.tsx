@@ -23,7 +23,7 @@ vi.mock("@/components/insights/ask-here", () => ({ InsightsAsk: () => <div data-
 
 import { AnswerCharts } from "@/components/answer-chart";
 import { PinnedHere } from "@/components/insights/pinned";
-import { InsightsDashboard, cellText, moved, ScheduleControl, TOP, placed, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
+import { InsightsDashboard, cellText, chartPointCount, moved, ScheduleControl, TOP, placed, askAbout, grouped, monitorLine, tellMeWhenHref, topOf } from "./dashboard";
 
 const base = { about: "Per person: mail sent.", group: "Team", saved: false, question: null, schedule: "" as const, notify: "never" as const };
 const list: InsightList = {
@@ -471,7 +471,7 @@ describe("arranging your dashboard", () => {
     expect(screen.getByTestId("layout-problem")).toHaveTextContent("could not be read");
   });
 
-  it("splits group jump chips into Views and Measures without repeating the Measures prefix, and supports header-controlled Customize", () => {
+  it("renders a single category tab bar with a Browse measures drawer without repeating the Measures prefix, and supports header-controlled Customize", () => {
     const many: InsightList = {
       ...list,
       scope: "everyone",
@@ -487,10 +487,12 @@ describe("arranging your dashboard", () => {
     );
     expect(screen.queryByRole("button", { name: "Customize" })).toBeNull();
     const nav = screen.getByTestId("insight-groups");
-    expect(nav).toHaveTextContent("Views");
-    expect(nav).toHaveTextContent("Measures");
+    expect(nav).toHaveTextContent("All");
     expect(nav).toHaveTextContent("Finance");
+    expect(nav).toHaveTextContent("Browse measures (2)");
     expect(nav).not.toHaveTextContent("Measures: Finance");
+    fireEvent.click(screen.getByTestId("browse-measures"));
+    expect(screen.getByTestId("measures-drawer")).toHaveTextContent("M1");
     rerender(
       <InsightsDashboard list={many} onChanged={vi.fn()} onArrange={vi.fn()} editing={true} onEditingChange={vi.fn()} />,
     );
@@ -537,5 +539,60 @@ describe("proposing a saved tile as a shared definition", () => {
       source_kind: "saved_tile",
     }));
     await waitFor(() => expect(screen.getByTestId("proposed-s7")).toHaveTextContent("Proposed for review"));
+  });
+});
+
+describe("multi-panel chart counts and category breakdown", () => {
+  it("counts total items across panels for multi-panel charts and never shows 'of 0' or 'Show all 0'", async () => {
+    const cadNames = Array.from({ length: 20 }, (_, i) => `CAD-${i + 1}`);
+    const usdNames = Array.from({ length: 23 }, (_, i) => `USD-${i + 1}`);
+    const multiChart = {
+      kind: "bar" as const,
+      title: "Receivables to chase: overdue per customer",
+      x: "customer",
+      labels: [],
+      series: [],
+      panels: [
+        { title: "CAD", labels: cadNames, series: [{ name: "overdue", values: cadNames.map((_, i) => 1000 - i) }] },
+        { title: "USD", labels: usdNames, series: [{ name: "overdue", values: usdNames.map((_, i) => 2000 - i) }] },
+      ],
+      spec: { kind: "bar" as const, x: "customer", y: ["overdue"], facet: "currency", horizontal: true },
+      as_of: "2026-11-25",
+      sql: "SELECT customer, currency, overdue FROM ar",
+    };
+    expect(chartPointCount(multiChart)).toBe(43);
+    const tile = { ...base, id: "ar_chase", title: multiChart.title, group: "Finance", chart: null };
+    const tileResult: InsightResult = {
+      ...result("team_output"),
+      ...tile,
+      row_count: 43,
+      drawn: multiChart,
+    };
+    render(<InsightsDashboard list={{ ...list, items: [tile] }} onChanged={vi.fn()} feed={{ ar_chase: { result: tileResult } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByText("Show all 43")).toBeTruthy());
+    const card = screen.getByTestId("insight-ar_chase");
+    expect(card).toHaveTextContent(`Top ${TOP} per currency`);
+    expect(card).not.toHaveTextContent("of 0");
+    expect(card).not.toHaveTextContent("Show all 0");
+  });
+
+  it("clarifies charts vs measures breakdown when a category tab combines both", () => {
+    const combined: InsightList = {
+      ...list,
+      scope: "everyone",
+      items: [
+        { ...base, id: "f1", title: "F1", group: "Finance", chart: null },
+        { ...base, id: "f2", title: "F2", group: "Finance", chart: null },
+        { ...base, id: "fm1", title: "FM1", group: "Measures: Finance", chart: null },
+        { ...base, id: "fm2", title: "FM2", group: "Measures: Finance", chart: null },
+        { ...base, id: "fm3", title: "FM3", group: "Measures: Finance", chart: null },
+        { ...base, id: "s1", title: "S1", group: "Sales", chart: null },
+      ],
+    };
+    render(<InsightsDashboard list={combined} onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Finance/ }));
+    const breakdown = screen.getByTestId("category-breakdown");
+    expect(breakdown).toHaveTextContent("2 charts · 3 measures");
+    expect(breakdown).toHaveTextContent("Jump to measures (3)");
   });
 });

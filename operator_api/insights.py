@@ -128,6 +128,8 @@ class Spec:
     watch: Mapping[str, Any] = field(default_factory=dict)   # notify "crosses": the line
     saved: bool = False
     last_run: str = ""        # a scheduled one: when it last ran by itself, what it found
+    page_id: str = ""         # saved answer page id (PLAN-P2-A7), when part of a saved page
+    page_title: str = ""      # saved answer page title, when part of a saved page
 
 
 def _chart_spec(raw: Any) -> dict[str, Any]:
@@ -288,12 +290,16 @@ class Store:
 
     @staticmethod
     def _spec(row: Sequence[Any]) -> Spec:
+        from .insights_pages import page_meta
         rid, title, question, sql, chart, schedule, notify, watch = row
+        raw_chart = chart if isinstance(chart, Mapping) else json.loads(chart or "{}")
+        pmeta = page_meta(raw_chart)
+        group = f"Page: {pmeta['title']}" if pmeta.get("title") else "Mine"
         return Spec(id=f"s{rid}", title=title, about=question or "", sql=sql,
-                    chart=_chart_spec(chart if isinstance(chart, Mapping)
-                                      else json.loads(chart or "{}")),
+                    chart=_chart_spec(raw_chart), group=group,
                     question=question or "", schedule=schedule, notify=notify,
-                    watch=watch_of(watch), saved=True)
+                    watch=watch_of(watch), saved=True,
+                    page_id=pmeta.get("id", ""), page_title=pmeta.get("title", ""))
 
     def list(self, owner: str) -> list[Spec]:
         with self.connect() as conn:
@@ -772,20 +778,33 @@ def info(spec: Spec) -> m.InsightInfo:
                          watch=m.InsightWatch(**spec.watch) if spec.watch else None,
                          last_run=spec.last_run or None,
                          fixed_dates=fixed_dates(spec.sql) if spec.saved else None,
-                         measure=measure_of(spec))
+                         measure=measure_of(spec),
+                         page_id=spec.page_id or None,
+                         page_title=spec.page_title or None)
 
 
 _DATE_LITERAL = re.compile(r"'(\d{4}-\d{2}-\d{2})")
 
 
+def _plain_day(iso: str) -> str:
+    """'2026-11-25' -> '25 Nov 2026'; invalid date stays as-is."""
+    try:
+        d = dt.date.fromisoformat(iso)
+    except ValueError:
+        return iso
+    return f"{d.day} {d.strftime('%b %Y')}"
+
+
 def fixed_dates(sql: str) -> Optional[str]:
-    """The first and last fixed dates a saved statement names ('2026-01-01 to
-    2026-11-21', or the one date), None when it names none (its periods are read from
+    """The first and last fixed dates a saved statement names ('1 Jan 2026 to
+    21 Nov 2026', or the one date), None when it names none (its periods are read from
     now(), so it moves with the date)."""
     days = sorted(set(_DATE_LITERAL.findall(sql or "")))
     if not days:
         return None
-    return days[0] if len(days) == 1 else f"{days[0]} to {days[-1]}"
+    if len(days) == 1:
+        return _plain_day(days[0])
+    return f"{_plain_day(days[0])} to {_plain_day(days[-1])}"
 
 
 def count_rows(backend: Any, reader: Any, sql: str, seconds: float = RUN_SECONDS,
@@ -1125,7 +1144,18 @@ class InsightsMixin:
         return self._insight_store
 
     def _insight_scope(self, reader: Any) -> tuple:
-        return self._team_scope(reader)   # type: ignore[attr-defined]
+        from . import team_accounts as ta_accounts
+        from . import team_view as tv
+        everyone, me, gone, known = self._team_scope(reader)   # type: ignore[attr-defined]
+        snap = tv.snapshot(self._team_file()) if hasattr(self, "_team_file") else None
+        people = (snap or {}).get("people") if isinstance(snap, Mapping) else None
+        shared = ta_accounts.shared_ids(getattr(self, "state_dir", None), people)
+        if not shared:
+            return everyone, me, gone, known
+
+        def gone_or_shared(oid: str) -> bool:
+            return gone(oid) or oid in shared
+        return everyone, me, gone_or_shared, known
 
     def insight_tools(self, reader: Any) -> list:
         """The Ask's ``plx.insight`` bound to ``reader`` (``insight_tool``); none while off."""
@@ -1406,14 +1436,30 @@ class InsightsMixin:
             except TypeError:
                 keeper.ahead(reader, [sql_ref])
 
+        def _with_as_of(held: Any) -> Any:
+            if not isinstance(held, Mapping):
+                return held
+            got = held.get("got")
+            if isinstance(got, Mapping) and not got.get("as_of") and held.get("read_at"):
+                return {**held, "got": {**got, "as_of": held["read_at"]}}
+            return held
+
         if stored_only and key is not None:
+            from .insights_cache import UNFINISHED
             keeper.opened(reader, ref(spec))
             have = keeper.kept.servable((key, ref(spec)), prior=same_access, stamp=stamp)
             if not have:
                 why = keeper.failed.get((key, ref(spec)))
                 if why is not None:
-                    # its last background read failed: say why (it is started again below)
+                    # its last background read failed: serve the reader's last good answer
+                    # (with explicit as_of) when it could not finish (504/503), and retry
+                    # in the background; otherwise say why
                     _queue_urgent(ref(spec))
+                    if isinstance(why, UserFacing) and why.code in UNFINISHED:
+                        fallback = keeper.kept.last_good((key, ref(spec)))
+                        if fallback is not None and same_access(fallback):
+                            return result(self, reader, spec, scope, _with_as_of(fallback),
+                                          stored=True)
                     if isinstance(why, UserFacing):
                         raise why
                     log.error("insight %s: background read failed: %r", ref(spec), why)
@@ -1450,7 +1496,7 @@ class InsightsMixin:
                                    prior=same_access, stamp=stamp)
         except UserFacing as exc:
             # a read that could not finish: the last good answer, with the time it was read
-            # (``read_at``), never a 504 while one is kept
+            # (``read_at`` / ``as_of``), never a 504 while one is kept
             from .insights_cache import UNFINISHED
             read = keeper.kept.last_good((key, ref(spec))) if exc.code in UNFINISHED else None
             # only while the reader's access state is the one it was read under (a revoked
@@ -1462,6 +1508,7 @@ class InsightsMixin:
                     read = None
             if read is None:
                 raise
+            read = _with_as_of(read)
         return result(self, reader, spec, scope, read)
 
     def wait_filling(self, reader: Any, iid: str, timeout: float = FILL_WAIT_SECONDS) -> bool:
@@ -1743,3 +1790,24 @@ class InsightsMixin:
         if store is None:
             raise Refused("unavailable")
         return store.delete(reader, iid)
+
+    def insight_save_answer(self, reader: Any, body: m.InsightAnswerSave) -> m.InsightAnswerPage:
+        """One-step save of a whole Ask answer as a cohesive saved Insights page owned by
+        ``reader.key`` (PLAN-P2-A7)."""
+        from .insights_pages import save_answer_page
+        return save_answer_page(self, self.insight_store(), reader, body)
+
+    def insight_pages_list(self, reader: Any) -> m.InsightAnswerPageList:
+        """List all saved Ask answer pages owned by ``reader.key``."""
+        from .insights_pages import list_answer_pages
+        return list_answer_pages(self.insight_store(), reader)
+
+    def insight_page_get(self, reader: Any, page_id: str) -> Optional[m.InsightAnswerPage]:
+        """Read one saved Ask answer page owned by ``reader.key``."""
+        from .insights_pages import get_answer_page
+        return get_answer_page(self.insight_store(), reader, page_id)
+
+    def insight_page_delete(self, reader: Any, page_id: str) -> bool:
+        """Soft-delete all tiles of one saved Ask answer page owned by ``reader.key``."""
+        from .insights_pages import delete_answer_page
+        return delete_answer_page(self.insight_store(), reader, page_id)

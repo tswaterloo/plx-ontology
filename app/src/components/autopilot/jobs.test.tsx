@@ -44,6 +44,8 @@ describe("A finished job", () => {
     expect(screen.getByTestId("job-status")).not.toHaveTextContent("$0.42");
     expect(screen.getByTestId("job-checked-details")).toHaveTextContent("$0.42");
     expect(screen.getByTestId("job-checklist")).toHaveTextContent("Call DSM if no answer by Friday");
+    expect(screen.getByTestId("job-checklist")).not.toHaveTextContent("(piece 1)");
+    expect(screen.getByTestId("job-status")).toHaveTextContent("Partial · Needs context");
     expect(screen.getByText(/emails: failing since 3 PM/)).toBeInTheDocument();
     expect(screen.getByTestId("piece-reads")).toHaveTextContent("1 record opened and 1 lookup");
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
@@ -61,10 +63,24 @@ describe("A finished job", () => {
   it("edits a message's body and sends the edit with the decision", async () => {
     calls.jobs = [job("j1")];
     render(<JobsView />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(await screen.findByTestId("piece-change")).toHaveTextContent("Send email");
+    expect(screen.getByTestId("piece-change")).not.toHaveTextContent("send_email");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.change(screen.getByLabelText("Message 1"), { target: { value: "Shorter" } });
     fireEvent.click(screen.getByRole("button", { name: "Save my edit" }));
     await waitFor(() => expect(calls.decided.at(-1)).toEqual(["j1", 1, { decision: "edited", text: "", edits: { "0": { body: "Shorter" } } }]));
+  });
+  it("closes edit mode cleanly without an invalid API call if nothing changed, and copies drafts", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    calls.decided = [];
+    calls.jobs = [job("j1")];
+    render(<JobsView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Subject: Late POs\n\nWhere are they?"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save my edit" }));
+    expect(calls.decided).toEqual([]);
   });
   it("says a failed job failed, with why, and that nothing was sent", async () => {
     calls.jobs = [job("j2", { status: "failed", message: "The plan could not be made.", pieces: [], planned: 0, summary: "" })];

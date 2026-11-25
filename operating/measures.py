@@ -244,6 +244,7 @@ def listing(full: bool = False) -> dict[str, Any]:
                       "period": ("as defined" if m.get("sql")
                                  else f"last {m.get('days', 30)} days by {m['date']}"
                                  if m["date"] else "now (a snapshot)"),
+                      **({"denominator": m["denominator"]} if m.get("denominator") else {}),
                       **({"ask": m["ask"]} if m.get("ask") else {})}
                      for m in measures().values()],
         "reports": [{"id": r["id"], "name": r["title"], "definition": r.get("about", ""),
@@ -271,8 +272,11 @@ def lines(full: bool = False) -> list[str]:
     for m in measures().values():
         dims = ", ".join(m["dimensions"]) + (", week, month" if m["date"] else "")
         when = f"by {m['date']}" if m["date"] else "now"
-        out.append(f"- {m['id']} ({m['owner']}, {m['view']}, {when}): {m['name']}; by {dims}. "
-                   f"Means: {m['definition']}")
+        by_part = f"; by {dims}" if dims else ""
+        denom_part = f" Denominator: {m['denominator']}." if m.get("denominator") else ""
+        src = m["view"] or "sql"
+        out.append(f"- {m['id']} ({m['owner']}, {src}, {when}): {m['name']}{by_part}. "
+                   f"Means: {m['definition']}{denom_part}")
     for r in reports().values():
         if not full and r.get("scope") != "everyone":
             continue
@@ -606,9 +610,12 @@ def value_sql(m: Mapping[str, Any]) -> str:
 
 
 def _rate_note(m: Mapping[str, Any]) -> dict[str, Any]:
-    return {"rate": ("a percentage: numerator over denominator (both shown on a plain read); "
-                     "a comparison's change is in percentage points and its parts' changes "
-                     "do not add up to the whole")}
+    out = {"rate": ("a percentage: numerator over denominator (both shown on a plain read); "
+                    "a comparison's change is in percentage points and its parts' changes "
+                    "do not add up to the whole")}
+    if m.get("denominator"):
+        out["denominator"] = m["denominator"]
+    return out
 
 
 def _filters(m: Mapping[str, Any], given: Any) -> list[str]:

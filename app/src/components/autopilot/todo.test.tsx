@@ -96,4 +96,48 @@ describe("a to-do item", () => {
       "This is on Sam's list, not yours. Only you can see this.",
     );
   });
+
+  it("offers Draft a follow-up on waiting items ('No answer yet from ...')", async () => {
+    const calls = fetchMock();
+    const onChanged = vi.fn();
+    const waiting: PreparedItem = {
+      ...todo,
+      item_id: "0123456789abcdef01234567",
+      channel: "mail",
+      sender: "vendor@example.com",
+      subject: "PO 90412 delivery date",
+      summary: "No answer yet from them",
+      note: "Waiting on ETA confirmation",
+      plan_status: "none",
+      todos: [],
+    };
+    render(<PreparedView items={[waiting]} empty="none" onGone={() => undefined} onChanged={onChanged} />);
+    const card = screen.getByTestId("prepared-todo");
+    const btn = within(card).getByRole("button", { name: "Draft a follow-up" });
+    await userEvent.click(btn);
+    await waitFor(() => expect(within(card).getByTestId("draft-asked")).toBeTruthy());
+    expect(calls).toEqual([["/api/autopilot/items/0123456789abcdef01234567/draft", undefined]]);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("offers Draft reply and shows planned facts on open mail/Teams conversation items", async () => {
+    const calls = fetchMock();
+    const planned: PreparedItem = {
+      ...todo,
+      item_id: "abcdef0123456789abcdef01",
+      channel: "mail",
+      sender: "alex@sidia.example",
+      subject: "90ml tube question",
+      summary: "Customer asks whether a 90ml tube works",
+      facts: ["Suggested next step: Pass it on to giulia@petrasoap.com: Check 90ml tube fill specs"],
+      plan_status: "planned",
+      todos: [],
+    };
+    render(<PreparedView items={[planned]} empty="none" onGone={() => undefined} onChanged={() => undefined} />);
+    const card = screen.getByTestId("prepared-todo");
+    expect(within(card).getByTestId("todo-facts")).toHaveTextContent("Pass it on to giulia@petrasoap.com");
+    await userEvent.click(within(card).getByRole("button", { name: "Draft reply" }));
+    await waitFor(() => expect(within(card).getByTestId("draft-asked")).toBeTruthy());
+    expect(calls).toEqual([["/api/autopilot/items/abcdef0123456789abcdef01/draft", undefined]]);
+  });
 });

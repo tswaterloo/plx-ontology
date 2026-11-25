@@ -1003,7 +1003,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
         hour = (happened if happened and happened <= now else now).strftime("%Y-%m-%dT%H")
         prepared = None
         for owner in owners:
-            item_id = "ap_" + _digest(ap["id"], event["event_id"], owner)[:24]
+            item_id = "ap_" + _digest(ap["id"], event["event_id"], owner)[:24]  # guard-ok: fixed-length derived item identifier, not content
             if queue.item(item_id) is not None:
                 continue
             if queue.thread_item_open(owner, ap["id"], event):
@@ -1161,10 +1161,10 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 with queue.conn:
                     queue.add_item({
                         "item_id": "ap_" + _digest(ap["id"] + ":job", event["event_id"],
-                                                   owner)[:24],
+                                                   owner)[:24],  # guard-ok: fixed-length derived item identifier, not content
                         "event_id": event["event_id"], "autopilot": ap["id"], "owner": owner,
                         "title": f"{ap['label']}: " + str(work.get("summary") or "")[
-                            :SUMMARY_CHARS],
+                            :SUMMARY_CHARS],  # guard-ok: one-line queue-title label shape; the whole summary rides in body.prepared, not a silent cut
                         "body": {"happened": _happened(event),
                                  "prepared": {"kind": "job", "summary": work.get("summary"),
                                               "jobs": also, "drafted_by": "model"},
@@ -1180,7 +1180,7 @@ def _process(st: Any, queue: Queue, event: dict[str, Any], registry: Mapping[str
                 queue.add_item({
                     "item_id": item_id, "event_id": event["event_id"], "autopilot": ap["id"],
                     "owner": owner, "title": f"{ap['label']}: "
-                    + str(work.get("summary") or "")[:SUMMARY_CHARS],
+                    + str(work.get("summary") or "")[:SUMMARY_CHARS],  # guard-ok: one-line queue-title label shape; the whole summary rides in body.prepared, not a silent cut
                     "body": {"happened": _happened(event), "prepared": work,
                              "done_when": ap["done_when"], "label": ap["label"],
                              **({"context_used": used} if used else {})},

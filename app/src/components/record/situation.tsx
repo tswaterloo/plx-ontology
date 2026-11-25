@@ -16,10 +16,14 @@ const HEADS: Record<string, [string, string[]][]> = {
   AssemblyOrder: [["For", ["SalesOrder", "Customer"]], ["Materials from", ["PurchaseOrder"]]],
   ManufacturingOrder: [["For", ["SalesOrder", "Customer"]], ["Materials from", ["PurchaseOrder"]]],
   PurchaseOrder: [["Supplier", ["Supplier"]], ["Needed for", ["SalesOrder", "AssemblyOrder", "ManufacturingOrder"]]],
+  Batch: [["Product", ["Product", "Item", "FgItem"]], ["Order", ["AssemblyOrder", "ManufacturingOrder", "SalesOrder"]]],
   Lot: [["Received on", ["PurchaseOrder", "Supplier"]], ["Used in", ["AssemblyOrder", "ManufacturingOrder", "SalesOrder", "Shipment"]]],
   Shipment: [["Order", ["SalesOrder"]], ["Customer", ["Customer"]]],
+  Receipt: [["Purchase order", ["PurchaseOrder"]], ["Supplier", ["Supplier", "Vendor"]]],
   SalesInvoice: [["Order", ["SalesOrder", "Shipment"]], ["Customer", ["Customer"]]],
-  PurchaseInvoice: [["Purchase order", ["PurchaseOrder"]], ["Supplier", ["Supplier"]]],
+  PurchaseInvoice: [["Purchase order", ["PurchaseOrder"]], ["Supplier", ["Supplier", "Vendor"]]],
+  SupplierInvoice: [["Purchase order", ["PurchaseOrder"]], ["Supplier", ["Supplier", "Vendor"]]],
+  RelSageApOpenDocument: [["Purchase order", ["PurchaseOrder"]], ["Supplier", ["Supplier", "Vendor"]]],
 };
 
 /** The record types this band is for. */

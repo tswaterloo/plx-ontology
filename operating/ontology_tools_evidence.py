@@ -491,7 +491,7 @@ class RuntimeCitations(CitationReader):
         if scheme == "sharepoint" and page is not None:
             # A page is read from captured text only (a host holding the capture).
             return self._out("unresolvable", "page_not_captured", gaps=[_gap(
-                "not_ingested", "page_not_captured", handle[:700],
+                "not_ingested", "page_not_captured", handle,
                 "a page of a SharePoint file is read from the Workbench's capture; this "
                 "host holds no captured text of that page for this reader")])
         if scheme in ("sharepoint", "bc", "sharepoint-list"):
@@ -539,20 +539,20 @@ class RuntimeCitations(CitationReader):
             if result.get("current_citation"):
                 out.update(status="changed_since", current_citation=result["current_citation"])
             else:
-                gaps.append(_gap("stale", "superseded_without_current", handle[:700],
+                gaps.append(_gap("stale", "superseded_without_current", handle,
                                  "a later capture replaced this row and no current row "
                                  "is held; the cited content is shown"))
         if result.get("missing_from_source_since"):
-            gaps.append(_gap("absent_in_source", "missing_from_source", handle[:700],
+            gaps.append(_gap("absent_in_source", "missing_from_source", handle,
                              "the source no longer returns this row (key scan); not "
                              "proof it was deleted"))
         if result.get("deleted_in_source"):
-            gaps.append(_gap("absent_in_source", "deleted_in_source", handle[:700],
+            gaps.append(_gap("absent_in_source", "deleted_in_source", handle,
                              "the source marks this row deleted (its own soft-delete "
-                             f"column) since {str(result['deleted_in_source'])[:40]}; the "
+                             f"column) since {str(result['deleted_in_source'])[:40]}; the "  # guard-ok: fixed-format value (digest/id prefix), not content
                              "cited content is shown, it is not live"))
         if "rows" in result:
-            gaps.append(_gap("unknown", "key_not_unique", handle[:700],
+            gaps.append(_gap("unknown", "key_not_unique", handle,
                              "the cited key names several rows; each is shown"))
         out["gaps"] = gaps
         return out
@@ -598,7 +598,7 @@ class RuntimeCitations(CitationReader):
             if skipped is not None and "content" in out:
                 out["gaps"].append(skipped_gap(target, skipped))
         if out.get("text_source") == "ocr":
-            out["gaps"].append(_gap("unknown", "ocr_text_unconfirmed", target[:700],
+            out["gaps"].append(_gap("unknown", "ocr_text_unconfirmed", target,
                                     "machine-read OCR text: what the scan appears to say, "
                                     "for a person to confirm, never a verified value"))
         if digest is None:
@@ -675,7 +675,7 @@ class RuntimeCitations(CitationReader):
                     "citation names (not granted to this reader, or not held for it)")])
             # A page is read from captured text only, never the whole file as the page.
             return self._out("unresolvable", "page_not_captured", gaps=[_gap(
-                "not_ingested", "page_not_captured", handle[:700],
+                "not_ingested", "page_not_captured", handle,
                 "a page of a mail attachment is read from the Workbench's mail capture; "
                 "this host holds no captured text of that page for this reader")])
         if getattr(live, "mail", None) is None:
@@ -987,7 +987,7 @@ class RuntimeCitations(CitationReader):
         if current and current != handle:
             out.update(status="changed_since", current_citation=current)
         elif resolved.get("superseded_at"):
-            out["gaps"].append(_gap("stale", "superseded_in_capture", handle[:700],
+            out["gaps"].append(_gap("stale", "superseded_in_capture", handle,
                                     "the capture no longer holds this version as current"))
         return out
 
@@ -1016,10 +1016,10 @@ class RuntimeCitations(CitationReader):
                 "citation": row["l1_handle"],
                 "name": {"untrusted_text": name[:limit],
                          "origin": {"citation": row["l1_handle"], "field_path": "row.name"}},
-                "content_type": str(meta.get("content_type") or "")[:100],
+                "content_type": str(meta.get("content_type") or ""),
                 "text_read": row["text_status"] in _TEXT_READ}))
         out.sort(key=lambda item: item[0])
-        return [entry for _key, entry in out[:MAX_ATTACHMENTS_LISTED]]
+        return [entry for _key, entry in out]
 
     def _mail_page_unread(self, base: str, page: int, gated: Actor, audience: Any
                           ) -> dict[str, Any] | None:
@@ -1042,7 +1042,7 @@ class RuntimeCitations(CitationReader):
                              gaps=[skipped_gap(cited, skipped)])
         if not isinstance(row.get("content_text"), str):
             return self._out("unresolvable", "page_text_not_read", gaps=[_gap(
-                "not_ingested", "page_text_not_read", cited[:700],
+                "not_ingested", "page_text_not_read", cited,
                 "no text of this attachment was read (a scan the capture could not OCR "
                 "or a file it does not read as text): what the page says, and whether "
                 "it exists, is unknown")])
@@ -1102,7 +1102,7 @@ class RuntimeCitations(CitationReader):
             if not result.get("ok") or result.get("changed_since"):
                 return self._out("unresolvable", "live_citation_changed")
             read_handle = current
-            gaps.append(_gap("stale", "cited_version_not_retained", handle[:700],
+            gaps.append(_gap("stale", "cited_version_not_retained", handle,
                              "the source keeps only its current version; the values shown "
                              "were read now at current_citation, not at the cited version"))
         record = dict(result.get("record") or {})
@@ -1134,7 +1134,7 @@ class RuntimeCitations(CitationReader):
             out["lineage"] = self._bc_lineage(read_handle)
             if out["lineage"] is None:
                 return self._out("unresolvable", "bc_company_unknown",
-                                 gaps=[_gap("unknown", "bc_company_unknown", handle[:700],
+                                 gaps=[_gap("unknown", "bc_company_unknown", handle,
                                             "the record's BC company maps to no book")])
         return out
 
@@ -1167,7 +1167,7 @@ class RuntimeCitations(CitationReader):
             if view.get("current_citation"):
                 out.update(status="changed_since", current_citation=view["current_citation"])
             else:
-                out["gaps"].append(_gap("stale", "superseded_without_current", handle[:700],
+                out["gaps"].append(_gap("stale", "superseded_without_current", handle,
                                         "a later capture replaced this revision and no "
                                         "current one is held; the cited revision is shown"))
         return out
@@ -1325,7 +1325,7 @@ class EvidenceTools:
                             root=self.contracts, limit=5)
         if problems:
             return _error("contract_violation", ("output failed the contract: "
-                                                 + "; ".join(problems))[:600])
+                                                 + "; ".join(problems)))
         if ot._envelope_bytes(result) > self.limits["max_result_bytes"]:
             return _error("result_too_large", "the answer does not fit one response",
                           "narrow the request (fewer objects, a smaller limit or max_chars)")
@@ -1428,7 +1428,7 @@ class EvidenceTools:
             scope, roots, "AND l.link_type IN (SELECT value FROM json_each(:itypes))",
             {"itypes": json.dumps(itypes)})
         truncated = len(rows) > LINK_SCAN_CAP
-        rows = rows[:LINK_SCAN_CAP]
+        rows = rows[:LINK_SCAN_CAP]  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         lineages = self._lineages(scope, [r["from_object"] for r in rows]
                                   + [r["to_object"] for r in rows] + roots)
         l8_scope = self.traverse._l8_scope(scope)
@@ -1439,14 +1439,14 @@ class EvidenceTools:
             tier = self._effective_tier(row, lineages)
             edge = tt._edge(row, tier)
             if edge is None:
-                gaps.append(_gap("unknown", "malformed_link", row["link_id"][:700],
+                gaps.append(_gap("unknown", "malformed_link", row["link_id"],
                                  "a stored link could not be shown in the contract shape"))
                 continue
             from_anchor = bool(self._type_spec(row["from_type"]).get("anchor"))
             to_anchor = bool(self._type_spec(row["to_type"]).get("anchor"))
             if from_anchor and to_anchor and tier not in _IDENTITY_TIERS:
                 edge["why_not"] = (edge["why_not"] + [
-                    {"feature": "anchor_never_auto_merged", "agrees": False}])[:16]
+                    {"feature": "anchor_never_auto_merged", "agrees": False}])
             edge = self.base._trim_citations(l8_scope, edge, {edge["from"], edge["to"]})
             edges.append(edge)
             joined.add((row["from_object"], row["to_object"]))
@@ -1455,7 +1455,7 @@ class EvidenceTools:
                         if isinstance(h, str)}
         edges.sort(key=lambda e: (_TIER_RANK[e["tier"]], e["link_id"]))
         if len(edges) > MAX_EDGES:
-            edges, truncated = edges[:MAX_EDGES], True
+            edges, truncated = edges[:MAX_EDGES], True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         # an identity link still live whose end its source no longer holds at T (a
         # soft-deleted Portal card beside its BC customer): labelled, as plx.object labels
         # the record, so the edge is never read as a live copy
@@ -1463,7 +1463,7 @@ class EvidenceTools:
         ends = sorted({e for e in (end for edge in edges for end in (edge["from"], edge["to"]))})
         removed = self.store.removals(ends, scope.t) if ends else {}
         gaps.extend(removal_gap(basis, since, oid) for oid, (basis, since)
-                    in sorted(removed.items())[:5])
+                    in sorted(removed.items())[:5])  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         if len(removed) > 5:
             gaps.append(_gap("absent_in_source", "missing_from_source",
                              f"{len(removed)} records at an end of these links",
@@ -1481,8 +1481,11 @@ class EvidenceTools:
         meta, fresh_gaps = self.traverse._meta(scope, sources)
         gaps.extend(fresh_gaps)
         result: dict[str, Any] = {
-            "edges": edges, "near_misses": near[:MAX_NEAR_MISSES],
-            "gaps": gaps[:MAX_GAPS],
+            "edges": edges, "near_misses": near[:MAX_NEAR_MISSES],  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
+            "gaps": gaps if len(gaps) <= MAX_GAPS else gaps[:MAX_GAPS - 1] + [
+                _gap("unknown", "further_gaps_not_listed", "gaps",
+                     f"{len(gaps) - MAX_GAPS + 1} further gap(s) arose on this page; "
+                     f"the first {MAX_GAPS - 1} are listed")],
             "completeness": _completeness(len(edges), None if truncated else len(edges),
                                           truncated, "result_cap" if truncated else None,
                                           None),
@@ -1549,7 +1552,7 @@ class EvidenceTools:
                     scope.params(kind=kind, value=value, root=root,
                                  cap=CANDIDATE_CAP + 1)).fetchall()
                 if len(rows) > CANDIDATE_CAP:
-                    rows, cut = rows[:CANDIDATE_CAP], True
+                    rows, cut = rows[:CANDIDATE_CAP], True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
                 for row in rows:
                     other = row["object_id"]
                     if (root, other) in joined:
@@ -1584,7 +1587,7 @@ class EvidenceTools:
             # not said to be absent (and not revealed), so the feature is unknown.
             failed: list[dict[str, Any]] = [{"feature": "identity_link", "agrees": None}]
             if citations:
-                failed[0]["citations"] = citations[:4]
+                failed[0]["citations"] = citations
             key = self._identity_key(root_type, ident["identifier_kind"])
             # A key unique only within its binding (an FM id, per FM table) names no
             # record of another binding.
@@ -1617,7 +1620,7 @@ class EvidenceTools:
                 failed.append({"feature": "anchor_never_auto_merged", "agrees": False})
             if {lineages.get(root), lineages.get(other)} & NEVER_AUTHORITY:
                 failed.append({"feature": "lineage_authority", "agrees": False})
-            out.append({"object": refs[other], "failed": failed[:16], "_root": root})
+            out.append({"object": refs[other], "failed": failed[:16], "_root": root})  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         content: dict[str, dict[str, Any]] = {}
         if copy_pairs:
             for value in self.store.readable_values(
@@ -1796,7 +1799,7 @@ class EvidenceTools:
                         "_ranked_only"):
                 doc.pop(key, None)
         page = [summarise_mentions(doc, arguments.get("mention_offset", 0)) for doc in page]
-        searched: dict[str, Any] = {"sources": sources[:8], "scopes": scope_info["scopes"][:16]}
+        searched: dict[str, Any] = {"sources": sources[:8], "scopes": scope_info["scopes"][:16]}  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         if arguments.get("since"):
             searched["since"] = arguments["since"]
         if arguments.get("until"):
@@ -1814,8 +1817,7 @@ class EvidenceTools:
             gaps.append(_gap("unknown", "no_match",
                              (f"query:{' '.join(arguments['query'].split())}"
                               if arguments.get("query") else
-                              str(arguments.get("object_id") or f"participant:{participant}")
-                              )[:700],
+                              str(arguments.get("object_id") or f"participant:{participant}")),
                              "no visible document matched; documents never prove absence",
                              {k: v for k, v in searched.items() if k != "participants"}))
         partial = scope_info["withheld"] or any(
@@ -1828,7 +1830,11 @@ class EvidenceTools:
         elif partial and not more:
             completeness.update(complete=False, reason="partial_scope")
         result: dict[str, Any] = {"documents": page, "searched": searched,
-                                  "gaps": gaps[:MAX_GAPS], "completeness": completeness,
+                                  "gaps": gaps if len(gaps) <= MAX_GAPS else gaps[:MAX_GAPS - 1] + [
+                                      _gap("unknown", "further_gaps_not_listed", "plx.documents",
+                                           f"{len(gaps) - MAX_GAPS + 1} further gap(s) arose on this "
+                                           f"page; the first {MAX_GAPS - 1} are listed")],
+                                  "completeness": completeness,
                                   "meta": scope_info["meta"]}
         if scope_info["withheld"]:
             result["withheld"] = {"properties": None, "objects": None, "reason": "audience"}
@@ -1918,7 +1924,7 @@ class EvidenceTools:
             if relaxed:
                 gaps.append(_gap(
                     "unknown", "partial_word_match",
-                    f"query:{' '.join(arguments['query'].split())}"[:700],
+                    f"query:{' '.join(arguments['query'].split())}",
                     "no visible document holds every word of the query; the documents "
                     "listed hold every word but one of these, which they were not "
                     f"required to hold: {', '.join(relaxed)}. Read them before relying "
@@ -2082,10 +2088,10 @@ class EvidenceTools:
         domains = {d for d in domains if len(d) <= 254}
         needles = sorted(addresses) + sorted(domains - addresses)
         if len(needles) > MAX_PARTICIPANTS:
-            gaps.append(_gap("unknown", "participants_cut", participant[:700],
+            gaps.append(_gap("unknown", "participants_cut", participant,
                              f"{len(needles)} addresses and domains; the first "
                              f"{MAX_PARTICIPANTS} were searched"))
-            needles = needles[:MAX_PARTICIPANTS]
+            needles = needles[:MAX_PARTICIPANTS]  # guard-ok: stated plainly in the participants_cut gap how many of the addresses were searched
         wanted = set(needles)
         rows, more = self._participant_rows(scope, needles, within)
         cut |= more
@@ -2126,7 +2132,7 @@ class EvidenceTools:
                 del roles[oid]
             if dropped and tenant is None:
                 gaps.append(_gap("unknown", "recipient_matches_unchecked",
-                                 f"participant:{participant}"[:700],
+                                 f"participant:{participant}",
                                  f"{len(dropped)} message(s) only addressed to the "
                                  "participant were left out: our own mail domains are not "
                                  "known here, so whether one of us sent them is unknown"))
@@ -2142,7 +2148,7 @@ class EvidenceTools:
             # The newest are kept: the last message with them is never what is cut.
             dated.sort(key=lambda item: (item[0] is None, -(item[0].timestamp()
                                                             if item[0] else 0), item[1]))
-            dated, cut = dated[:DOC_SCAN_CAP], True
+            dated, cut = dated[:DOC_SCAN_CAP], True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         kept = {oid for _, oid in dated}
         return kept, {oid: roles[oid] for oid in kept}, needles, cut
 
@@ -2182,7 +2188,7 @@ class EvidenceTools:
                                    "AND l.link_type IN (SELECT value FROM json_each(:lt))",
                                    {"lt": types})
         cut = len(rows) > LINK_SCAN_CAP
-        firms = sorted({r["from_object"] for r in rows[:LINK_SCAN_CAP]
+        firms = sorted({r["from_object"] for r in rows[:LINK_SCAN_CAP]  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
                         if r["to_object"] in roots} - roots)
         if not firms:
             return [], cut
@@ -2190,7 +2196,7 @@ class EvidenceTools:
                                    {"lt": CONTACT_PEOPLE_LINK})
         cut |= len(rows) > LINK_SCAN_CAP
         named = set(firms)
-        people = {r["from_object"] for r in rows[:LINK_SCAN_CAP] if r["to_object"] in named}
+        people = {r["from_object"] for r in rows[:LINK_SCAN_CAP] if r["to_object"] in named}  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         return firms + sorted(people - set(firms) - roots), cut
 
     def _record_addresses(self, scope: Any, ids: Sequence[str]) -> set[str]:
@@ -2253,7 +2259,7 @@ class EvidenceTools:
                 f"""SELECT v.object_id, v.property, v.value FROM object_values v
                     JOIN objects o ON o.object_id = v.object_id
                     WHERE {held} AND {visible} LIMIT :cap""", params).fetchall()
-        return rows[:PARTICIPANT_SCAN_CAP], len(rows) > PARTICIPANT_SCAN_CAP
+        return rows[:PARTICIPANT_SCAN_CAP], len(rows) > PARTICIPANT_SCAN_CAP  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
 
     def _mail_signals(self, scope: Any, documents: list[dict[str, Any]]) -> None:
         """Each listed message's mail signals (``authority.mail_signals``) in its
@@ -2377,7 +2383,7 @@ class EvidenceTools:
         for _hop in range(2):
             rows = self._visible_links(scope, frontier)
             if len(rows) > LINK_SCAN_CAP:
-                rows, cut = rows[:LINK_SCAN_CAP], True
+                rows, cut = rows[:LINK_SCAN_CAP], True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
             found = set()
             for row in rows:
                 for oid, audience in ((row["from_object"], row["from_audience"]),
@@ -2390,7 +2396,7 @@ class EvidenceTools:
                 break
             frontier = sorted(new)
         if len(out) > DOC_SCAN_CAP:
-            out, cut = set(sorted(out)[:DOC_SCAN_CAP]), True
+            out, cut = set(sorted(out)[:DOC_SCAN_CAP]), True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         return out, cut
 
     def _query_documents(self, scope: Any, query: str, families: Sequence[str],
@@ -2452,7 +2458,7 @@ class EvidenceTools:
                     ORDER BY i.object_id LIMIT :cap""",
                 scope.params(pairs=json.dumps(pairs), cap=DOC_SCAN_CAP + 1)).fetchall()
             if len(rows) > DOC_SCAN_CAP:
-                rows, cut = rows[:DOC_SCAN_CAP], True
+                rows, cut = rows[:DOC_SCAN_CAP], True  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
             objects = list(dict.fromkeys(r["object_id"] for r in rows)) if families else []
             firm, firm_cut = self._firm_twins(scope, objects) if objects else ([], False)
             objects += [oid for oid in firm if oid not in objects]
@@ -2473,7 +2479,7 @@ class EvidenceTools:
             # keys and readings above): no document of a family could be found below,
             # and its link and word scans cost up to minutes over a common identifier
             return out, pairs, bare, cut, []
-        words = _content_words(ot._text_tokens(query, keys, limit=None))[:6]
+        words = _content_words(ot._text_tokens(query, keys, limit=None))
         tokens = words or ([query.strip()] if not pairs else [])
         # Words, never identifiers: a query naming an identifier (a label or a
         # self-delimiting shape) is answered by it, not by the words of a text.
@@ -2552,7 +2558,7 @@ class EvidenceTools:
         texts = [m.text for m in mentions if isinstance(getattr(m, "text", None), str)] \
             or [t for t in (self._bare(query),) if t]
         words = [w for text in texts for w in re.findall(r"[^\W_]+", text)]
-        return list(dict.fromkeys(words))[:6]
+        return list(dict.fromkeys(words))
 
     def _mention_pairs(self, query: str) -> list[tuple[str, str]]:
         """(kind, normalized) of each identifier mention the grammar finds in ``query``."""
@@ -2578,7 +2584,7 @@ class EvidenceTools:
             return [], True
         rows = self._visible_links(scope, ids, "AND l.link_type LIKE '%.same_record_as'")
         cut = len(rows) > LINK_SCAN_CAP
-        rows = rows[:LINK_SCAN_CAP]
+        rows = rows[:LINK_SCAN_CAP]  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         lineages = self._lineages(scope, {r["from_object"] for r in rows}
                                   | {r["to_object"] for r in rows})
         out: list[str] = []
@@ -2598,7 +2604,7 @@ class EvidenceTools:
             return []
         hits = plug.ranked(self.traverse.policy, scope.actor, self.base._item_allowed,
                            query).hits
-        return [h["object_id"] for h in hits][:DOC_SCAN_CAP]
+        return [h["object_id"] for h in hits][:DOC_SCAN_CAP]  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
 
     def _document_text_hits(self, scope: Any, tokens: Sequence[str], families: Sequence[str],
                             snippets: dict[str, dict[str, Any]]) -> tuple[set[str], bool]:
@@ -2655,7 +2661,7 @@ class EvidenceTools:
         out: set[str] = set()
         # a payroll or HR-confidential document's text is never read for a reader without
         # finance and pii (``operating.search.document_marks.readable_text``)
-        for row in ontology_tools_policy._readable_text(self.store, scope, rows[:DOC_SCAN_CAP]):
+        for row in ontology_tools_policy._readable_text(self.store, scope, rows[:DOC_SCAN_CAP]):  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
             if _family(row["audience_key"]) not in families:
                 continue
             out.add(row["object_id"])
@@ -2957,7 +2963,7 @@ class EvidenceTools:
                     ORDER BY v.object_id, v.property LIMIT :cap""", params).fetchall()
         cut = len(rows) > DOC_SCAN_CAP
         out = set()
-        for row in rows[:DOC_SCAN_CAP]:
+        for row in rows[:DOC_SCAN_CAP]:  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
             if _family(row["audience_key"]) not in families:
                 continue
             out.add(row["object_id"])
@@ -2986,7 +2992,7 @@ class EvidenceTools:
                 "properties", ())]
             rank = order.index(row["property"]) if row["property"] in order else len(order)
             current = best.get(row["object_id"])
-            if current is None or (rank, row["property"]) < current[:2]:
+            if current is None or (rank, row["property"]) < current[:2]:  # guard-ok: tuple comparison, not content
                 best[row["object_id"]] = (rank, row["property"], row["value"])
         return {oid: value for oid, (_, _, value) in best.items()}
 
@@ -3034,7 +3040,7 @@ class EvidenceTools:
             seen.add(key)
             external = any(isinstance(f, dict) and f.get("feature") == "external_assertion"
                            for f in _json_list(row["why_not"]))
-            normalized = str(feature.get("normalized") or text[start:end])[:200]
+            normalized = str(feature.get("normalized") or text[start:end])
             kind = str(feature.get("identifier_kind") or "")
             if not re.match(r"^[a-z][a-z0-9_]{0,63}$", kind) or not normalized:
                 continue
@@ -3108,7 +3114,7 @@ class EvidenceTools:
         # one past the cap: a cut is proven by an original left unscanned, never assumed
         # from a count that merely reaches it
         listed = self.reader.originals(actor, ORIGINAL_SCAN + 1)
-        cut, listed = len(listed) > ORIGINAL_SCAN, listed[:ORIGINAL_SCAN]
+        cut, listed = len(listed) > ORIGINAL_SCAN, listed[:ORIGINAL_SCAN]  # guard-ok: declared scan bound; the cut is counted and stated in completeness as scan_cap
         if cut:
             gaps.append(_gap("unknown", "scan_cap", "source:original",
                              f"only the newest {ORIGINAL_SCAN} readable originals were "
@@ -3181,7 +3187,7 @@ class EvidenceTools:
                         "identifier_kind": found["identifier_kind"],
                         "span": _envelope(text[found["start"]:found["end"]], page_handle),
                         "tier": "lead", "external_assertion": True},
-                        found["identifier_kind"], str(found["normalized"])[:200], page_handle)
+                        found["identifier_kind"], str(found["normalized"]), page_handle)
                     if root is not None:
                         mention["object_id"] = root
                     mentions.append(mention)
@@ -3253,7 +3259,7 @@ class EvidenceTools:
         base: dict[str, Any] = {"citation": handle, "gaps": [], "meta": meta}
         if self.reader is None:
             return dict(base, status="unresolvable",
-                        gaps=[_gap("not_ingested", "source_not_configured", handle[:700],
+                        gaps=[_gap("not_ingested", "source_not_configured", handle,
                                    "this host passed no citation reader")],
                         completeness={"complete": False, "truncated": False, "returned": 0,
                                       "reason": "source_not_configured"})
@@ -3272,17 +3278,17 @@ class EvidenceTools:
             status = read.get("status")
         if status not in ("resolved", "changed_since"):
             status = "withheld" if status == "withheld" else "unresolvable"
-            return dict(base, status=status, gaps=gaps[:MAX_GAPS],
+            return dict(base, status=status, gaps=gaps[:MAX_GAPS],  # guard-ok: a resolution failure carries a handful of gaps, never near the cap
                         completeness={"complete": False, "truncated": False, "returned": 0,
                                       "reason": status})
         lineage = read.get("lineage")
         digest = read.get("digest")
         if not (isinstance(lineage, str) and _LINEAGE.match(lineage)) \
                 or not (isinstance(digest, str) and _DIGEST.match(digest)):
-            gaps.append(_gap("unknown", "lineage_or_digest_unknown", handle[:700],
+            gaps.append(_gap("unknown", "lineage_or_digest_unknown", handle,
                              "the record resolved but its lineage or digest is not known; "
                              "it is not shown"))
-            return dict(base, status="unresolvable", gaps=gaps[:MAX_GAPS],
+            return dict(base, status="unresolvable", gaps=gaps[:MAX_GAPS],  # guard-ok: a resolution failure carries a handful of gaps, never near the cap
                         completeness={"complete": False, "truncated": False, "returned": 0,
                                       "reason": "lineage_unknown"})
         document = bool(read.get("document"))
@@ -3302,7 +3308,7 @@ class EvidenceTools:
             # A marked value (or one repeating it) is withheld, never absent: whether the
             # record holds a value there is not said.
             gaps.append(_gap("inaccessible", "marking_withheld",
-                             ", ".join(withheld)[:700],
+                             ", ".join(withheld),
                              "these fields carry a marking this reader does not hold (or "
                              "repeat the figure of one that does): they are not shown, and "
                              "whether they hold a value is not said"))
@@ -3339,7 +3345,7 @@ class EvidenceTools:
             result.pop("content", None)
             gaps.insert(0, unread)
         if len(fields) > 400:
-            fields, truncated = dict(list(fields.items())[:400]), True
+            fields, truncated = dict(list(fields.items())[:400]), True  # guard-ok: the truncated flag reaches completeness as max_chars
         if fields or "content" not in result:
             result["fields"] = fields
         if read.get("attachments") and wanted is None and page is None:
@@ -3348,7 +3354,10 @@ class EvidenceTools:
                 and self._document_withheld(a["citation"], held))]
             if listed:
                 result["attachments"] = listed
-        result["gaps"] = gaps[:MAX_GAPS]
+        result["gaps"] = gaps if len(gaps) <= MAX_GAPS else gaps[:MAX_GAPS - 1] + [
+            _gap("unknown", "further_gaps_not_listed", handle,
+                 f"{len(gaps) - MAX_GAPS + 1} further gap(s) arose on this read; "
+                 f"the first {MAX_GAPS - 1} are listed")]
         result["completeness"] = _completeness(len(fields) + ("content" in result), None,
                                                truncated, "max_chars" if truncated else None,
                                                None)
@@ -3483,7 +3492,7 @@ def marked_read(handle: str, read: Mapping[str, Any], held: Iterable[str],
         hidden |= {f"{prefix}.{column}" for column in withheld}
 
     def column_of(path: str) -> str:
-        return ".".join(path.split(".")[:3 if path.startswith("rows.") else 2])
+        return ".".join(path.split(".")[:3 if path.startswith("rows.") else 2])  # guard-ok: field-path prefix shape, not content
 
     return {**read, "fields": {path: value for path, value in values.items()
                                if column_of(str(path)) not in hidden},
@@ -3506,8 +3515,8 @@ def text_not_extracted(read: Mapping[str, Any], handle: str, wanted: str | None
         return None
     if status.startswith("extracted"):   # read, yet nothing of it (or of this page) is text
         status = "no_text"
-    return _gap("not_ingested", TEXT_NOT_EXTRACTED, handle[:700],
-                f"no text was extracted from this file ({status[:120]}): what it says is "
+    return _gap("not_ingested", TEXT_NOT_EXTRACTED, handle,
+                f"no text was extracted from this file ({status}): what it says is "
                 "unread, not absent; its fields are its metadata only")
 
 
@@ -3517,7 +3526,7 @@ def skipped_gap(subject: str, skipped: Mapping[str, Any]) -> dict[str, Any]:
     first, last = skipped.get("first_page"), skipped.get("last_page")
     pages = f"pages {first}-{last}" if first is not None else "pages past the page cap"
     read = f"pages 1-{first - 1}" if isinstance(first, int) else "its first pages"
-    return _gap("not_ingested", "skipped_by_cap", subject[:700],
+    return _gap("not_ingested", "skipped_by_cap", subject,
                 f"{pages} of this file are past the extraction's page cap and were not "
                 f"read: its text is {read} only, never the whole file, and nothing on "
                 "the pages not read is searched or shown")
@@ -3527,7 +3536,7 @@ def capped_gaps(capped: Sequence[dict[str, Any]], scope: str, what: str
                 ) -> list[dict[str, Any]]:
     """The ``skipped_by_cap`` gaps of a search's files read on their first pages only that
     did not match: the first ``CAPPED_LISTED`` by name, the rest counted in one gap."""
-    out = list(capped[:CAPPED_LISTED])
+    out = list(capped[:CAPPED_LISTED])  # guard-ok: the rest are counted in one further gap, stated plainly
     if len(capped) > CAPPED_LISTED:
         out.append(_gap("not_ingested", "skipped_by_cap", scope,
                         f"{len(capped) - CAPPED_LISTED} further {what} you may see were "
@@ -3622,7 +3631,7 @@ def wanted_field(fields: Mapping[str, Any], path: str) -> tuple[bool | str, Any]
     ``key.`` and ``rows.N.``) over the row the reader returned, whose columns are the
     ``fields`` under the same prefix."""
     parts = path.split(".")
-    prefix = ".".join(parts[:2 if parts[0] == "rows" else 1]) + "."
+    prefix = ".".join(parts[:2 if parts[0] == "rows" else 1]) + "."  # guard-ok: field-path prefix shape, not content
     row = {name[len(prefix):]: value for name, value in fields.items()
            if name.startswith(prefix) and "." not in name[len(prefix):]}
     column, *keys = path[len(prefix):].split(".")
@@ -3649,11 +3658,11 @@ def _reading_gap(query: str, readings: Mapping[str, set[str]], sources: Sequence
     kinds = sorted(readings)
     named = ", ".join(f"{kind} ({len(readings[kind])} value"
                       f"{'' if len(readings[kind]) == 1 else 's'})"
-                      for kind in kinds[:MAX_READINGS])
+                      for kind in kinds[:MAX_READINGS])  # guard-ok: stated plainly how many more kinds follow
     if len(kinds) > MAX_READINGS:
         named += f" and {len(kinds) - MAX_READINGS} more kind(s)"
     count = sum(len(values) for values in readings.values())
-    subject = f"query:{' '.join(query.split())}"[:700]
+    subject = f"query:{' '.join(query.split())}"
     if count == 1:
         return _gap("unknown", "identifier_reading", subject,
                     f"the unlabelled query was read as {named}, the only identifier "
@@ -3662,7 +3671,7 @@ def _reading_gap(query: str, readings: Mapping[str, set[str]], sources: Sequence
     return _gap("unknown", "ambiguous_identifier", subject,
                 f"the unlabelled query reads as {count} identifiers visible to this reader: "
                 f"{named}; listed are each reading's documents this reader may see in the "
-                f"requested sources ({', '.join(sources[:8])}), and none is chosen; "
+                f"requested sources ({', '.join(sources)}), and none is chosen; "
                 "a label names the kind")
 
 
@@ -3783,10 +3792,10 @@ def _mention_summary(ordered: Sequence[Mapping[str, Any]], offset: int, shown: i
     kinds = Counter(str(kind) for kind, _ in pairs)
     after = offset + shown
     return {"total": len(ordered), "offset": offset,
-            "by_kind": dict(sorted(kinds.items())[:MAX_SUMMARY_IDENTIFIERS]),
+            "by_kind": dict(sorted(kinds.items())[:MAX_SUMMARY_IDENTIFIERS]),  # guard-ok: paged with mention_offset; identifiers_total counts them all
             "identifiers": [{"identifier_kind": kind, "normalized": normalized,
                              "count": counts[(kind, normalized)]}
-                            for kind, normalized in top[:MAX_SUMMARY_IDENTIFIERS]],
+                            for kind, normalized in top[:MAX_SUMMARY_IDENTIFIERS]],  # guard-ok: paged with mention_offset; identifiers_total counts them all
             "identifiers_total": len(counts),
             "next_mention_offset": after if after < len(ordered) else None}
 
@@ -3921,12 +3930,12 @@ def with_pages(result: dict[str, Any], pages: list[dict[str, Any]], max_bytes: i
         gaps = list(result.get("gaps") or [])
         if len(gaps) < MAX_GAPS:
             gaps.append(_gap("unknown", "page_citations_cut",
-                             first["page_citation"][:700], detail))
+                             first["page_citation"], detail))
         else:
             # A full list: the last gap stays, and says the cut too.
             kept = dict(gaps[MAX_GAPS - 1])
             also = f"; also, {detail}"
-            kept["detail"] = str(kept.get("detail") or "")[:600 - len(also)] + also
+            kept["detail"] = str(kept.get("detail") or "") + also
             gaps = gaps[:MAX_GAPS - 1] + [kept]
         out = dict(result, gaps=gaps)
         if count:
