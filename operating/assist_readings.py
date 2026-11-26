@@ -70,6 +70,7 @@ import re
 import subprocess
 import sys
 import time
+from urllib.parse import unquote
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
@@ -96,6 +97,9 @@ FRESH_DAYS = 3            # newer: read first at once; older: the backlog, newes
 # The model's window: a message is read whole; one longer than the window is read in pages
 # (``paged``) and the pages' readings merged, said in text_basis (never cut):
 MODEL_WINDOW_CHARS = 400000   # of one message's own text per call (the model's window, with room)
+EARLIER_MAX_MESSAGES = 12     # at most this many earlier thread messages sent per reading
+EARLIER_MAX_CHARS = 8_000     # total character cap for earlier thread context per reading
+THREAD_HISTORY_LIMIT = 20     # per-thread/chat row cap loaded from PG in thread_rows()
 OWN_TEXT_CHARS = MODEL_WINDOW_CHARS
 TEXT_READ = 2 ** 30       # of the stored text read to find its own part: all of it
 BATCH = 8                 # messages per model call
@@ -240,9 +244,18 @@ def candidates_sql(s: str, view: str, *, count: bool = False, stored: bool = Tru
     else:
         inner = (
             "SELECT t.handle AS k, ARRAY[t.handle] AS handles, t.created_at AS said, t.subject, "
-            "t.chat AS thread, t.sender, '[]'::jsonb AS too, '[]'::jsonb AS cc, "
-            "'{}'::text[] AS mailboxes, CASE WHEN t.sender LIKE '{%%' THEN (t.sender::jsonb->>'id') "
-            "= ANY(%(pids)s::text[]) ELSE false END AS from_us, "
+            "t.chat AS thread, t.sender, "
+            "coalesce(to_jsonb(t)->'member_ids', '[]'::jsonb) AS too, "
+            "coalesce(to_jsonb(t)->'addresses', '[]'::jsonb) AS cc, "
+            "CASE WHEN to_jsonb(t)->>'chat_type' IS NOT NULL "
+            "THEN ARRAY[to_jsonb(t)->>'chat_type'] ELSE '{}'::text[] END AS mailboxes, "
+            "CASE WHEN t.sender LIKE '{%%' THEN "
+            "lower(coalesce(t.sender::jsonb->>'id', '')) = ANY(%(pids)s::text[]) "
+            "OR lower(split_part(coalesce(t.sender::jsonb->>'email', "
+            "t.sender::jsonb->>'address', ''), '@', 2)) = ANY(%(ours)s::text[]) "
+            "WHEN position('@' in coalesce(t.sender, '')) > 0 THEN "
+            "lower(split_part(t.sender, '@', 2)) = ANY(%(ours)s::text[]) "
+            "ELSE lower(coalesce(t.sender, '')) = ANY(%(pids)s::text[]) END AS from_us, "
             f"cardinality(t.customers) > 0 AS customer, false AS bulk, ({_rule('t')}) AS door, "
             f"t.handle, t.object_ids[1] AS oid FROM {s}.teams_messages t WHERE t.created_at >= "
             f"%(since)s AND t.created_at < %(until)s AND {_due_to_read('t.handle', view, stored)}")
@@ -335,9 +348,10 @@ _SYSTEM_ALERT_PREFIXES = (
     "stage-rail@",
 )
 _SYSTEM_ALERT_SUBJECT = re.compile(
-    r"^(?:(?:Workbench\s+API|API|System|Staging)\s+health\b|Health\s+check\b|"
+    r"^(?:(?:Workbench\s+API|API|System|Staging)\s+health\b|"
+    r"(?:Daily\s+)?(?:Workbench\s+API\s+)?health\s+(?:check|alert|report)\b|"
     r"ALERT:|In\s+Progress\s+Seal\s+has\s+no\s+agent\s+run\b|"
-    r"UAT\s+BC\s+scheduled\s+sync\s+has\s+not\s+refreshed\b|"
+    r"UAT\s+(?:BC|Business\s+Central)\s+(?:scheduled\s+)?sync\s+has\s+not\s+(?:refreshed|run)\b|"
     r"PLX\s+required\s+CI\s+red:|"
     r"Microsoft\s+365\s+security:\s+You\s+have\s+messages\s+in\s+quarantine\b|"
     r"\[ACTION\].*Stage\s+Rail\s+loop\b|"
@@ -345,13 +359,29 @@ _SYSTEM_ALERT_SUBJECT = re.compile(
     r"Action\s+needed:\s+your\s+work\s+password\s+expires\b|"
     r"QC\s+Morning\s+Headcount\s+Logged\b|"
     r"\[[^\]]+\]\s+Possible\s+valid\s+secrets\s+detected\b|"
-    r"Automated\s+(?:Stage\s+Rail\s+)?alert:|"
+    r"Automated(?:\s+(?:daily|weekly|hourly|staging|uat|system|health|stage\s+rail|qc|it|ops|monitoring|sync))*\s+"
+    r"(?:health\s+)?(?:alert|notice|check|report)\s*:|"
     r"Automated\s+QC\s+notice\b|"
     r"Microsoft\s+quarantine\s+notice:|"
     r"NetFusion\s+Designs\s+automated\s+notice:|"
     r"Password-expiry\s+notice\b|"
-    r"Portal-to-BC\s+sync\s+has\s+not\s+run\b|"
-    r"UAT\s+BC\s+sync\s+has\s+not\s+run\b)",
+    r"Portal-to-BC\s+sync\s+has\s+not\s+(?:run|refreshed)\b|"
+    r"UAT\s+BC\s+sync\s+has\s+not\s+(?:run|refreshed)\b)",
+    re.IGNORECASE,
+)
+_SYSTEM_ALERT_INLINE = re.compile(
+    r"\b(?:email-relay\s+job\s+failed|"
+    r"(?:UAT\s+(?:BC|Business\s+Central)|Portal-to-BC)\s+(?:scheduled\s+)?sync\s+has\s+not\s+(?:run|refreshed)|"
+    r"(?:unavailable\s+)?Workbench\s+API(?:\s+staging)?\s+relations|"
+    r"Daily\s+(?:Workbench\s+API\s+)?health\s+(?:check|alert)\b|"
+    r"(?:Mission\s+Control\s+)?PR\s+merge[- ]class(?:\s+gate)?|"
+    r"merge[- ]class\s+gate|"
+    r"(?:staging|uat)\s+(?:sync|relay|health|monitor(?:ing)?)\s+(?:alert|failure|failed|error|has\s+not\s+run)|"
+    r"Microsoft\s+365\s+security:\s+You\s+have\s+messages\s+in\s+quarantine|"
+    r"quarantine\s+digest|"
+    r"system\s+health\s+check|"
+    r"automated\s+(?:daily|weekly|hourly|staging|uat|system|health|it|ops|monitoring|sync)\s+"
+    r"(?:health\s+)?(?:alert|notice|digest|report))\b",
     re.IGNORECASE,
 )
 _SYSTEM_ALERT_SUFFIX = re.compile(r":\s*ALERT\s*$", re.IGNORECASE)
@@ -366,22 +396,37 @@ def _bare_email(sender: Any) -> str:
     return m.group(1).strip() if m else raw
 
 
-def is_system_alert_mail(sender: Any, subject: Any, summary: Any = "") -> bool:
-    """Whether an email is an automated internal system monitoring, IT, quarantine, CI,
-    password-expiry, or Stage Rail alert that should be classified as automated/bulk rather
-    than polluting an employee's Assist queue."""
+def is_automated_system_alert(
+    sender: Any = "",
+    subject: Any = "",
+    summary: Any = "",
+    note: Any = "",
+    message: Any = "",
+) -> bool:
+    """Shared automated IT/system monitoring filter reused by Assist readings, Assist matters,
+    Assist waits, Assist inbox, Autopilot prepared cards, and Home Needs-you. Catches
+    staging/UAT health checks, email-relay failures, UAT/Portal BC sync alerts,
+    quarantine/password-expiry/CI notices, and cos@petrasoap.com automated Mission Control
+    PR merge-class gates without hiding genuine customer, supplier, or staff business
+    messages."""
     addr = _bare_email(sender)
     subj = str(subject or "").strip()
     summ = str(summary or "").strip()
-    if not subj and not summ and not addr:
+    note_text = str(note or "").strip()
+    msg_text = str(message or "").strip()
+    if not (subj or summ or note_text or msg_text or addr):
         return False
-    for text in (subj, summ):
-        if text and _SYSTEM_ALERT_SUBJECT.search(text):
+    for text in (subj, summ, note_text):
+        if text and (_SYSTEM_ALERT_SUBJECT.search(text) or _SYSTEM_ALERT_INLINE.search(text)):
+            return True
+    if msg_text:
+        head = msg_text[:2000]
+        if _SYSTEM_ALERT_SUBJECT.search(head) or _SYSTEM_ALERT_INLINE.search(head):
             return True
     if addr in _SYSTEM_ALERT_SENDERS:
         if addr != "cos@petrasoap.com":
             return True
-        low = f"{subj} {summ}".lower()
+        low = f"{subj} {summ} {note_text} {msg_text}".lower()
         if (
             _SYSTEM_ALERT_SUFFIX.search(subj)
             or "health" in low
@@ -389,16 +434,29 @@ def is_system_alert_mail(sender: Any, subject: Any, summary: Any = "") -> bool:
             or "has no agent run" in low
             or "required ci red" in low
             or "uat bc sync" in low
+            or "uat business central sync" in low
             or "portal-to-bc sync" in low
+            or "email-relay" in low
+            or "merge-class" in low
+            or "merge class" in low
+            or "pr merge" in low
+            or "workbench api" in low
         ):
             return True
     if any(addr.startswith(prefix) for prefix in _SYSTEM_ALERT_PREFIXES):
         return True
     if addr in ("support@github.com", "noreply@github.com", "notifications@github.com"):
-        low = f"{subj} {summ}".lower()
-        if "secret" in low or "security" in low or "alert" in low or "ci " in low:
+        low = f"{subj} {summ} {note_text} {msg_text[:500]}".lower()
+        if "secret" in low or "security" in low or "alert" in low or "ci " in low or "merge-class" in low:
             return True
     return False
+
+
+def is_system_alert_mail(sender: Any, subject: Any, summary: Any = "") -> bool:
+    """Whether an email is an automated internal system monitoring, IT, quarantine, CI,
+    password-expiry, or Stage Rail alert that should be classified as automated/bulk rather
+    than polluting an employee's Assist queue."""
+    return is_automated_system_alert(sender=sender, subject=subject, summary=summary)
 
 
 def screened(text: str, subject: str) -> str:
@@ -419,19 +477,31 @@ class Staff:
     """Our staff as the reading resolves them, from the staff view (empty when it is not
     built: then nobody is resolved and only a mailbox owner's own sent mail is ``us``):
     ``by_address`` lower-case address -> staff ids, ``by_id`` staff id (the Entra object id
-    the mailboxes and Teams senders carry) -> (name, address), ``domains`` our mail domains."""
+    the mailboxes and Teams senders carry) -> (name, address), ``by_id_lower`` lower-case
+    staff id -> canonical staff id, ``domains`` our mail domains."""
 
     def __init__(self, rows: Iterable[tuple[str, str, str]] = ()) -> None:
         self.by_address: dict[str, list[str]] = {}
         self.by_id: dict[str, tuple[str, str]] = {}
+        self.by_id_lower: dict[str, str] = {}
         for pid, address, name in rows:
             if not pid:
                 continue
             address = (address or "").strip().lower()
             self.by_id[pid] = (name or "", address)
+            self.by_id_lower[pid.strip().lower()] = pid
             if "@" in address:
                 self.by_address.setdefault(address, []).append(pid)
         self.domains = sorted({a.split("@", 1)[1] for a in self.by_address})
+
+    def lookup_id(self, raw_id: Any) -> Optional[str]:
+        """Resolve a Teams or Entra id case-insensitively to the canonical staff id."""
+        key = str(raw_id or "").strip()
+        if not key:
+            return None
+        if key in self.by_id:
+            return key
+        return self.by_id_lower.get(key.lower())
 
 
 def staff_of(pg: Any, s: str) -> Staff:
@@ -440,29 +510,102 @@ def staff_of(pg: Any, s: str) -> Staff:
     return Staff(pg.execute(f"SELECT person_id, email, name FROM {s}.staff").fetchall())
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_ONE_ON_ONE_CHAT_RE = re.compile(
+    r"19:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@unq\.gbl\.spaces",
+    re.IGNORECASE,
+)
+
+
+def teams_chat_member_ids(thread: Any, member_ids: Iterable[Any] = ()) -> list[str]:
+    """Extract normalized lower-case member Entra IDs from ``member_ids`` and from 1:1
+    Teams chat identifiers (including URL-encoded handles like
+    ``teams-chat://19%3A<uuid1>_<uuid2>%40unq.gbl.spaces``)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in member_ids or ():
+        val = str(raw or "").strip().lower()
+        if val and val not in seen:
+            seen.add(val)
+            out.append(val)
+    decoded = unquote(str(thread or ""))
+    match = _ONE_ON_ONE_CHAT_RE.search(decoded)
+    if match:
+        for group in match.groups():
+            val = group.lower()
+            if val not in seen:
+                seen.add(val)
+                out.append(val)
+    return out
+
+
+def is_one_on_one_teams_chat(thread: Any, chat_type: Any = "",
+                             member_ids: Iterable[Any] = ()) -> bool:
+    """Whether a Teams chat is a 1:1 conversation (by explicit ``chat_type == 'oneOnOne'``
+    or by the ``19:<uuid1>_<uuid2>@unq.gbl.spaces`` chat id pattern)."""
+    ctype = str(chat_type or "").strip().lower()
+    if ctype == "oneonone":
+        return True
+    if ctype and ctype not in ("oneonone", ""):
+        return False
+    decoded = unquote(str(thread or ""))
+    if _ONE_ON_ONE_CHAT_RE.search(decoded):
+        return True
+    ids = teams_chat_member_ids(thread, member_ids)
+    return len(ids) == 2
+
+
 def teams_sender(sender: Any) -> tuple[str, str, str]:
     """(id, display name, kind) of a Teams sender as the capture stores it (a JSON object
-    with ``id``, ``display_name``, ``kind``); ('', '', '') when there is none or it is not
-    that shape (said by the caller as an unknown sender, never guessed)."""
+    with ``id``, ``display_name``, ``kind``, or a plain UUID / email string); ('', '', '')
+    when there is none or it is not that shape (said by the caller as an unknown sender,
+    never guessed)."""
     if isinstance(sender, Mapping):
-        obj = sender
-    else:
+        obj: Any = sender
+    elif isinstance(sender, str):
+        raw = sender.strip()
+        if not raw:
+            return "", "", ""
         try:
-            obj = json.loads(sender) if sender else None
+            obj = json.loads(raw)
         except ValueError:
             obj = None
+        if not isinstance(obj, Mapping):
+            if _UUID_RE.match(raw):
+                return raw.lower(), "", "user"
+            if "@" in raw and not any(ch.isspace() for ch in raw):
+                return raw.lower(), "", "user"
+            return "", "", ""
+    else:
+        return "", "", ""
     if not isinstance(obj, Mapping):
         return "", "", ""
-    return str(obj.get("id") or ""), str(obj.get("display_name") or ""), str(obj.get("kind") or "")
+    ident = str(
+        obj.get("id")
+        or obj.get("user_id")
+        or obj.get("email")
+        or obj.get("address")
+        or obj.get("userPrincipalName")
+        or ""
+    ).strip().lower()
+    shown = str(obj.get("display_name") or obj.get("displayName") or obj.get("name") or "").strip()
+    kind = str(obj.get("kind") or "").strip()
+    return ident, shown, kind
 
 
 def participants(m: Mapping[str, Any], staff: Staff) -> list[dict[str, Any]]:
     """Who is on the message, each with a label (P1..), a role, a side, our staff's name and
     the staff ids it resolves to (``persons``) and how (``basis``): the model sees labels,
     sides and our staff's names, never an address or an id. Mail: sender, To, Cc, the
-    mailboxes it sits in (by their owner's address); Teams: the sender and the earlier
-    speakers of the chat, by their Teams id. No name matching."""
+    mailboxes it sits in (by their owner's address); Teams: the sender, the chat members
+    (marking the recipient ``to`` in 1:1 chats), and the earlier speakers of the chat, by
+    their Teams id or address. No name matching."""
     seen: dict[str, dict[str, Any]] = {}
+    seen_persons: set[str] = set()
 
     def add(ident: str, role: str, *, persons: Sequence[str], basis: str, name: str = "",
             side: str = "") -> None:
@@ -471,6 +614,8 @@ def participants(m: Mapping[str, Any], staff: Staff) -> list[dict[str, Any]]:
         seen[ident] = {"label": f"P{len(seen) + 1}", "ident": ident, "role": role,
                        "side": side or ("our staff" if persons else "outside"),
                        "name": name, "persons": list(persons), "basis": basis}
+        for p in persons:
+            seen_persons.add(p)
 
     def mail(address: str, role: str) -> None:
         a = (address or "").strip().lower()
@@ -482,7 +627,18 @@ def participants(m: Mapping[str, Any], staff: Staff) -> list[dict[str, Any]]:
         tid, shown, kind = teams_sender(sender)
         if not tid:
             return
-        pid = [tid] if tid in staff.by_id else []
+        if "@" in tid:
+            pids = staff.by_address.get(tid, [])
+            if len(pids) == 1 and pids[0] in seen_persons:
+                return
+            add(tid, role, persons=pids, basis="address",
+                name=shown or (staff.by_id[pids[0]][0] if len(pids) == 1 else ""),
+                side="an app" if kind == "application" else "")
+            return
+        canon = staff.lookup_id(tid)
+        pid = [canon] if canon else []
+        if canon and not shown:
+            shown = staff.by_id[canon][0]
         add(tid, role, persons=pid, basis="teams_id", name=shown,
             side="an app" if kind == "application" else "")
     if m["view"] == "emails":
@@ -492,12 +648,41 @@ def participants(m: Mapping[str, Any], staff: Staff) -> list[dict[str, Any]]:
         for a in m.get("cc") or ():
             mail(a, "cc")
         for box in m.get("mailboxes") or ():
-            if box in staff.by_id and staff.by_id[box][1]:
-                mail(staff.by_id[box][1], "has it in their mailbox")
+            canon = staff.lookup_id(box)
+            if canon and staff.by_id[canon][1]:
+                mail(staff.by_id[canon][1], "has it in their mailbox")
         for t in m.get("earlier") or ():
             mail(t.get("sender") or "", "wrote earlier")
     else:
         teams(m.get("sender"), "sender")
+        raw_members = list(m.get("member_ids") or m.get("to") or ())
+        chat_ref = m.get("thread") or m.get("handle") or ""
+        member_ids = teams_chat_member_ids(chat_ref, raw_members)
+        if m.get("handle") and m.get("handle") != chat_ref:
+            member_ids = teams_chat_member_ids(m.get("handle"), member_ids)
+        chat_type = m.get("chat_type") or ""
+        if not chat_type and m.get("mailboxes"):
+            chat_type = str((m.get("mailboxes") or ("",))[0] or "")
+        one_on_one = is_one_on_one_teams_chat(chat_ref, chat_type, member_ids) or (
+            bool(m.get("handle")) and is_one_on_one_teams_chat(m.get("handle"), chat_type, member_ids)
+        )
+        member_role = "to" if one_on_one else "chat member"
+        for mid in member_ids:
+            canon = staff.lookup_id(mid)
+            if canon and canon in seen_persons:
+                continue
+            pid = [canon] if canon else []
+            shown = staff.by_id[canon][0] if canon else ""
+            add(mid, member_role, persons=pid, basis="teams_id", name=shown)
+        for addr in m.get("addresses") or m.get("cc") or ():
+            a = str(addr or "").strip().lower()
+            if not a or "@" not in a:
+                continue
+            pids = staff.by_address.get(a, [])
+            if len(pids) == 1 and pids[0] in seen_persons:
+                continue
+            add(a, member_role, persons=pids, basis="address",
+                name=staff.by_id[pids[0]][0] if len(pids) == 1 else "")
         for t in m.get("earlier") or ():
             teams(t.get("sender"), "wrote earlier")
     return list(seen.values())
@@ -514,47 +699,67 @@ def resolve(person: Optional[Mapping[str, Any]]) -> tuple[Optional[str], str]:
     return None, f"unresolved:{len(pids)}" if pids else ""
 
 
-def thread_rows(pg: Any, s: str, page: Sequence[Mapping[str, Any]], covered: int
+def thread_rows(pg: Any, s: str, page: Sequence[Mapping[str, Any]], covered: int, *,
+                max_rows: int = THREAD_HISTORY_LIMIT
                 ) -> dict[tuple[str, str], list[tuple]]:
-    """(view, thread) -> every message of that thread or chat that passes the door, newest
-    first: (key, said, sender, handle, object). One statement per view for the whole page."""
+    """(view, thread) -> up to ``max_rows`` newest messages of that thread or chat that pass
+    the door, newest first: (key, said, sender, handle, object). One statement per view for
+    the whole page."""
     out: dict[tuple[str, str], list[tuple]] = {}
     for view in SOURCES:
         threads = sorted({m["thread"] for m in page if m["view"] == view and m.get("thread")})
         if not threads:
             continue
         if view == "emails":
-            sql = ("SELECT e.thread, coalesce(e.message_id, e.handle), min(e.received_at), "
-                   "min(e.sender), (array_agg(e.handle ORDER BY e.handle))[1], "
-                   "(array_agg(e.object_ids[1] ORDER BY e.handle))[1] FROM "
-                   f"{s}.emails e WHERE e.thread = ANY(%(t)s) AND {_rule('e')} GROUP BY 1, 2 "
-                   "ORDER BY 3 DESC")
+            sql = (
+                "SELECT thread, msg_key, received_at, sender, handle, obj FROM ("
+                "SELECT e.thread, coalesce(e.message_id, e.handle) AS msg_key, "
+                "min(e.received_at) AS received_at, min(e.sender) AS sender, "
+                "(array_agg(e.handle ORDER BY e.handle))[1] AS handle, "
+                "(array_agg(e.object_ids[1] ORDER BY e.handle))[1] AS obj, "
+                "ROW_NUMBER() OVER (PARTITION BY e.thread ORDER BY min(e.received_at) DESC) AS rn "
+                f"FROM {s}.emails e WHERE e.thread = ANY(%(t)s) AND {_rule('e')} GROUP BY 1, 2"
+                ") sub WHERE rn <= %(lim)s ORDER BY received_at DESC"
+            )
         else:
-            sql = ("SELECT t.chat, t.handle, t.created_at, t.sender, t.handle, t.object_ids[1] "
-                   f"FROM {s}.teams_messages t WHERE t.chat = ANY(%(t)s) AND {_rule('t')} "
-                   "ORDER BY t.created_at DESC")
-        for thread, *row in pg.execute(sql, {"t": threads, "covered": covered}).fetchall():
+            sql = (
+                "SELECT chat, handle, created_at, sender, handle, obj FROM ("
+                "SELECT t.chat, t.handle, t.created_at, t.sender, t.object_ids[1] AS obj, "
+                "ROW_NUMBER() OVER (PARTITION BY t.chat ORDER BY t.created_at DESC) AS rn "
+                f"FROM {s}.teams_messages t WHERE t.chat = ANY(%(t)s) AND {_rule('t')}"
+                ") sub WHERE rn <= %(lim)s ORDER BY created_at DESC"
+            )
+        for thread, *row in pg.execute(sql, {"t": threads, "covered": covered,
+                                             "lim": max(1, int(max_rows))}).fetchall():
             out.setdefault((view, thread), []).append(tuple(row))
     return out
 
 
 def earlier_of(m: Mapping[str, Any], rows: Sequence[tuple],
                texts: Mapping[tuple[str, str], tuple[Optional[str], str]],
-               window: int = MODEL_WINDOW_CHARS) -> tuple[list[dict], int]:
-    """(every earlier message of ``m``'s thread, oldest first, each whole; how many of the
-    oldest were left out). Only the model's window bounds it: the newest are kept while the
-    message and the earlier ones fit ``window`` (default ``MODEL_WINDOW_CHARS``), the count of the rest is said in
-    the prompt (``not_shown``)."""
+               window: int = MODEL_WINDOW_CHARS, *,
+               max_messages: Optional[int] = EARLIER_MAX_MESSAGES,
+               max_chars: Optional[int] = EARLIER_MAX_CHARS) -> tuple[list[dict], int]:
+    """(bounded earlier messages of ``m``'s thread, oldest first; how many older messages
+    were left out). Bounded by ``max_messages`` (default ``EARLIER_MAX_MESSAGES``),
+    ``max_chars`` (default ``EARLIER_MAX_CHARS``), and ``window`` (default
+    ``MODEL_WINDOW_CHARS``); the newest earlier messages are kept and the count left out is
+    reported in the prompt (``not_shown``)."""
     before = sorted((r for r in rows if r[1] < m["said"] and r[0] != m["key"]),
                     key=lambda r: r[1], reverse=True)
-    out, room, left = [], window - len(m.get("text") or ""), 0
+    avail = max(0, window - len(m.get("text") or ""))
+    room = min(avail, max_chars) if max_chars is not None else avail
+    out, left = [], 0
     for n, (_k, said, sender, handle, oid) in enumerate(before):
         text, _why = texts.get((handle, oid), (None, ""))
         if text is None:
             continue              # no text of its own to show (it is not counted as left out)
+        if max_messages is not None and len(out) >= max_messages:
+            left = len(before) - n
+            break
         own, _left = own_text(text, mail=m["view"] == "emails")
         if len(own) > room:
-            left = len(before) - n          # this one and every older one do not fit the window
+            left = len(before) - n          # this one and every older one do not fit the budget
             break
         room -= len(own)
         out.append({"sent": _minute(said), "sender": sender or "", "text": own})
@@ -562,7 +767,7 @@ def earlier_of(m: Mapping[str, Any], rows: Sequence[tuple],
 
 
 # --------------------------------------------------------------------------- the model
-PROMPT = """You read workplace emails and chat messages of a manufacturer, one reading per \
+PROMPT_HEAD = """You read workplace emails and chat messages of a manufacturer, one reading per \
 message, for the people who work there. For each message decide:
 
 1. needs_act: does the message ask or need someone to do something now: answer a question, \
@@ -604,12 +809,18 @@ oldest first, and how many earlier ones are not shown), text (the message's own 
 
 Answer with only a JSON array, one object per message: {{"n": <n>, "needs_act": true or \
 false, "actor": "", "act": "", "act_class": "", "due": "", "promise": "", "waiting_on": "", \
-"counterpart": "", "records": [], "summary": "", "quote": "", "items": []}}.
+"counterpart": "", "records": [], "summary": "", "quote": "", "items": []}}."""
 
-{lines}"""
+PROMPT = PROMPT_HEAD + "\n\n{lines}"
 
 
-def prompt_of(batch: Sequence[Mapping[str, Any]]) -> str:
+def system_prompt() -> str:
+    """Static reading rubric passed via ``--system-prompt`` for prompt-cache reuse."""
+    return PROMPT_HEAD.format(acts=", ".join(ACT_CLASSES), topics=", ".join(TOPICS))
+
+
+def batch_lines(batch: Sequence[Mapping[str, Any]]) -> str:
+    """Dynamic JSONL payload for one batch (sent on stdin)."""
     lines = []
     for n, m in enumerate(batch, 1):
         lines.append(json.dumps({
@@ -621,8 +832,11 @@ def prompt_of(batch: Sequence[Mapping[str, Any]]) -> str:
                                       "text": t["text"]} for t in m.get("earlier") or ()],
                         "not_shown": m.get("earlier_left", 0)},
             "text": m["text"]}, ensure_ascii=False))
-    return PROMPT.format(acts=", ".join(ACT_CLASSES), topics=", ".join(TOPICS),
-                         lines="\n".join(lines))
+    return "\n".join(lines)
+
+
+def prompt_of(batch: Sequence[Mapping[str, Any]]) -> str:
+    return system_prompt() + "\n\n" + batch_lines(batch)
 
 
 def _label(m: Mapping[str, Any], ident: Any) -> str:
@@ -704,6 +918,24 @@ def reading_of(row: Mapping[str, Any], m: Mapping[str, Any]) -> Optional[dict[st
         act_class = None
     if not needs:
         act_class = None
+    if needs and m.get("view") == "teams_messages":
+        # In a 1:1 Teams chat, if the model left actor blank/outside or picked the sender for
+        # a reply, resolve the single direct staff recipient so the 1:1 message is never dropped.
+        if (actor_person is None and not actor_basis.startswith("unresolved")) or (
+            actor_person is not None and actor_person == sender_person
+        ):
+            to_staff = []
+            for p in m.get("people") or ():
+                if p.get("role") != "to":
+                    continue
+                pid, _basis = resolve(p)
+                if pid and pid != sender_person:
+                    to_staff.append((p, pid))
+            if len(to_staff) == 1:
+                recipient, recipient_pid = to_staff[0]
+                actor = recipient["ident"]
+                actor_person = recipient_pid
+                actor_basis = "teams_one_on_one"
     quote = " ".join(str(row.get("quote") or "").split())
     if quote and (len(quote) < MIN_QUOTE or _norm(quote) not in text):
         notes.append("quote not in the text")
@@ -768,7 +1000,7 @@ def claude_read(model: str, *, seconds: float = SECONDS,
     run = call or subprocess.run
 
     def read(batch: Sequence[Mapping[str, Any]]) -> Optional[Sequence[Any]]:
-        from operating import model_ledger
+        from operating import humanize, model_ledger
         from operating.agent_environment import agent_environment
         from operating.card_text import mask_served
         exe = os.environ.get(cam.BINARY_ENV) or cam.BINARY
@@ -776,16 +1008,19 @@ def claude_read(model: str, *, seconds: float = SECONDS,
         if not cam.credential_path_safe(exe, home):
             log.error("readings: the model's config is not safe; nothing called")
             return None
-        prompt = mask_served(prompt_of(batch))
+        sys_prompt = system_prompt()
+        prompt = mask_served(batch_lines(batch))
         argv = [exe, "-p", "--setting-sources", "", "--tools", "", "--no-session-persistence",
-                "--max-turns", "1", "--output-format", "json", "--model", model]
+                "--max-turns", "1", "--output-format", "json",
+                "--system-prompt", sys_prompt, "--exclude-dynamic-system-prompt-sections",
+                "--model", model]
         env = dict(agent_environment(os.environ))
         env["HOME"] = home
         env["CLAUDE_CONFIG_DIR"] = os.path.join(home, ".claude")
         started = time.monotonic()
         try:
             done = run(argv, input=prompt, capture_output=True, text=True, timeout=seconds,
-                       env=env, start_new_session=True)
+                       env=env, cwd=humanize.neutral_dir(), start_new_session=True)
             reply = json.loads(done.stdout or "{}")
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             model_ledger.record(FEATURE, prompt=prompt, ok=False,
@@ -888,8 +1123,11 @@ def prepare(pg: Any, s: str, page: Sequence[dict[str, Any]], covered: int, staff
     threads = thread_rows(pg, s, [m for m in page if not m.get("bulk")], covered)
     whys: list[str] = []
     for m in page:
-        if m.get("bulk") or (m.get("view") == "emails" and is_system_alert_mail(m.get("sender"), m.get("subject"))):
+        if m.get("bulk"):
             whys.append("bulk")
+            continue
+        if is_automated_system_alert(sender=m.get("sender"), subject=m.get("subject")):
+            whys.append("system_noise")
             continue
         text, why = texts.get((m["handle"], m["oid"]), (None, "no_text"))
         if text is None:
@@ -898,6 +1136,10 @@ def prepare(pg: Any, s: str, page: Sequence[dict[str, Any]], covered: int, staff
         own, left = own_text(text, mail=m["view"] == "emails")
         if _WORD.search(own) is None:
             whys.append("empty")
+            continue
+        if is_automated_system_alert(sender=m.get("sender"), subject=m.get("subject"),
+                                     message=own[:2000]):
+            whys.append("system_noise")
             continue
         why = screened(own, m["subject"])
         if not why:
@@ -993,7 +1235,7 @@ def read_messages(src: Any, sink: Sink, *, covered: int, read: Read, model: str,
                          ).fetchone()[0]
     params = {"covered": covered, "since": since, "until": until,
               "retry": now - dt.timedelta(hours=RETRY_HOURS), "seen": [], "page": page,
-              "ours": staff.domains, "pids": sorted(staff.by_id)}
+              "ours": staff.domains, "pids": sorted({p.lower() for p in staff.by_id})}
     for view in SOURCES:
         if src.execute("SELECT to_regclass(%s)", (f"{s}.{view}",)).fetchone()[0] is None:
             out.setdefault("not_served", []).append(view)
@@ -1020,6 +1262,7 @@ def read_messages(src: Any, sink: Sink, *, covered: int, read: Read, model: str,
                                  "said": said, "subject": subject or "", "thread": thread,
                                  "sender": sender, "to": list(too or ()), "cc": list(cc or ()),
                                  "mailboxes": [b for b in boxes or () if b],
+                                 "chat_type": (boxes[0] if view == "teams_messages" and boxes else ""),
                                  "bulk": bool(bulk), "handle": handle, "oid": oid,
                                  "received": received,
                                  "from": "us" if from_us else "customer" if customer else

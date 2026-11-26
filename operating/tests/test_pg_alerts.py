@@ -996,16 +996,29 @@ class AlertRules(unittest.TestCase):
         self.mail("m_excluded", excluded=True)
         self.mail("m_no_sender", sender="")
         self.mail("m_list", to_addresses=[ME] + [f"p{i}@ours.example" for i in range(5)])
-        self.mail("m_old", hours_ago=24 * 31)             # inside the 60 days now (was 30)
+        self.mail("m_recent", hours_ago=24 * 10)          # inside the 14-day window
+        self.mail("m_old", hours_ago=24 * 15)             # older than 14 days: filtered out
         self.mail("m_older", hours_ago=24 * 61)
         self.mail("m_future", hours_ago=-48)
         self.mail("m_answered", owner_replied_at=dt.datetime(2026, 11, 17, 11,
                                                               tzinfo=dt.timezone.utc))
+        # Automated Microsoft / Teams / Planner / system notifications must never fire
+        self.mail("m_planner", sender="stefanie@ours.example",
+                  subject="You were mentioned in a chat about a task in Microsoft Planner")
+        self.mail("m_maccount", sender="maccount@microsoft.com",
+                  subject="Audio Conferencing for Microsoft Teams has been turned off")
+        self.mail("m_shared_chat", sender="giulia@ours.example",
+                  subject="RE: Giulia shared a chat with you")
+        self.mail("m_teams_mtg", sender="bo@client.example",
+                  subject="Microsoft Teams meeting")
+        self.mail("m_noreply", sender="noreply@vendor.example", subject="Order update")
+        self.mail("m_quarantine", sender="quarantine@messaging.microsoft.com",
+                  subject="Quarantine notice")
+        self.mail("m_pw_expiry", sender="password-expiry@ours.example",
+                  subject="Password notice")
         out = self.fire("needs_my_reply")["needs_my_reply"]
         self.assertEqual(out["status"], "ok")
-        # a message to many people and one 31 days old are still owed (the mailing and
-        # 30-day guesses are gone); bulk, role, window and answered are what decide
-        self.assertEqual(set(self.rows("needs_my_reply")), {"m_ok", "m_list", "m_old"})
+        self.assertEqual(set(self.rows("needs_my_reply")), {"m_ok", "m_list", "m_recent"})
         row = self.rows("needs_my_reply")["m_ok"]
         self.assertIn('bo@client.example wrote "Quote for May" on Nov 17', row["why"])
         self.assertEqual(row["since"], dt.datetime(2026, 11, 17, 7, tzinfo=dt.timezone.utc))
@@ -1152,6 +1165,39 @@ class AlertRules(unittest.TestCase):
                 f"INSERT INTO {S}.alerts (rule, kind, record_table, handle, why, since, "
                 "first_seen, last_seen, state, needs, ai_ok) VALUES ('x', 'x', 'emails', 'h', "
                 "'w', now(), now(), now(), 'open', '{}', true)")
+
+    def test_legacy_zombie_pos_and_sales_orders_are_skipped_by_alert_rules(self):
+        # 2018 zombie PO (> 365 days late) vs recent 15-day late PO
+        self.po("po-recent", 15)
+        self.put("purchase_orders", "po-zombie-2018", po_number="PO-2018", supplier="OldSup",
+                 verdict="late", days_late=2900, order_date=dt.date(2018, 4, 1),
+                 requested_date=dt.date(2018, 5, 1), status="open")
+        got_po = self.fire("po_late")["po_late"]
+        self.assertEqual(set(self.rows("po_late")), {"po-recent"})
+        self.assertEqual(got_po["skipped"].get("legacy_stale"), 1)
+
+        # 2020 zombie sales order vs recent late sales order
+        self.put("sales_orders", "so-zombie-2020", order_number="SO-2020", customer="OldCust",
+                 status="open", of_record=True, days_late=2100, order_date=dt.date(2020, 5, 1),
+                 required_date=dt.date(2020, 6, 1))
+        self.put("sales_orders", "so-recent", order_number="SO-NEW", customer="NewCust",
+                 status="open", of_record=True, days_late=16, order_date=dt.date(2026, 10, 15),
+                 required_date=dt.date(2026, 11, 1))
+        self.fire("customer_order_late", "customer_order_open_long")
+        self.assertEqual(set(self.rows("customer_order_late")), {"so-recent"})
+        self.assertNotIn("so-zombie-2020", self.rows("customer_order_open_long"))
+
+        # Helper classifies >365-day order/PO alerts as legacy stale and keeps recent ones
+        self.assertTrue(al.is_legacy_stale_order_alert(
+            rule="po_late", since="2018-05-01T00:00:00Z", now=dt.date(2026, 11, 17),
+        ))
+        self.assertTrue(al.is_legacy_stale_order_alert(
+            rule="customer_order_late", text="Order SO-2020 is 2,100 days past its required date.",
+            now=dt.date(2026, 11, 17),
+        ))
+        self.assertFalse(al.is_legacy_stale_order_alert(
+            rule="po_late", since="2026-11-01T00:00:00Z", now=dt.date(2026, 11, 17),
+        ))
 
 
 if __name__ == "__main__":

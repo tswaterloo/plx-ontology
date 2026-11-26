@@ -15,8 +15,8 @@ const ROUTES = readdirSync(join(__dirname, "../app/(app)"), { withFileTypes: tru
   .map((d) => `/${d.name}`);
 
 describe("the sidebar: one fixed list (owner, 11-17: items moved depending on the page)", () => {
-  it("a plain reader sees Home, Assist, Ask, Insights, Data, Meetings; no Team, no Admin; Memory, Templates and Work log in the account menu; the switches are Home's tab (one queue)", () => {
-    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Data", "Meetings"]);
+  it("a plain reader sees Home, Assist, Ask, Insights, Artifacts, Data; Meetings is folded into Home; no Team, no Admin; Memory, Templates and Work log in the account menu", () => {
+    expect(navSectionsFor({}).filter((s) => s.group === "main").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Artifacts", "Data"]);
     expect(navSectionsFor({}).filter((s) => s.group === "account").map((s) => s.href)).toEqual(["/memory", "/templates", "/work-log"]);
     expect(navSectionsFor({}).some((s) => s.group === "last")).toBe(false);
   });
@@ -44,10 +44,11 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
 
   it("sub-pages are tabs of the page they belong to, never of another item", () => {
     const of = (key: string) => NAV_SECTIONS.find((s) => s.key === key)!.children.map((c) => c.href);
-    expect(of("home")).toEqual(["/", "/?show=alerts", "/?show=late"]); // the queue; Data health is Admin's
+    expect(of("home")).toEqual([]); // unified Home with no redundant Alerts/Late POs top SectionTabs
     expect(of("work-log")).toEqual(["/work-log", "/activity"]);
     expect(of("ask")).toEqual([]); // Memory and Templates are their own items, never under Ask
-    expect(NAV_SECTIONS.some((x) => x.key === "autopilot")).toBe(false); // folded into Home
+    expect(NAV_SECTIONS.some((x) => x.key === "autopilot")).toBe(false); // folded into Assist
+    expect(NAV_SECTIONS.some((x) => x.key === "meetings")).toBe(false); // folded into Home
     for (const s of NAV_SECTIONS) {
       for (const c of s.children) {
         const [base, frag] = c.href.split("#");
@@ -60,11 +61,11 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
   it("no page was dropped: every route under (app) is an item, a tab, a list or Help", () => {
     expect(ROUTES.length).toBeGreaterThan(15);
     expect(ROUTES.filter((r) => !sectionOf(r) && r !== HELP.href)).toEqual([]);
-    // the pages folded into Home are gone; their addresses redirect into its tabs (next.config)
+    // the pages folded into Home are gone; their addresses redirect into Home deep links (next.config)
     for (const gone of ["/watching", "/late", "/my-work"]) expect(ROUTES).not.toContain(gone);
   });
 
-  it("the pages folded into Home redirect into its tabs, query kept (next.config)", async () => {
+  it("the pages folded into Home redirect cleanly, query kept (next.config)", async () => {
     const config = (await import("../../next.config")).default;
     const to = new Map((await config.redirects!()).map((r) => [r.source, r.destination]));
     expect(to.get("/watching")).toBe("/?show=alerts");
@@ -74,9 +75,8 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(to.get("/trust")).toBe("/data-health");
     expect(to.get("/qc")).toBe("/records?kind=production");
     expect(to.get("/rd-projects")).toBe("/records?kind=products");
-    // every tab a redirect lands on is one Home draws
-    const home = NAV_SECTIONS.find((s) => s.key === "home")!.children.map((c) => c.href);
-    for (const d of to.values()) if (d.startsWith("/?show=")) expect(home).toContain(d.split("#")[0]);
+    // every /?show= redirect lands on Home (sectionOf("/") === "home")
+    for (const d of to.values()) if (d.startsWith("/?show=")) expect(sectionOf("/")?.key).toBe("home");
   });
 
   it("each old place opens under the item that now holds it", () => {
@@ -90,7 +90,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(sectionOf("/order/SO-1")?.key).toBe("records");
     expect(sectionOf("/my-work")?.key).toBe("home");
     expect(sectionOf("/activity")?.key).toBe("work-log");
-    expect(sectionOf("/meetings/abc")?.key).toBe("meetings");
+    expect(sectionOf("/meetings")?.key).toBe("home");
+    expect(sectionOf("/meetings/abc")?.key).toBe("home");
+    expect(sectionOf("/artifacts")?.key).toBe("artifacts");
     expect(sectionOf("/team", NAV_SECTIONS, "#approvals")?.key).toBe("team");
     expect(sectionOf("/team", NAV_SECTIONS, "#workload")?.key).toBe("team");
     expect(sectionOf("/")?.key).toBe("home");
@@ -98,22 +100,16 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(sectionOf("/help")).toBeNull(); // Help is the foot link, not an item
   });
 
-  it("Home's tab follows its ?show=: plain / is what needs you; Data health is Admin's own page", () => {
+  it("Admin keeps its own tabs (Reliability, Data health); Home has no redundant top tab strip", () => {
     const home = NAV_SECTIONS.find((s) => s.key === "home")!.children;
     const admin = NAV_SECTIONS.find((s) => s.key === "admin")!.children;
+    expect(home).toEqual([]);
     // Data health is Admin's own page: Admin stays marked and its tabs stay on screen
     expect(sectionOf("/ops", NAV_SECTIONS)?.key).toBe("admin");
     expect(currentChild(admin, "/ops", "", "")).toBe("/ops");
     expect(sectionOf("/data-health", NAV_SECTIONS)?.key).toBe("admin");
     expect(currentChild(admin, "/data-health", "", "")).toBe("/data-health");
     expect(admin.find((c) => c.label === "Data health")?.href).toBe("/data-health");
-    expect(currentChild(home, "/", "", "")).toBe("/");
-    expect(currentChild(home, "/", "", "supplier=Acme")).toBe("/"); // Home's own supplier filter
-    expect(currentChild(home, "/", "", "show=alerts&for=purchasing")).toBe("/?show=alerts");
-    expect(currentChild(home, "/", "#alerts", "show=alerts")).toBe("/?show=alerts");
-    expect(currentChild(home, "/", "", "show=late&supplier=Acme&sel=PurchaseOrder%3A1")).toBe("/?show=late");
-    expect(currentChild(home, "/", "", "show=nonsense")).toBe("/"); // an unknown tab opens what needs you
-    expect(currentChild(home, "/ask", "", "show=alerts")).toBeNull();
   });
 
   it("Quality and R&D projects are gone: no nav place, no section, old pins are not shown", () => {
@@ -128,9 +124,9 @@ describe("the sidebar: one fixed list (owner, 11-17: items moved depending on th
     expect(pinnable("/rd-projects")).toBe(false);
   });
 
-  it("the owner's sidebar is Home, Assist, Ask, Insights, Data, Meetings, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
+  it("the owner's sidebar is Home, Assist, Ask, Insights, Artifacts, Data, Team, then Admin; Memory, Templates and Work log are in the account menu", () => {
     const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
-    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Data", "Meetings", "Team", "Admin"]);
+    expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual(["Home", "Assist", "Ask", "Insights", "Artifacts", "Data", "Team", "Admin"]);
     expect(secs.filter((s) => s.group === "account").map((s) => s.key)).toEqual(["memory", "templates", "work-log"]);
   });
 });
@@ -145,8 +141,8 @@ describe("the sidebar drawn on every page is identical", () => {
   const PAGES: [string, string, string][] = [
     // path, #fragment, the one row that is highlighted
     ["/", "", "/"], ["/?show=alerts", "", "/"], ["/?show=late", "", "/"],
-    ["/ask", "", "/ask"], ["/memory", "", ""], ["/templates", "", ""],
-    ["/assist", "", "/assist"], ["/assist?show=switches", "", "/assist"], ["/meetings", "", "/meetings"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
+    ["/ask", "", "/ask"], ["/insights", "", "/insights"], ["/artifacts", "", "/artifacts"], ["/memory", "", ""], ["/templates", "", ""],
+    ["/assist", "", "/assist"], ["/assist?show=switches", "", "/assist"], ["/meetings", "", "/"], ["/team", "", "/team"], ["/team", "#approvals", "/team"],
     ["/records", "", "/records"], ["/orders", "", "/records"], ["/customers", "", "/records"], ["/products", "", "/records"], ["/supplier/S-1", "", "/records"], ["/object/PurchaseOrder/x", "", "/records"],
     ["/work-log", "", ""], ["/activity", "", ""], ["/ops", "", "/ops"], ["/data-health", "", "/ops"],
     ["/feedback", "", "/ops"], ["/help", "", ""],
@@ -169,8 +165,8 @@ describe("the sidebar drawn on every page is identical", () => {
     // every item once, nothing twice: the owner's default pins (Team's approvals, Alerts) are not repeated
     const hrefs = first!.map(([h]) => h);
     expect(new Set(hrefs).size).toBe(hrefs.length);
-    // the six items, then the one pin that is a view of its own (purchasing's supplier alerts)
-    expect(first!.map(([, l]) => l)).toEqual(["Home", "Assist", "Ask", "Insights", "Data", "Meetings", "Team", "Admin", "Supplier issues"]);
+    // the main items, then the one pin that is a view of its own (purchasing's supplier alerts)
+    expect(first!.map(([, l]) => l)).toEqual(["Home", "Assist", "Ask", "Insights", "Artifacts", "Data", "Team", "Admin", "Supplier issues"]);
     expect(first!.map(([, l]) => l).join("|")).not.toMatch(/Watching|Memory|Templates|Approvals|Autopilot review queue|Alerts|Autopilot log|Prepared for you|Your actions|Lists|ops targets? missed/);
   });
 

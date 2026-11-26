@@ -76,3 +76,7 @@ def _receivable_documents(rd: Reader, as_of: dt.date) -> Iterator[Row]:
         fill(row, thing, "customer_po", "idcustpo")
         add_chain(row, customer_link(row, thing, owner, things, ORDER_RECORD_SYSTEM), chains)
         yield row
+
+
+from operating.pg import business_views as _bv  # noqa: E402
+_bv._register_submodules()

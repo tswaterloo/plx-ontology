@@ -348,20 +348,21 @@ def stored_trail(view: Any, oid: str, label: Optional[str]) -> Optional[dict[str
 def po_trails(mapper: Mapper, view: Any, oids: Sequence[str],
               labels: Mapping[str, str] | None = None, seconds: float = PO_SECONDS,
               late: Mapping[str, tuple[Any, Optional[str]]] | None = None,
-              page: bool = False) -> Optional[m.EvidenceTrail]:
+              page: bool = False, allow_live: bool = False) -> Optional[m.EvidenceTrail]:
     """``page``: the record page's read: a purchase order with no stored trail for this reader is
-    answered ``not_run`` and asked of the runner, never read live here (a trail takes seconds)."""
+    answered ``not_run`` and asked of the runner, never read live here (a trail takes seconds),
+    unless ``allow_live`` is True (bounded live fallback for Suggestions)."""
     call = lambda name, args: view._call(name, dict(args))  # noqa: E731
     trails = []
     for oid in list(dict.fromkeys(oids))[:MAX_PO_SUBJECTS]:
         raw = stored_trail(view, oid, (labels or {}).get(oid))
         if raw is not None and "no_answer" in raw:
-            if page:
+            if page and not allow_live:
                 continue          # said by the section (typed), not run again here
-            raw = None            # an answer to a question reads it live as before
+            raw = None            # an answer to a question (or allow_live) reads it live
         if raw is None:
             from . import plan_section_door as door
-            if page and door.on() and door.last_miss() not in (None, *door.READER_OWN):
+            if page and not allow_live and door.on() and door.last_miss() not in (None, *door.READER_OWN):
                 door.answer_not_run(oid, "po_trail", door.last_miss())
                 continue
             raw = et.po_trail(call, oid, seconds=seconds, label=(labels or {}).get(oid))
@@ -583,7 +584,8 @@ def for_page(backend: Any, view: Any, oid: str, label: str, *,
              object_url: Callable[[str, str], str], open_url: Callable[[str], str],
              host_schemes: Sequence[str],
              late: Sequence[tuple[Any, Optional[str]]] = (),
-             seconds: float = PO_SECONDS) -> Optional[m.EvidenceTrail]:
+             seconds: float = PO_SECONDS,
+             allow_live: bool = False) -> Optional[m.EvidenceTrail]:
     """A purchase order page's trail (the same as the answer's), or None; ``seconds``:
     its time, checked between its reads (the trail stops itself, it is not cut after).
     A customer order's or customer's page (``et.START_TYPES``): the materials walk Ask runs
@@ -598,7 +600,8 @@ def for_page(backend: Any, view: Any, oid: str, label: str, *,
             return materials_trail(mapper, view, [(oid, kind, label)],
                                    seconds=max(seconds, MATERIALS_SECONDS))
         return po_trails(mapper, view, [oid], {oid: label}, seconds=seconds,
-                         late={po.object_id: (po, run_at) for po, run_at in late}, page=True)
+                         late={po.object_id: (po, run_at) for po, run_at in late},
+                         page=True, allow_live=allow_live)
     except Exception as error:  # noqa: BLE001 - the page stands without it
         logging.getLogger("operator_api.trail").warning("page trail not built: %s",
                                                         type(error).__name__)

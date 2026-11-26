@@ -1340,6 +1340,259 @@ def upcoming_meetings(call: Call, held: Iterable[str], *, now: datetime | None =
     return out[:limit]
 
 
+def _marks_allowed(rec_marks: Any, held: frozenset[str]) -> bool:
+    """Whether every marking in ``rec_marks`` (each a JSON array string or list) is in
+    ``held``. Fail closed on any malformed entry."""
+    if not rec_marks:
+        return True
+    for entry in rec_marks:
+        if entry is None:
+            continue
+        if isinstance(entry, str):
+            raw = entry.strip()
+            if not raw or raw == "[]":
+                continue
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                return False
+            if not isinstance(parsed, list):
+                return False
+            marks = parsed
+        elif isinstance(entry, (list, tuple, set, frozenset)):
+            marks = entry
+        else:
+            return False
+        for mk in marks:
+            if mk and str(mk) not in held:
+                return False
+    return True
+
+
+def _pg_join_url(location: Any) -> str | None:
+    if not isinstance(location, str):
+        return None
+    m = _re.search(r"https://teams\.microsoft\.com/[^\s<>\"']+", location)
+    if not m:
+        return None
+    url = m.group(0).rstrip(".,;)")
+    return url if url.startswith(JOIN_PREFIX) and len(url) <= 4096 else None
+
+
+def _pg_iso(val: Any) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        if val.tzinfo is None:
+            val = val.replace(tzinfo=timezone.utc)
+        return val.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    text = str(val).strip()
+    return text or None
+
+
+def _pg_parties(pg: Any, customer_handles: set[str], supplier_handles: set[str]
+                ) -> dict[str, dict[str, str]]:
+    """Resolve ``biz.meetings`` customer/supplier handles into ``{handle: {object_id, type, label}}``."""
+    out: dict[str, dict[str, str]] = {}
+    all_handles = sorted(customer_handles | supplier_handles)
+    if not all_handles:
+        return out
+    try:
+        # Resolve display names from biz.customers / biz.suppliers and object_ids from
+        # ontology.object_versions when present.
+        names: dict[str, tuple[str, str]] = {}
+        if customer_handles and pg.execute("SELECT to_regclass('biz.customers')").fetchone()[0] is not None:
+            for h, name in pg.execute(
+                "SELECT handle, name FROM biz.customers WHERE handle = ANY(%s)",
+                (sorted(customer_handles),),
+            ).fetchall():
+                if h:
+                    names[str(h)] = ("Customer", str(name or "").strip())
+        if supplier_handles and pg.execute("SELECT to_regclass('biz.suppliers')").fetchone()[0] is not None:
+            for h, name in pg.execute(
+                "SELECT handle, name FROM biz.suppliers WHERE handle = ANY(%s)",
+                (sorted(supplier_handles),),
+            ).fetchall():
+                if h:
+                    names[str(h)] = ("Supplier", str(name or "").strip())
+        oid_by_handle: dict[str, tuple[str, str]] = {}
+        if pg.execute("SELECT to_regclass('ontology.object_versions')").fetchone()[0] is not None \
+                and pg.execute("SELECT to_regclass('ontology.objects')").fetchone()[0] is not None:
+            for h, oid, otype in pg.execute(
+                "SELECT v.l1_handle, o.object_id, o.object_type "
+                "FROM ontology.object_versions v "
+                "JOIN ontology.objects o ON o.object_id = v.object_id "
+                "WHERE v.l1_handle = ANY(%s) AND v.superseded_at IS NULL "
+                "ORDER BY v.l1_handle, o.object_id",
+                (all_handles,),
+            ).fetchall():
+                if h and str(h) not in oid_by_handle:
+                    oid_by_handle[str(h)] = (str(oid), str(otype))
+        for h in all_handles:
+            kind, label = names.get(h, ("Customer" if h in customer_handles else "Supplier", ""))
+            oid, otype = oid_by_handle.get(h, (f"{kind}:pg:{h}", kind))
+            if otype in PARTY_TYPES:
+                out[h] = {"object_id": oid, "type": otype, "label": label or otype}
+    except Exception:  # noqa: BLE001 - party links are enrichment; meetings still show
+        return out
+    return out
+
+
+def upcoming_meetings_pg(pg: Any, held: Iterable[str], *,
+                         may_read: Callable[[str], bool] | None = None,
+                         now: datetime | None = None, days: int = UPCOMING_DAYS,
+                         limit: int = 60, people: Any = None,
+                         since: datetime | None = None,
+                         reader: Iterable[str] | None = None) -> list[dict[str, Any]] | None:
+    """Fast indexed read of upcoming meetings from Postgres ``biz.meetings`` (uses the
+    ``start_at`` btree index instead of scanning ``ontology.value_cells``).
+
+    Enforces the same fail-closed access, marking, reader-ownership, deduplication, and
+    people-exclusion rules as ``upcoming_meetings``. Returns ``None`` when ``biz.meetings``
+    or ``may_read`` is unavailable so the caller can fall back to the ontology path."""
+    if pg is None or not callable(may_read):
+        return None
+    if pg.execute("SELECT to_regclass('biz.meetings') IS NULL").fetchone()[0]:
+        return None
+    now = now or datetime.now(timezone.utc)
+    since = since or now
+    end = now + timedelta(days=days)
+    held_set = frozenset(str(m) for m in held)
+    blocked = people_unavailable(people)
+    own_ids = frozenset(str(r).strip().lower() for r in reader if str(r).strip()) \
+        if reader is not None else None
+    rows = pg.execute(
+        "SELECT handle, object_ids, start_at, end_at, subject, organizer, attendees, "
+        "location, is_cancelled, is_online, is_organizer, is_all_day, ical_uid, "
+        "mailbox, audience_keys, rec_marks, customers, suppliers "
+        "FROM biz.meetings "
+        "WHERE start_at >= %s AND start_at < %s "
+        "AND COALESCE(excluded, false) = false "
+        "AND COALESCE(is_cancelled, false) = false "
+        "ORDER BY start_at, handle",
+        (since, end),
+    ).fetchall()
+    homes_global = set() if blocked else _home_domains(people)
+    kept_rows: list[tuple[Any, ...]] = []
+    cust_handles: set[str] = set()
+    supp_handles: set[str] = set()
+    for r in rows:
+        (handle, object_ids, start_at, end_at, subject, organizer_addr, attendees_raw,
+         location, is_cancelled, is_online, is_organizer, is_all_day, ical_uid,
+         mailbox, audience_keys, rec_marks, customers, suppliers) = r
+        if is_cancelled or start_at is None:
+            continue
+        auds = [str(a) for a in (audience_keys or ()) if a]
+        if not auds or not all(may_read(a) for a in auds):
+            continue
+        if not _marks_allowed(rec_marks, held_set):
+            continue
+        box = str(mailbox or "").strip().lower()
+        org_low = str(organizer_addr or "").strip().lower()
+        att_list = [str(a).strip().lower() for a in (attendees_raw or ()) if str(a or "").strip()]
+        if own_ids is not None:
+            if box not in own_ids and org_low not in own_ids and not any(a in own_ids for a in att_list):
+                continue
+        kept_rows.append(r)
+        for ch in customers or ():
+            if ch:
+                cust_handles.add(str(ch))
+        for sh in suppliers or ():
+            if sh:
+                supp_handles.add(str(sh))
+
+    party_map = _pg_parties(pg, cust_handles, supp_handles) if kept_rows else {}
+    out: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str], int] = {}
+    for r in kept_rows:
+        (handle, object_ids, start_at, end_at, subject, organizer_addr, attendees_raw,
+         location, _is_cancelled, is_online, is_organizer, is_all_day, ical_uid,
+         mailbox, _audience_keys, _rec_marks, customers, suppliers) = r
+        start_iso = _pg_iso(start_at)
+        end_iso = _pg_iso(end_at)
+        uid = str(ical_uid or "").strip()
+        box = str(mailbox or "").strip().lower()
+        twin = seen.get((uid, start_iso or "")) if uid else None
+        if twin is not None and not (own_ids is not None and box in own_ids):
+            continue
+        org_low = str(organizer_addr or "").strip().lower()
+        att_addrs = [str(a).strip().lower() for a in (attendees_raw or ()) if str(a or "").strip()]
+        organizer = None
+        attendees: list[dict[str, Any]] = []
+        if not blocked:
+            homes = {box.rpartition("@")[2].lower()} if "@" in box else homes_global
+            check_addrs = ([org_low] if org_low else []) + att_addrs
+            excluded_any = False
+            for addr in check_addrs:
+                if not addr:
+                    continue
+                try:
+                    if people.is_excluded(addr):
+                        excluded_any = True
+                        break
+                except Exception:  # noqa: BLE001 - fail closed
+                    excluded_any = True
+                    break
+            if excluded_any:
+                continue
+            src = _source(handle)
+            if org_low:
+                dom = org_low.rpartition("@")[2].lower()
+                organizer = {
+                    "name": org_low, "address": org_low, "role": "organizer",
+                    "response": None, "outside": bool(homes and dom and dom not in homes),
+                    "sources": src,
+                }
+            for addr in att_addrs[:MAX_ATTENDEES]:
+                if org_low and addr == org_low:
+                    continue
+                dom = addr.rpartition("@")[2].lower()
+                attendees.append({
+                    "name": addr, "address": addr, "role": "required",
+                    "response": None, "outside": bool(homes and dom and dom not in homes),
+                    "sources": src,
+                })
+        private = False
+        show_people = not blocked and not private
+        oids = [str(o) for o in (object_ids or ()) if o]
+        oid = oids[0] if oids else f"CalendarEvent:pg:{handle}"
+        parties: list[dict[str, str]] = []
+        seen_parties: set[str] = set()
+        for ph in (*(customers or ()), *(suppliers or ())):
+            info = party_map.get(str(ph))
+            if info and info["object_id"] not in seen_parties:
+                seen_parties.add(info["object_id"])
+                parties.append(dict(info))
+        if uid:
+            seen[(uid, start_iso or "")] = len(out) if twin is None else twin
+        entry = {
+            "object_id": oid,
+            "label": _clip(subject) or "(no subject)",
+            "start": start_iso,
+            "end": end_iso,
+            "all_day": bool(is_all_day),
+            "location": None if private else _clip(location, 200),
+            "online": bool(is_online),
+            "join_url": None if private else _pg_join_url(location),
+            "agenda": None,
+            "organizer": organizer if show_people else None,
+            "attendees": attendees if show_people else [],
+            "is_organizer": bool(is_organizer) or (
+                own_ids is not None and bool(org_low) and org_low in own_ids
+            ),
+            "private": private,
+            "people_withheld": bool(blocked),
+            "parties": parties,
+            "sources": _dedupe(_source(handle)),
+        }
+        if twin is None:
+            out.append(entry)
+        else:
+            out[twin] = entry
+    out.sort(key=lambda e: e["start"] or "")
+    return out[:limit]
+
+
 def _dedupe(sources: list[dict[str, str]]) -> list[dict[str, str]]:
     seen, out = set(), []
     for s in sources:

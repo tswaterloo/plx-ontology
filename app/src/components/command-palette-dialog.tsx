@@ -36,6 +36,7 @@ const PLACES: { label: string; href: string; hint: string; words: string; ops?: 
   { label: "Ask", href: "/ask", hint: "New question", words: "ask question chat" },
   { label: "Assist", href: "/assist", hint: "What is prepared for you, drafts waiting for your OK, routines, log", words: "assist prepared drafts routines log plan autopilot" },
   { label: "Insights", href: "/insights", hint: "Dashboards: sales, purchasing, receivables and team views", words: "insights dashboards charts tiles measures reports numbers" },
+  { label: "Artifacts", href: "/artifacts", hint: "Docs, slides, sheets, charts and quotes", words: "artifacts docs slides sheets charts quotes studio deliverables" },
   { label: "Meetings", href: "/meetings", hint: "Upcoming meetings, weekly review and follow-ups", words: "meetings calendar prep weekly review follow-ups action items" },
   { label: "Team", href: "/team", hint: "People, workload and approvals", words: "team people workload approvals grants" },
   { label: "Late POs", href: "/?show=late", hint: "Every PO past its needed-by date", words: "late orders purchase pos overdue" },

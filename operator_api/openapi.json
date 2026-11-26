@@ -14108,6 +14108,116 @@
         "title": "Home",
         "type": "object"
       },
+      "HomeItemStateRequest": {
+        "additionalProperties": false,
+        "description": "Universal per-reader Home item state update (close/dismiss, snooze, or restore).",
+        "properties": {
+          "item_id": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Item Id",
+            "type": "string"
+          },
+          "matter_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matter Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "enum": [
+              "closed",
+              "snoozed",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO timestamp when a snoozed item returns (defaults to +24h).",
+            "title": "Until"
+          }
+        },
+        "required": [
+          "item_id",
+          "state"
+        ],
+        "title": "HomeItemStateRequest",
+        "type": "object"
+      },
+      "HomeItemStateResponse": {
+        "additionalProperties": false,
+        "description": "Result of a universal Home item state update.",
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "item_id": {
+            "title": "Item Id",
+            "type": "string"
+          },
+          "propagated": {
+            "default": false,
+            "title": "Propagated",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "closed",
+              "snoozed",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "item_id",
+          "state",
+          "at"
+        ],
+        "title": "HomeItemStateResponse",
+        "type": "object"
+      },
       "HomeNeedFacet": {
         "additionalProperties": false,
         "description": "One filter choice and how many items of the unified list match it.",
@@ -36438,6 +36548,68 @@
           }
         },
         "summary": "Home Bundle",
+        "tags": [
+          "home"
+        ]
+      }
+    },
+    "/api/home/item-state": {
+      "post": {
+        "description": "Close/dismiss, snooze, or restore any Home Needs-you item for this reader and\nimmediately invalidate their cached Home Needs-you view.",
+        "operationId": "home_item_state_api_home_item_state_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HomeItemStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeItemStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          }
+        },
+        "summary": "Home Item State",
         "tags": [
           "home"
         ]

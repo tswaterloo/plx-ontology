@@ -1110,3 +1110,7 @@ def _supplier_balances(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             row.derive(col, row, "due_date")
         row.values["as_of"] = as_of
         yield row
+
+
+from operating.pg import business_views as _bv  # noqa: E402
+_bv._register_submodules()

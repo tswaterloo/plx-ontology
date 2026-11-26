@@ -4,6 +4,7 @@ own API on this host's loopback, nothing else.
 ``canary_request`` refuses before any request anything but:
 
 * ``GET`` of ``API_BASE`` + ``me`` (is the kept session still signed in);
+* ``GET`` of ``API_BASE`` + ``auth/config`` (whether dev-login is enabled or Entra SSO is active);
 * ``POST`` of ``API_BASE`` + ``auth/dev-login`` (the canary service session's minted ticket);
 * ``POST`` of ``API_BASE`` + ``ask`` (the canary's one question).
 
@@ -21,7 +22,7 @@ import urllib.error
 import urllib.request
 
 API_BASE = "http://127.0.0.1:8780/api/"
-ROUTES = {("GET", "me"), ("POST", "auth/dev-login"), ("POST", "ask")}
+ROUTES = {("GET", "me"), ("GET", "auth/config"), ("POST", "auth/dev-login"), ("POST", "ask")}
 
 
 class SenderRefused(Exception):

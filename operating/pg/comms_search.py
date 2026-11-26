@@ -342,11 +342,13 @@ def _side_pieces(view: str, biz: str, when: str, ops: Sequence[tuple[str, str]],
 
 
 def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
-              until: bool, side: frozenset[str] = frozenset()) -> str:
-    """One statement (named parameters q, since, until) counting every row of ``views``
-    the reader may read that holds every query word in its header or its text, in the
-    dates: how many a word search matched in all, read from the word indexes (handles
-    only, never a row). The read rule is ``business_comms._where`` over the comms table,
+              until: bool, side: frozenset[str] = frozenset(),
+              query: bool = True, party_kind: str | None = None,
+              teams_members: bool = False) -> str:
+    """One statement (named parameters q, party, since, until) counting every row of
+    ``views`` the reader may read that matches the query words and/or party in the dates:
+    how many a search matched in all, read from the word/party indexes (handles only,
+    never a row). The read rule is ``business_comms._where`` over the comms table,
     the same definition the guarded view is made from; counting through the view itself
     paid its security-barrier predicate once for every matched handle (minutes for a
     common name). Files (``SEARCH_ONLY``) are re-gated row by row after the statement,
@@ -359,7 +361,17 @@ def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
     for view in views:
         if view in SEARCH_ONLY:
             continue
+        if party_kind is not None and not (view == "emails" or (teams_members and view == "teams_messages")):
+            continue
         _kind, when, _ = VIEWS[view]
+        dates = "".join(f" AND e.{when} {op} %({name})s" for on, op, name in (
+            (since, ">=", "since"), (until, "<", "until")) if on)
+        party_clause = f" AND {_PARTY[party_kind]}" if party_kind is not None else ""
+        where, join = bc._where(bv.VIEWS[view], biz, guarded, ai=ai, a="e")
+        if not query:
+            parts.append(f"(SELECT count(*) FROM {biz}.{view} e{join} WHERE e.{when} IS NOT NULL"
+                         f"{dates}{party_clause} AND " + " AND ".join(where) + ")")
+            continue
         window = "".join(f" AND b.{when} {op} %({name})s" for on, op, name in (
             (since, ">=", "since"), (until, "<", "until")) if on)
         header = (f"SELECT b.handle FROM {biz}.{view} b WHERE b.words @@ %(q)s::tsquery"
@@ -373,11 +385,8 @@ def count_sql(views: Sequence[str], *, guarded: str, biz: str, since: bool,
             text = _side_pieces(view, biz, when, [(op, name) for on, op, name in (
                 (since, ">=", "since"), (until, "<", "until")) if on], "",
                 words_from="ontology.chunk_words w")[0]
-        dates = "".join(f" AND e.{when} {op} %({name})s" for on, op, name in (
-            (since, ">=", "since"), (until, "<", "until")) if on)
-        where, join = bc._where(bv.VIEWS[view], biz, guarded, ai=ai, a="e")
         parts.append(f"(SELECT count(*) FROM {biz}.{view} e{join} WHERE e.{when} IS NOT NULL"
-                     f"{dates} AND " + " AND ".join(where) +
+                     f"{dates}{party_clause} AND " + " AND ".join(where) +
                      f" AND e.handle = ANY(ARRAY({header} UNION {text})))")
     return ("SELECT " + " + ".join(parts)) if parts else ""
 
@@ -1204,17 +1213,24 @@ def searched(views: Sequence[str], args: Mapping[str, Any], words: Sequence[str]
 
 
 def depth_said(query: str | None, attach: Mapping[str, Any], *, later: bool,
-               attachments: bool) -> str | None:
+               attachments: bool, more: bool = False,
+               exact_complete: bool = False, exact_returned: int = 0) -> str | None:
     """How deep a search with ``query`` looked, said to the model (``searched.depth``)
-    where it did not read every match: the words past ``MAX_TERMS`` (not searched), and
-    the attachment pass (``attach``: what ``SqlTool._comms_attached`` recorded; it runs on
-    a first page only, ``attachments``: it applies to this reader and search). None when
-    the search read everything it was asked for."""
+    where it did not read every match: the words past ``MAX_TERMS`` (not searched), the
+    tier ordering (header matches newest first, then body-only matches newest first) when
+    paginated, whether exact every-word matching already finished while only fuzzy/attachment
+    extras continue, and the attachment pass. None when the search read everything it was
+    asked for."""
     parts = []
     rest = _WORD.findall(query or "")[MAX_TERMS:]
     if rest:
         parts.append(f"only the first {MAX_TERMS} words were searched; not searched: "
                      + " ".join(rest))
+    if query and more:
+        parts.append("pages list header matches newest first, then body-only matches newest first")
+    elif query and exact_complete:
+        parts.append(f"all {exact_returned} exact every-word matches in this window are shown; "
+                     "next_cursor continues only widened/meaning or attachment-only extras")
     if query and attachments:
         if later:
             parts.append("this later page lists the word matches only: mail holding the "

@@ -67,9 +67,16 @@ class Check:
     def __init__(self, drop=(), answer=None, fail=None, fixed="") -> None:
         self.drop, self.answer, self.fail, self.fixed = set(drop), answer, fail, fixed
         self.prompts: list[str] = []
+        self.system_prompts: list[str] = []
+        self.argvs: list[list[str]] = []
+        self.cwds: list[str | None] = []
 
     def __call__(self, argv, *, input, **_kw):
         self.prompts.append(input)
+        self.argvs.append(list(argv))
+        self.cwds.append(_kw.get("cwd"))
+        if "--system-prompt" in argv:
+            self.system_prompts.append(argv[argv.index("--system-prompt") + 1])
         if self.fail is not None:
             raise self.fail
         ids = re.findall(r"^\[([RNQOPTB]\d*)\]", input, re.M)
@@ -473,7 +480,10 @@ class SecondCheck(unittest.TestCase):
         prompt = check.prompts[0]
         self.assertIn("[N] Note shown to the person beside the reply", prompt)
         self.assertIn("Do you hold Matt to 5,000?", prompt)
-        self.assertIn("CONTRADICT", prompt)
+        self.assertIn("CONTRADICT", check.system_prompts[0])
+        self.assertIn("--exclude-dynamic-system-prompt-sections", check.argvs[0])
+        from operating import humanize
+        self.assertEqual(check.cwds[0], humanize.neutral_dir())
         self.assertEqual(got.note, "Do you hold Matt to 5,000?")
         # unsupported: its repair stands (only taken out or blanked), else no note; the
         # reply is judged on its own

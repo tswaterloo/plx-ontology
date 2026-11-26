@@ -34,9 +34,9 @@ export function Upload({ doc }: { doc: InstructDocument }) {
     }
   };
   return (
-    <li className="space-y-1.5 border-l-2 border-accent pl-3" data-testid="instruct-document">
+    <li className="space-y-1.5 border-l-2 border-border-strong pl-3" data-testid="instruct-document">
       <p className="text-[13px] leading-5">
-        <a className="font-medium text-accent hover:underline" href={doc.download_url} download={doc.name}>
+        <a className="font-medium text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg" href={doc.download_url} download={doc.name}>
           {doc.name}
         </a>{" "}
         <span className="text-muted">

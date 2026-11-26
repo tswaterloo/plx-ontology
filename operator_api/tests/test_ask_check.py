@@ -79,12 +79,18 @@ class Reply(unittest.TestCase):
 
         def run(argv, **kw):
             import subprocess
+            seen["argv"] = argv
             seen.update(kw)
             return subprocess.CompletedProcess(argv, 0, '{"result": "{}"}', "")
         from unittest import mock
-        with mock.patch.object(humanize.subprocess, "run", run):
+        with mock.patch.object(humanize.subprocess, "run", run), \
+                mock.patch.dict("os.environ", {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}):
             c.call_for(None)("p")
         self.assertIsNone(seen["timeout"])           # only a hung socket ends it
+        self.assertEqual(seen["argv"][seen["argv"].index("--system-prompt") + 1], c.TRACE_METHOD)
+        self.assertIn("--exclude-dynamic-system-prompt-sections", seen["argv"])
+        self.assertIn("plx.caller=operator_api.ask_check",
+                      seen["env"]["OTEL_RESOURCE_ATTRIBUTES"])
 
     def test_no_reply_or_a_failure_is_said_and_the_answer_stands(self):
         with self.assertLogs("operator_api.ask", "WARNING"):

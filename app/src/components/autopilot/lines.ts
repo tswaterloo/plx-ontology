@@ -61,3 +61,47 @@ export function noteParts(note: string): { text: string; labels: string[] } {
   const labels = [...new Set([...extracted, ...tailLabels])];
   return { text: body, labels };
 }
+
+const REPLY_PREFIX = /^(?:(?:re|fw|fwd)\s*:\s*)+/i;
+const ROBOTIC_LEAD = /^(?:you said|you promised|follow up on|reminder)\s*:\s*/i;
+const WAITING_PREFIX = /^no answer yet(?:\s+from\s+[^:·\n]+)?\s*(?:[:·-]\s*)?/i;
+
+/** Strip noisy email thread prefixes (RE:, Fwd:) and robotic auto-generated lead-ins so a
+ * queue headline immediately tells the reader what the item is about. */
+export function cleanHeadline(raw: string): string {
+  let s = (raw ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return "";
+  s = s.replace(REPLY_PREFIX, "").trim();
+  s = s.replace(ROBOTIC_LEAD, "").trim();
+  const afterWaiting = s.replace(WAITING_PREFIX, "").trim();
+  if (afterWaiting) s = afterWaiting;
+  return s;
+}
+
+/** Normalized thread topic key so duplicate RE:/Fwd: siblings collapse into one queue row. */
+export function threadTopicKey(raw: string): string {
+  return cleanHeadline(raw)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/** Split a raw sender string into a clean human name and optional email address. */
+export function formatSender(raw: string): { name: string; email: string } {
+  const s = (raw ?? "").replace(/\s+/g, " ").trim();
+  if (!s) return { name: "", email: "" };
+  const angle = /^"?([^"<]+?)"?\s*<([^>]+)>$/.exec(s);
+  if (angle) {
+    return { name: angle[1].trim(), email: angle[2].trim() };
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) {
+    const local = s.split("@")[0] ?? "";
+    const parts = local.split(/[._-]+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const pretty = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(" ");
+      return { name: pretty, email: s };
+    }
+    return { name: local, email: s };
+  }
+  return { name: s, email: "" };
+}

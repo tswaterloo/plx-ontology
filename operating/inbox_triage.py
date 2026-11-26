@@ -260,11 +260,23 @@ def shouted(text: str, sender: str = "") -> bool:
     return loud and (system_sender(sender) or not _ASK.search(text or ""))
 
 
+# Automated Microsoft / Teams / Planner notification subjects (including notices relayed
+# under a colleague's internal address).
+MICROSOFT_NOTICE_SUBJECT = re.compile(
+    r"you\s+were\s+mentioned\s+in\s+a\s+chat\s+about\s+a\s+task\s+in\s+microsoft\s+planner|"
+    r"audio\s+conferencing\s+for\s+microsoft\s+teams|"
+    r"shared\s+a\s+chat\s+with\s+you|"
+    r"microsoft\s+teams\s+meeting",
+    re.I,
+)
+
+
 def bulk(sender: str, text: str, subject: str = "") -> bool:
     """Automated or bulk mail (``proactive_threads.automated``, a mailing's form)."""
     return pt.automated(sender, text, subject) or bool(PADDING.search(text or "")) \
         or bool(BULK_LOCAL.match(sender or "")) or bool(BULK_DOMAIN.search(sender or "")) \
         or bool(NOTICE.search(text or "")) or bool(TICKET_SUBJECT.search(subject or "")) \
+        or bool(MICROSOFT_NOTICE_SUBJECT.search(subject or "")) \
         or ticket_chase(sender, subject) or shouted(pt._own(text or ""), sender)
 
 

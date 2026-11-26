@@ -251,5 +251,86 @@ class ChildProcessesDecidePeople(unittest.TestCase):
                     "stranger@synth-home.example": True})  # unknown at home: withheld
 
 
+class UpcomingMeetingsPgTests(unittest.TestCase):
+    """Fast indexed Postgres ``biz.meetings`` path: enforces audience_keys, rec_marks,
+    excluded, is_cancelled, reader ownership, (ical_uid, start_at) dedupe, and people
+    exclusion; returns None for fallback when biz.meetings is absent."""
+
+    def test_pg_fast_path_filters_dedupes_and_falls_back(self):
+        from datetime import datetime, timezone
+        from integrations.people_exclusion import PeopleExclusion
+
+        guard = PeopleExclusion(["00000000-0000-4000-8000-0000000000e1"])
+        guard.attach_directory([
+            ("00000000-0000-4000-8000-0000000000e1", "gone@synth.example", ["gone@synth.example"]),
+            ("00000000-0000-4000-8000-0000000000c1", "me@synth.example", ["me@synth.example"]),
+            ("00000000-0000-4000-8000-0000000000c2", "col@synth.example", ["col@synth.example"]),
+        ])
+        start = datetime(2026, 11, 27, 15, 0, tzinfo=timezone.utc)
+        end = datetime(2026, 11, 27, 15, 30, tzinfo=timezone.utc)
+        meeting_rows = [
+            # 1) Copy in colleague's mailbox for same ical_uid (deduped in favor of reader's copy)
+            ("h-col", ["CalendarEvent:x:col"], start, end, "Ops sync", "col@synth.example",
+             ["me@synth.example"], "https://teams.microsoft.com/l/meetup-join/abc", False, True,
+             False, False, "uid-1", "col-box", ["meetings:calendar:col-box"], ["[]"], [], []),
+            # 2) Reader's own mailbox copy (wins dedupe)
+            ("h-me", ["CalendarEvent:x:me"], start, end, "Ops sync", "col@synth.example",
+             ["me@synth.example"], "https://teams.microsoft.com/l/meetup-join/abc", False, True,
+             False, False, "uid-1", "me@synth.example", ["meetings:calendar:me"], ["[]"], [], []),
+            # 3) Unreadable audience key (filtered out)
+            ("h-deny", ["CalendarEvent:x:deny"], start, end, "Secret sync", "me@synth.example",
+             [], None, False, False, True, False, "uid-2", "me@synth.example",
+             ["meetings:calendar:other"], ["[]"], [], []),
+            # 4) Unheld marking (filtered out)
+            ("h-hr", ["CalendarEvent:x:hr"], start, end, "HR sync", "me@synth.example",
+             [], None, False, False, True, False, "uid-3", "me@synth.example",
+             ["meetings:calendar:me"], ['["hr"]'], [], []),
+            # 5) Excluded attendee (filtered out)
+            ("h-excl", ["CalendarEvent:x:excl"], start, end, "With excluded", "me@synth.example",
+             ["gone@synth.example"], None, False, False, True, False, "uid-4", "me@synth.example",
+             ["meetings:calendar:me"], ["[]"], [], []),
+        ]
+
+        class FakeCursor:
+            def __init__(self, rows):
+                self._rows = rows
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+            def fetchall(self):
+                return list(self._rows)
+
+        class FakePg:
+            def __init__(self, exists=True):
+                self.exists = exists
+            def execute(self, sql, params=None):
+                if "to_regclass('biz.meetings')" in sql:
+                    return FakeCursor([(not self.exists,)])
+                if "FROM biz.meetings" in sql:
+                    return FakeCursor(meeting_rows)
+                return FakeCursor([(None,)])
+
+        # Missing table -> returns None so caller falls back to ontology path
+        self.assertIsNone(br.upcoming_meetings_pg(
+            FakePg(exists=False), frozenset({"ops"}),
+            may_read=lambda k: True, people=guard,
+            now=datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc),
+            reader={"me@synth.example"},
+        ))
+        got = br.upcoming_meetings_pg(
+            FakePg(exists=True), frozenset({"ops"}),
+            may_read=lambda k: k in ("meetings:calendar:col-box", "meetings:calendar:me"),
+            people=guard,
+            now=datetime(2026, 11, 26, 12, 0, tzinfo=timezone.utc),
+            reader={"me@synth.example"},
+        )
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["object_id"], "CalendarEvent:x:me")
+        self.assertEqual(got[0]["label"], "Ops sync")
+        self.assertTrue(got[0]["online"])
+        self.assertEqual(got[0]["join_url"], "https://teams.microsoft.com/l/meetup-join/abc")
+        self.assertEqual(got[0]["organizer"]["address"], "col@synth.example")
+        self.assertEqual([a["address"] for a in got[0]["attendees"]], ["me@synth.example"])
+
+
 if __name__ == "__main__":
     unittest.main()

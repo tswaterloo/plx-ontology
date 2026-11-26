@@ -7,11 +7,12 @@
 import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ItemActions, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
+import { StatusIndicator } from "@/components/autopilot/jobs";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, requestDraft, type PreparedItem, type TodoStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 import { countedWords, formatDateTime } from "@/lib/format";
-import { noteParts, saidOnce } from "@/components/autopilot/lines";
+import { cleanHeadline, formatSender, noteParts, saidOnce } from "@/components/autopilot/lines";
 import { cn } from "@/lib/cn";
 
 const SYSTEMS: Record<string, string> = {
@@ -31,14 +32,14 @@ const SYSTEMS: Record<string, string> = {
 export function TodoSteps({ todos }: { todos: TodoStep[] }) {
   if (todos.length === 0) return null;
   return (
-    <div className="max-w-[46rem] space-y-1" data-testid="todo-steps">
-      <p className="text-[12px] text-muted">To do by hand</p>
-      <ul className="list-disc space-y-0.5 pl-4 text-[13px]">
+    <div className="max-w-[46rem] space-y-1.5" data-testid="todo-steps">
+      <p className="text-[12px] font-medium uppercase tracking-[0.04em] text-faint">To do by hand</p>
+      <ul className="list-disc space-y-1 pl-4 text-[13.5px] leading-relaxed text-fg/90">
         {todos.map((t, n) => {
           const where = [SYSTEMS[t.system.toLowerCase()] ?? t.system, t.record].filter((x) => x.trim() !== "").join(", ");
           return (
             <li key={n}>
-              {where && <span className="font-medium">{where}: </span>}
+              {where && <span className="font-medium text-fg">{where}: </span>}
               {t.what}
             </li>
           );
@@ -67,6 +68,7 @@ function startedAtMs(requestedAt?: string | null): number {
 export function TodoCard({
   item,
   linked,
+  detail,
   onGone,
   onChanged,
   onOptimistic,
@@ -76,6 +78,7 @@ export function TodoCard({
 }: {
   item: PreparedItem;
   linked?: boolean;
+  detail?: boolean;
   onGone: (id: string) => void;
   onChanged?: () => void;
   feedback?: React.ReactNode;
@@ -130,6 +133,7 @@ export function TodoCard({
   const canFollowUp = isWaiting && item.plan_status !== "working" && item.plan_status !== "ready" && item.plan_status !== "drafted";
   const canDraftReply = isMessageChannel && !isWaiting && !isPromise && (item.plan_status === "planned" || item.plan_status === "none");
   const canDraft = item.plan_status === "deferred" || item.plan_status === "failed" || canFollowUp || canDraftReply;
+
   const draft = async () => {
     setBusy(true);
     setError(null);
@@ -148,6 +152,7 @@ export function TodoCard({
       setBusy(false);
     }
   };
+
   const decide = async (decision: "accept") => {
     if (onOptimistic) {
       setError(null);
@@ -173,6 +178,140 @@ export function TodoCard({
       setBusy(false);
     }
   };
+
+  if (detail) {
+    const n = noteParts(item.note ?? "");
+    const [subjectLine, summary, noteText, message] = saidOnce([item.subject ?? "", item.summary ?? "", n.text, item.message ?? ""]);
+    const senderInfo = formatSender(item.sender);
+    const title = cleanHeadline(subjectLine || summary || senderInfo.name || "Action item");
+    const contextSummary = summary && cleanHeadline(summary) !== title ? summary : "";
+    const statusTone = asked || item.plan_status === "working" ? "new" : isWaiting ? "neutral" : "risk";
+    const statusLabel = asked || item.plan_status === "working" ? "Drafting" : isWaiting ? "Waiting" : isPromise ? "Follow up" : "Needs input";
+
+    return (
+      <li
+        id={`prepared-${item.item_id}`}
+        className={cn("w-full space-y-6", linked && "border-l-2 border-l-accent pl-4")}
+        data-testid="prepared-todo"
+      >
+        {card.provide(
+          <>
+            <header className="space-y-3 border-b border-border pb-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <h2 className="min-w-0 flex-1 text-[20px] font-semibold leading-[1.3] tracking-[-0.02em] text-fg">
+                  {countedWords(title)}
+                </h2>
+                <div className="shrink-0">
+                  <ItemActions
+                    item={item}
+                    onGone={onGone}
+                    onChanged={onChanged}
+                    onOptimistic={onOptimistic}
+                    onRestore={onRestore}
+                    onFeedback={onFeedback}
+                    busy={busy}
+                    menuAlign="right"
+                    primary={
+                      <>
+                        <Button size="sm" disabled={busy} onClick={() => void decide("accept")}>
+                          {busy ? "Saving..." : "Done"}
+                        </Button>
+                        {canDraft && !asked && (
+                          <Button size="sm" variant="outline" disabled={busy} onClick={() => void draft()}>
+                            {busy
+                              ? "Requesting..."
+                              : canFollowUp && item.plan_status !== "failed"
+                                ? "Draft a follow-up"
+                                : item.plan_status === "failed"
+                                  ? "Ask again"
+                                  : canDraftReply
+                                    ? "Draft reply"
+                                    : "Draft it"}
+                          </Button>
+                        )}
+                      </>
+                    }
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted">
+                <StatusIndicator tone={statusTone} label={statusLabel} />
+                {senderInfo.name && (
+                  <span className="font-medium text-fg" title={senderInfo.email || item.sender || undefined}>
+                    {senderInfo.name}
+                  </span>
+                )}
+                {n.labels.map((l) => (
+                  <span key={l} className="text-[12px] text-faint" data-testid="prepared-label">
+                    {l}
+                  </span>
+                ))}
+                <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
+              </div>
+            </header>
+
+            {(contextSummary || message || noteText) && (
+              <section className="space-y-2.5">
+                <h3 className="text-[12px] font-medium uppercase tracking-[0.04em] text-faint">What happened</h3>
+                {contextSummary && <p className="text-[14.5px] leading-[1.65] text-fg">{countedWords(contextSummary)}</p>}
+                {message && (
+                  <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3.5 text-[14px] leading-[1.65] text-fg/85">
+                    {message}
+                  </p>
+                )}
+                {noteText && (
+                  <p className="text-[13px] leading-relaxed text-muted" data-testid="prepared-note">
+                    {noteText}
+                  </p>
+                )}
+              </section>
+            )}
+
+            {(item.facts ?? []).length > 0 && (
+              <section className="space-y-2 border-t border-border pt-5">
+                <h3 className="text-[12px] font-medium uppercase tracking-[0.04em] text-faint">Details</h3>
+                <ul className="list-disc space-y-1 pl-5 text-[14px] leading-[1.6] text-fg/90" data-testid="todo-facts">
+                  {(item.facts ?? []).map((f, i) => (
+                    <li key={`${i}-${f}`}>{countedWords(f)}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {(item.todos ?? []).length > 0 && (
+              <section className="border-t border-border pt-5">
+                <TodoSteps todos={item.todos ?? []} />
+              </section>
+            )}
+
+            {(item.links ?? []).length > 0 && (
+              <div className="flex flex-wrap gap-3 border-t border-border pt-4 text-[13px]">
+                {(item.links ?? []).map((l) => (
+                  <a key={l.href} href={l.href} {...(l.href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="font-medium text-accent underline-offset-2 hover:underline">
+                    {l.label}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {asked && (
+              <p className="text-[12.5px] text-muted" role="status" data-testid="draft-asked">
+                Drafting ({elapsedLabel(elapsedSec)}). It shows here when it is ready.
+              </p>
+            )}
+            {draftNote && <p className="text-[12.5px] text-muted">{draftNote}</p>}
+            {feedback && (
+              <div className="border-t border-border pt-4" data-testid="prepared-feedback-row">
+                {feedback}
+              </div>
+            )}
+          </>,
+        )}
+        {card.banner}
+      </li>
+    );
+  }
+
   return (
     <li
       id={`prepared-${item.item_id}`}

@@ -1,5 +1,6 @@
 "use client";
 
+import { Check, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InsightsDashboard, type TileEntry } from "@/components/insights/dashboard";
 import { ChartSkeleton } from "@/components/charts/chart-skeleton";
@@ -13,8 +14,7 @@ import { getInsights, keepInsights, keptInsights, saveInsightLayout, streamInsig
 import { noticeKind, plainError } from "@/lib/errors";
 import type { InsightList, InsightResult } from "@/lib/types";
 
-/** Insights: the built-in team, org and customer views and the charts you pinned, each read
- * live as you (the server decides whose rows you see). */
+/** Insights: executive curated canvas, interactive ontology lineage map, and monitors & quality telemetry. */
 export default function InsightsPage() {
   // what the last visit showed is drawn at once; the one request below then replaces it
   const [data, setData] = useState<InsightList | null>(() => keptInsights()?.list ?? null);
@@ -79,7 +79,7 @@ export default function InsightsPage() {
         setFeed((f) => ({ ...f, [line.id]: { result: line.result } }));
       } else if (line.later) {
         fresh.add(line.id);
-        setFeed((f) => ({ ...f, [line.id]: { later: true } }));
+        setFeed((f) => ({ ...f, [line.id]: { later: true, ...(line.waiting ? { waiting: true } : {}) } }));
       } else if (line.error) {
         fresh.add(line.id);
         setFeed((f) => ({ ...f, [line.id]: { error: line.error } }));
@@ -100,25 +100,37 @@ export default function InsightsPage() {
     );
     return () => ctl.abort();
   }, [round]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar
         heading
         title="Insights"
         actions={
-          data?.saving ? (
+          data ? (
             <button
               type="button"
               aria-pressed={editing}
               onClick={() => setEditing((e) => !e)}
+              data-testid="customize-layout-toggle"
               className={cn(
-                "inline-flex h-7 items-center rounded-md px-2.5 text-[12.5px] font-medium transition-colors cursor-pointer",
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors cursor-pointer",
                 editing
-                  ? "bg-accent text-accent-fg hover:brightness-110"
-                  : "border border-border bg-bg text-fg hover:border-border-strong hover:bg-hover dark:bg-surface",
+                  ? "bg-fg text-bg hover:opacity-90"
+                  : "border border-border bg-surface text-muted hover:border-border-strong hover:bg-hover hover:text-fg",
               )}
             >
-              {editing ? "Done" : "Customize"}
+              {editing ? (
+                <>
+                  <Check className="size-3.5 shrink-0" strokeWidth={2.2} aria-hidden />
+                  Done
+                </>
+              ) : (
+                <>
+                  <SlidersHorizontal className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                  Customize layout
+                </>
+              )}
             </button>
           ) : undefined
         }
@@ -129,13 +141,32 @@ export default function InsightsPage() {
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : data ? (
           <>
-            {problem && <p className="pb-3 text-[13px]" role="alert">{problem}</p>}
-            <InsightsDashboard list={data} onChanged={retry} feed={feed} streaming={streaming} onArrange={arrange} editing={editing} onEditingChange={setEditing} />
+            {problem && <p className="pb-3 text-[13px] text-late" role="alert">{problem}</p>}
+            <InsightsDashboard
+              list={data}
+              onChanged={retry}
+              feed={feed}
+              streaming={streaming}
+              onArrange={data.saving ? arrange : undefined}
+              editing={editing}
+              onEditingChange={setEditing}
+            />
           </>
         ) : (
           <div aria-busy data-testid="insights-skeleton">
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3">
-              {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} className="rounded-md border border-border bg-bg p-4"><div className="skeleton skeleton-shimmer mb-4 h-5 w-2/3" /><ChartSkeleton /></div>)}
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+              {[4, 4, 4, 6, 6, 12].map((span, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    "rounded-xl border border-border bg-surface p-4",
+                    span === 4 ? "lg:col-span-4" : span === 6 ? "lg:col-span-6" : "lg:col-span-12",
+                  )}
+                >
+                  <div className="skeleton mb-4 h-4 w-1/2" />
+                  <ChartSkeleton />
+                </div>
+              ))}
             </div>
             <Pending label="Reading your charts" />
           </div>

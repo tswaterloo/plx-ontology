@@ -1,7 +1,7 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Activity, Bot, BellRing, BookMarked, Bookmark, CalendarClock, ChartColumn, CircleHelp, Database, FileText, History, Inbox, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
+import { Activity, Bot, BookMarked, Bookmark, ChartColumn, CircleHelp, Database, FileText, History, Inbox, Layers, MessageCircle, MoreHorizontal, Pin, RefreshCw, Search, TriangleAlert, Users, type LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { lazy, Suspense, useEffect, useState } from "react";
@@ -341,45 +341,40 @@ export interface NavSection extends NavPlace {
 }
 
 /**
- * The sidebar (the owner, 11-17: "items move depending on the page"; 11-18: "simpler tabs"):
- * one fixed list, the same on every page, the current page highlighted: Home, Ask, Insights,
- * Data (every kind of record in one place), Meetings, Team, then Admin last. A page's sub-pages are tabs under its title
- * (SectionTabs), never sidebar rows. Home is the queue (One engine, one queue)
- * with four tabs: what needs you (the prepared items first), the alerts (was Watching), the
- * late POs (was its own page) and the switches (/autopilot, was its own sidebar entry);
- * /watching, /late and /my-work redirect into it (next.config). Memory, Templates and Work log are in the account menu.
- * Team shows only to a reader with a team grant (the owner, a full-read grant, an ops
- * reader); Admin only to an ops reader or a feedback admin, each of its tabs to the readers
- * it serves.
+ * The sidebar: one fixed list, the same on every page, the current page highlighted:
+ * Home (unified daily briefing with Today's schedule folded in, plus Alerts and Late POs
+ * deep links), Assist, Ask, Insights, Artifacts, Data (every kind of record in one place),
+ * Team, then Admin last. Meetings stays reachable via Home's Today schedule card and the
+ * command palette, highlighting Home in the sidebar. Memory, Templates and Work log live
+ * in the account menu. Team shows only to a reader with a team grant; Admin only to an ops
+ * reader or a feedback admin, each of its tabs to the readers it serves.
  */
 export const ALERTS_HREF = "/?show=alerts";
 export const LATE_HREF = "/?show=late";
 export const NAV_SECTIONS: NavSection[] = [
   {
-    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late"], group: "main",
-    children: [
-      { href: "/", label: "Needs you" },
-      { href: ALERTS_HREF, label: "Alerts" },
-      { href: LATE_HREF, label: "Late POs", late: true },
-    ],
+    key: "home", href: "/", label: "Home", place: "/", icon: Inbox, holds: ["/my-work", "/watching", "/late", "/meetings"], group: "main",
+    children: [],
   },
   {
     key: "assist", href: "/assist", label: "Assist", place: "/assist", icon: Bot, holds: ["/autopilot"], group: "main",
     children: [
-      { href: "/assist", label: "Prepared" },
+      { href: "/assist", label: "Ready for you" },
+      { href: "/assist?show=suggestions", label: "Suggestions" },
       { href: "/assist?show=workflows", label: "Workflows" },
+      { href: "/assist?show=memory", label: "Memory" },
       { href: "/assist?show=log", label: "What it did" },
       { href: "/assist?show=switches", label: "Switches" },
     ],
   },
   { key: "ask", href: "/ask", label: "Ask", place: "/ask", icon: MessageCircle, holds: [], group: "main", children: [] },
   { key: "insights", href: "/insights", label: "Insights", place: "/insights", icon: ChartColumn, holds: [], group: "main", children: [] },
+  { key: "artifacts", href: "/artifacts", label: "Artifacts", place: "/artifacts", icon: Layers, holds: [], group: "main", children: [] },
   {
     key: "records", href: "/records", label: "Data", place: "/records", icon: Database,
     holds: ["/orders", "/customers", "/suppliers", "/products", "/more", "/po", "/ao", "/order", "/customer", "/account", "/supplier", "/object", "/source"],
     group: "main", children: [],
   },
-  { key: "meetings", href: "/meetings", label: "Meetings", place: "/meetings", icon: CalendarClock, holds: [], group: "main", children: [] },
   { key: "team", href: "/team", label: "Team", place: "/team", icon: Users, holds: [], group: "main", grant: true, children: [] },
   { key: "memory", href: "/memory", label: "Memory", place: "/memory", icon: BookMarked, holds: [], group: "account", children: [] },
   { key: "templates", href: "/templates", label: "Templates", place: "/templates", icon: FileText, holds: [], group: "account", children: [] },
@@ -464,9 +459,9 @@ export function isOpsReader(me: { ops_reader?: boolean } | null | undefined): bo
   return !!me?.ops_reader;
 }
 
-/** Phone tabs: the sidebar's first items (Home, Ask, Records, Meetings), in its order,
+/** Phone tabs: the sidebar's core items (Home, Assist, Ask, Data), in order,
  * then More for the rest in the same order. */
-export const TABS = ["home", "ask", "records", "meetings"];
+export const TABS = ["home", "assist", "ask", "records"];
 
 /** Whether the location (path, #fragment, ?query) is the place `href`: its path (or a page
  * under it), its #fragment when it names one, and every key of its ?query when `search` is
@@ -536,7 +531,28 @@ export function isBehind(s: SourceAge): boolean {
 }
 
 /** A source system as the app names it to a person ("Files", "Mail", "Business Central"). */
-export const sourceName = (s: string) => (s === "File" ? "Files" : s === "Email" ? "Mail" : (SYSTEM_LABEL as Record<string, string>)[s] ?? s);
+const SOURCE_ALIAS: Record<string, string> = {
+  bc: "Business Central",
+  portal: "Portal",
+  mail: "Mail",
+  email: "Mail",
+  teams: "Teams",
+  file: "Files",
+  files: "Files",
+  sharepoint: "Files",
+  sage: "Sage",
+  filemaker: "FileMaker",
+  mc: "Mission Control",
+  calendar: "Calendar",
+  planner: "Planner",
+};
+
+export const sourceName = (s: string) =>
+  s === "File"
+    ? "Files"
+    : s === "Email"
+      ? "Mail"
+      : (SYSTEM_LABEL as Record<string, string>)[s] ?? SOURCE_ALIAS[String(s ?? "").toLowerCase()] ?? s;
 
 /** The one quiet line under the sidebar: "Data as of 10:42 AM ET"; amber, naming them, only when
  * a source the open page reads is more than an hour behind. Each system's time on click; every
@@ -868,10 +884,10 @@ function NavItem({ href, label, place, count, countWords = "late", dot, pulsing,
       title={pulsing ? `${label} (${pulsing})` : label}
       className={cn(
         "group relative flex h-8 items-center gap-2.5 rounded-md px-2.5 text-[13px] leading-none transition-colors max-xl:justify-center max-xl:px-0",
-        current ? "bg-nav-on font-medium text-fg" : "text-fg/80 hover:bg-hover hover:text-fg",
+        current ? "bg-nav-on font-semibold text-fg" : "text-fg/85 hover:bg-hover hover:text-fg",
       )}
     >
-      {current && <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-accent max-xl:hidden" aria-hidden />}
+      {current && <span className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full bg-fg max-xl:hidden" aria-hidden />}
       <PlaceIcon href={place ?? href} className={current ? "text-fg" : "text-muted group-hover:text-fg"} />
       <span className="flex-1 truncate max-xl:sr-only">{label}</span>
       {pulsing && (
@@ -980,7 +996,7 @@ function SectionTabsAt({ section, className, search }: { section: string; classN
             href={c.href}
             {...aheadProps(c.href)}
             aria-current={on ? "page" : undefined}
-            className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
+            className={cn("relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors", on ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-fg" : "text-muted hover:text-fg")}
           >
             {c.label}
           </Link>
@@ -990,12 +1006,17 @@ function SectionTabsAt({ section, className, search }: { section: string; classN
   );
 }
 
-/** The pins the sidebar lists: a pin to a place the nav already names (an item or one of its
- * tabs, the #fragment aside) is not repeated (the owner, 11-17: "Approvals", "Autopilot
- * approvals" and "Alerts" were there twice; 11-18: simpler). A pin with its own filter
- * (?for=purchasing) is a view of its own and stays. */
+/** The pins the sidebar lists: a pin to a place the nav already names (an item, one of its
+ * tabs, or a view folded into Home such as Alerts, Late POs, or Meetings) is not repeated.
+ * A pin with its own filter (?for=purchasing) is a view of its own and stays. */
 export function sidebarPins(pins: PinnedPage[], me: NavReader): PinnedPage[] {
-  const fixed = new Set([...navSectionsFor(me).flatMap((s) => [s.href, ...s.children.map((c) => c.href.split("#")[0])]), HELP.href]);
+  const fixed = new Set([
+    ...navSectionsFor(me).flatMap((s) => [s.href, ...s.children.map((c) => c.href.split("#")[0])]),
+    ALERTS_HREF,
+    LATE_HREF,
+    "/meetings",
+    HELP.href,
+  ]);
   return pins.filter((p) => !fixed.has(p.href.split("#")[0]));
 }
 
@@ -1190,7 +1211,10 @@ function initialsOf(name: string) {
 function Avatar({ name, className }: { name: string; className?: string }) {
   return (
     <span
-      className={cn("flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-surface-2 text-[10px] font-semibold text-fg/80", className)}
+      className={cn(
+        "flex size-7 shrink-0 items-center justify-center rounded-full border border-border-strong bg-surface-2 text-[11px] font-semibold text-fg/90",
+        className,
+      )}
       aria-hidden
     >
       {initialsOf(name) || "?"}
@@ -1324,9 +1348,10 @@ export function TabBar() {
         {tabs.map(({ key, href, label, icon: Icon, late: showLate }) => {
           const on = open?.key === key;
           return (
-            <Link key={href} href={href} {...aheadProps(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-accent" : "text-muted")}>
+            <Link key={href} href={href} {...aheadProps(href)} aria-current={on ? "page" : undefined} className={cn("relative flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium", on ? "text-fg" : "text-muted hover:text-fg")}>
+              {on && <span className="absolute top-0 inset-x-4 h-[2px] bg-accent" aria-hidden />}
               <span className="relative">
-                <Icon className="size-[22px]" strokeWidth={on ? 2 : 1.7} aria-hidden />
+                <Icon className={cn("size-[22px]", on && "text-accent")} strokeWidth={on ? 2 : 1.7} aria-hidden />
                 {key === "ask" && askRunning && (
                   <span
                     className="absolute -right-1 -top-0.5 size-2 rounded-full bg-accent skeleton-shimmer"
@@ -1411,7 +1436,7 @@ function MobileTitleBar() {
 }
 
 /** Pages that draw their own Toolbar; the shell adds no phone title bar over them.*/
-export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/ops", "/work-log", "/templates", "/memory", "/help", "/assist", "/orders", "/customers", "/suppliers", "/products", "/more", "/records", "/account", "/order", "/insights", "/data-health"];
+export const TOOLBAR_PAGES: string[] = ["/meetings", "/team", "/ask", "/po", "/ao", "/customer", "/supplier", "/object", "/source", "/activity", "/feedback", "/assist", "/ops", "/work-log", "/templates", "/memory", "/help", "/orders", "/customers", "/suppliers", "/products", "/more", "/records", "/account", "/order", "/insights", "/artifacts", "/data-health"];
 
 /** What the content area holds until the sign-in is read: drawn in the server's HTML too, so a
  * slow first load never shows an empty page (it fades in after 600 ms, so a fast one never flickers). */

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, Bookmark, Check, ChevronRight, CornerDownRight, RotateCw } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Bookmark, Check, ChevronRight, CornerDownRight, Database, ListChecks, Loader2, RotateCw, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { Related } from "@/components/related";
 import { useEffect, useState } from "react";
@@ -23,11 +23,12 @@ import { AskDrafts, AttachmentNotes } from "./ask-drafts";
 import { InstructionPart, type InstructAsk } from "./instruction-part";
 import { ClarifyPart, type ClarifyReply } from "./clarify-part";
 import { AskOrganizer } from "./ask-organize";
+import { AskSchedulePopover } from "./ask-schedule-popover";
 import { Inlines, RichText } from "./rich-text";
 import { CiteNumbers, EvidenceDrawer, SourceChips, sourceName } from "./source-chip";
 import { lateFigure, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
 import { ErrorNotice } from "./ui/notice";
-import { SimpleAnswer } from "./simple-answer";
+import { SimpleAnswer, type CanvasArtifact } from "./simple-answer";
 import { ShowAll } from "@/components/show-all";
 
 /** Server prose as a reader reads it: codes and dates in words, amounts with their currency. */
@@ -82,6 +83,8 @@ export interface Turn {
   request?: TurnRequest;
   /** The answer streams whole (the simple Ask): shown as the answer and its Sources line alone. */
   simple?: boolean;
+  /** Genie Space label if the question was asked inside a scoped department space. */
+  spaceLabel?: string;
 }
 
 /** What the person picked to disambiguate: an object id plus its label. */
@@ -172,8 +175,9 @@ function SectionTitle({ children, aside }: { children: React.ReactNode; aside?: 
   );
 }
 
-/** A quiet button for the answer's own toolbar (Save, Correct, Wrong). */
-export const quietButton = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer [&_svg]:size-[15px]";
+/** A quiet tactile pill button for the answer's own toolbar (Save, Correct, Wrong). */
+export const quietButton =
+  "inline-flex h-7 items-center gap-1.5 rounded-lg border border-transparent px-2 py-1 text-[12px] font-medium text-muted transition-all duration-150 hover:border-border hover:bg-surface-2 hover:text-fg active:scale-[0.98] disabled:opacity-50 cursor-pointer [&_svg]:size-[14px]";
 
 function SaveButton({ question, href }: { question: string; href: string }) {
   const saved = useSaved();
@@ -206,19 +210,9 @@ function useElapsed(on: boolean): number {
   return s;
 }
 
-/** A small ring that turns while a step is in progress. */
-function Spinner() {
-  return (
-    <svg viewBox="0 0 14 14" className="size-3.5 shrink-0 animate-spin text-muted" aria-hidden>
-      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--border-strong)" strokeWidth="1.5" />
-      <path d="M7 1.5a5.5 5.5 0 0 1 5.5 5.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 const SEARCHED = ["BC", "Portal", "Email", "File"];
 
-/** The work's own steps as they arrive: done ones in grey with a tick, the current one turning. */
+/** Live progress trace while an answer runs: crisp spinner icon, elapsed timer, and collapsible step list (zero colored dots). */
 function Progress({ turn }: { turn: Turn }) {
   const elapsed = useElapsed(true);
   const understood = (turn.understanding?.entities ?? []).filter((e) => e.resolved && !e.ambiguous).map((e) => recordLabel(e.resolved!.type, e.resolved!.label));
@@ -235,27 +229,189 @@ function Progress({ turn }: { turn: Turn }) {
       : [{ label: "Searching", state: (writing ? "done" : "active") as "done" | "active", tiles: true }]),
     ...(writing ? [{ label: "Writing", state: "active" as const }] : []),
   ];
+  const current = steps[steps.length - 1];
   return (
-    <div role="status" aria-live="polite" data-testid="progress">
-      <ol className="space-y-1.5 text-[13px] leading-5" data-pending="">
-        {steps.map((s, i) => (
-          <li key={i} className={cn("flex items-center gap-2.5", s.state === "done" ? "text-muted" : "text-fg")}>
-            {s.state === "active" ? <Spinner /> : <Check className="size-3.5 shrink-0 text-muted" strokeWidth={2.2} aria-hidden />}
-            <span className="min-w-0 line-clamp-2">{s.label}</span>
-            {s.tiles && (
-              <span className="flex shrink-0 gap-1" aria-hidden>
-                {SEARCHED.map((x) => (
-                  <SystemCode key={x} system={x} size={14} />
-                ))}
-              </span>
-            )}
-            {i === steps.length - 1 && s.label !== "Writing" && found && <span className="shrink-0 text-muted">{found}</span>}
-            {s.state === "active" && <span className="shrink-0 text-[12px] tabular-nums text-faint">{elapsed} s</span>}
-            <span className="sr-only">{s.state === "done" ? "(done)" : "(in progress)"}</span>
-          </li>
-        ))}
-      </ol>
+    <div
+      role="status"
+      aria-live="polite"
+      data-testid="progress"
+      className="rounded-xl border border-border bg-surface/75 transition-all duration-150"
+    >
+      <details open className="group">
+        <summary
+          data-testid="progress-summary"
+          className="flex cursor-pointer list-none items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-[12.5px] select-none transition-colors duration-150 hover:bg-hover/60 [&::-webkit-details-marker]:hidden"
+        >
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" strokeWidth={2} aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-medium text-fg">{current.label}</span>
+          {found && current.label !== "Writing" && (
+            <span className="shrink-0 text-[11.5px] text-muted tabular-nums">{found}</span>
+          )}
+          {steps.length > 1 && (
+            <span className="shrink-0 rounded-md border border-border bg-surface-2 px-1.5 py-0.5 text-[11px] font-medium text-muted tabular-nums">
+              {plural(steps.length, "step")}
+            </span>
+          )}
+          <span className="shrink-0 font-mono text-[11.5px] tabular-nums text-faint" data-testid="progress-elapsed">
+            {elapsed}s
+          </span>
+          <ChevronRight
+            className="size-3.5 shrink-0 text-faint transition-transform duration-150 group-open:rotate-90"
+            strokeWidth={2}
+            aria-hidden
+          />
+        </summary>
+        <div className="border-t border-border/60 px-3.5 py-2.5">
+          <ol className="space-y-1.5 border-l border-border pl-3 text-[12.5px] leading-5" data-pending="">
+            {steps.map((s, i) => (
+              <li key={i} className={cn("flex items-center gap-2.5", s.state === "done" ? "text-muted" : "text-fg")}>
+                {s.state === "active" ? (
+                  <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" strokeWidth={2} aria-hidden />
+                ) : (
+                  <Check className="size-3.5 shrink-0 text-ok" strokeWidth={2.2} aria-hidden />
+                )}
+                <span className={cn("min-w-0 line-clamp-2", s.state === "active" && "font-medium")}>{s.label}</span>
+                {s.tiles && (
+                  <span className="flex shrink-0 gap-1" aria-hidden>
+                    {SEARCHED.map((x) => (
+                      <SystemCode key={x} system={x} size={14} />
+                    ))}
+                  </span>
+                )}
+                <span className="sr-only">{s.state === "done" ? "(done)" : "(in progress)"}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      </details>
     </div>
+  );
+}
+
+/** Persistent collapsible Thought process shown after an answer completes: steps ran, tables/objects consulted, and governed measures used (zero shimmer/dots). */
+function ThoughtProcess({ turn }: { turn: Turn }) {
+  const a = turn.answer;
+  if (!a || a.clarify || a.assistant_unavailable) return null;
+
+  const rawSteps = (turn.steps ?? [])
+    .filter((t) => t !== "Reading your question" && t !== "Writing the answer")
+    .map((t) => scrubProgressUuids(readable(t).replace(/…$/, "")));
+
+  const tableSet = new Set<string>();
+  const derivedSteps: string[] = [];
+  for (const t of a.cited ?? []) {
+    const views = (t.work?.views ?? []).length > 0 ? t.work!.views : (t.profile?.views ?? []);
+    if (views.length > 0) {
+      for (const v of views) tableSet.add(v.replace(/_/g, " "));
+    } else if (t.about) {
+      tableSet.add(t.about);
+    }
+    if (rawSteps.length === 0 && t.about) {
+      derivedSteps.push(t.records > 0 ? `Read ${t.about} (${plural(t.records, "row")})` : `Read ${t.about}`);
+    }
+  }
+  const objectLabels = [
+    ...new Set(
+      (a.subjects ?? []).map((s) => recordLabel(s.type, s.label)),
+    ),
+  ];
+  const measures = a.definitions ?? [];
+  const stepLines = rawSteps.length > 0 ? rawSteps : derivedSteps;
+  const tables = [...tableSet];
+
+  if (stepLines.length === 0 && tables.length === 0 && objectLabels.length === 0 && measures.length === 0) {
+    return null;
+  }
+
+  const metaParts = [
+    stepLines.length > 0 ? plural(stepLines.length, "step") : null,
+    tables.length > 0 ? plural(tables.length, "table") : null,
+    objectLabels.length > 0 ? plural(objectLabels.length, "object") : null,
+    measures.length > 0 ? plural(measures.length, "measure") : null,
+  ].filter(Boolean);
+  const seconds = a.latency_ms && a.latency_ms >= 1000 ? `${Math.round(a.latency_ms / 1000)}s` : null;
+
+  return (
+    <details
+      className="group rounded-xl border border-border bg-surface/60 transition-colors duration-150 open:bg-surface/80"
+      data-testid="thought-process"
+    >
+      <summary
+        data-testid="thought-process-summary"
+        className="flex cursor-pointer list-none items-center gap-2 rounded-xl px-3.5 py-2 text-[12.5px] select-none transition-colors duration-150 hover:bg-hover/60 [&::-webkit-details-marker]:hidden"
+      >
+        <ListChecks className="size-3.5 shrink-0 text-ok" strokeWidth={2} aria-hidden />
+        <span className="font-medium text-fg">Thought process</span>
+        {metaParts.length > 0 && (
+          <span className="min-w-0 flex-1 truncate text-[12px] text-muted tabular-nums">
+            {metaParts.join(" · ")}
+          </span>
+        )}
+        {seconds && (
+          <span className="shrink-0 font-mono text-[11.5px] text-faint tabular-nums">{seconds}</span>
+        )}
+        <ChevronRight
+          className="size-3.5 shrink-0 text-faint transition-transform duration-150 group-open:rotate-90"
+          strokeWidth={2}
+          aria-hidden
+        />
+      </summary>
+      <div className="space-y-3 border-t border-border/60 px-3.5 py-3 text-[12.5px]">
+        {stepLines.length > 0 && (
+          <ol className="space-y-1.5 border-l border-border pl-3 leading-5" data-testid="thought-process-steps">
+            {stepLines.map((line, i) => (
+              <li key={i} className="flex items-start gap-2 text-muted">
+                <Check className="mt-0.5 size-3.5 shrink-0 text-ok" strokeWidth={2.2} aria-hidden />
+                <span className="min-w-0 text-fg">{line}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {(tables.length > 0 || objectLabels.length > 0) && (
+          <div className="space-y-1.5" data-testid="thought-process-sources">
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">
+              <Database className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+              <span>Tables and objects consulted</span>
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {tables.map((name) => (
+                <span
+                  key={`tbl-${name}`}
+                  className="inline-flex items-center rounded-md border border-border bg-bg px-2 py-0.5 text-[11.5px] font-medium text-fg"
+                >
+                  {name}
+                </span>
+              ))}
+              {objectLabels.map((label) => (
+                <span
+                  key={`obj-${label}`}
+                  className="inline-flex items-center rounded-md border border-border bg-surface-2 px-2 py-0.5 text-[11.5px] font-medium text-fg"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {measures.length > 0 && (
+          <div className="space-y-1.5" data-testid="thought-process-measures">
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">
+              <ShieldCheck className="size-3 shrink-0 text-ok" strokeWidth={2} aria-hidden />
+              <span>Governed measures used</span>
+            </p>
+            <ul className="space-y-1">
+              {measures.map((m) => (
+                <li key={m.id} className="flex flex-wrap items-baseline gap-x-2 text-[12px]">
+                  <span className="font-medium text-fg">{m.name}</span>
+                  {m.owner && <span className="text-faint">({m.owner})</span>}
+                  <span className="text-muted">{m.definition}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -667,7 +823,20 @@ function whoToAsk(a: Answer): string | null {
 /** Words of a read that failed, as an answer or its not-found list says them. */
 const READ_FAILED = /could(?:n['\u2019]t| not) be read|\b(?:execution|lookup|read|search|query) failed\b|\btimed out\b/i;
 
-type CardProps = { turn: Turn; onPick?: (p: Pick) => void; onRetry?: () => void; onAsk?: (q: string) => void; onInstruct?: (q: string, extra: InstructAsk) => void; onClarify?: (words: string, reply: ClarifyReply) => void; onDeeper?: () => void; noteRecord?: string; showNote?: boolean; hideClarify?: boolean };
+type CardProps = {
+  turn: Turn;
+  onPick?: (p: Pick) => void;
+  onRetry?: () => void;
+  onAsk?: (q: string) => void;
+  onInstruct?: (q: string, extra: InstructAsk) => void;
+  onClarify?: (words: string, reply: ClarifyReply) => void;
+  onDeeper?: () => void;
+  onOpenArtifact?: (artifact: CanvasArtifact) => void;
+  activeArtifactId?: string | null;
+  noteRecord?: string;
+  showNote?: boolean;
+  hideClarify?: boolean;
+};
 
 /** Pure: the turn is the simple Ask's (its answer carries ``cited``, or its words streamed whole). */
 export function isSimple(turn: Turn): boolean {
@@ -676,22 +845,26 @@ export function isSimple(turn: Turn): boolean {
 
 /** The simple Ask's turn shows the answer and its Sources line alone; every other turn the full card. */
 export function AnswerCard(props: CardProps) {
-  const { turn, onRetry, onDeeper, noteRecord, showNote, hideClarify } = props;
+  const { turn, onRetry, onDeeper, onOpenArtifact, activeArtifactId, noteRecord, showNote, hideClarify } = props;
   if (!isSimple(turn)) return <FullAnswerCard {...props} />;
   const busy = turn.phase === "thinking" || turn.phase === "streaming";
   const canDeeper = turn.phase === "done" && !!onDeeper && !turn.request?.extra?.deep && !turn.answer?.assistant_unavailable;
   return (
     <>
       <SimpleAnswer
+        turnId={turn.id}
         answer={turn.answer}
         streamed={turn.streamed}
         charts={turn.charts}
         question={turn.question}
+        spaceLabel={turn.spaceLabel}
         busy={busy}
         status={turn.status}
-        progress={busy ? <Progress turn={turn} /> : undefined}
+        progress={busy ? <Progress turn={turn} /> : turn.phase === "done" ? <ThoughtProcess turn={turn} /> : undefined}
         onAsk={props.onAsk}
         onDeeper={canDeeper ? onDeeper : undefined}
+        onOpenArtifact={onOpenArtifact}
+        activeArtifactId={activeArtifactId}
         noteRecord={noteRecord}
         showNote={showNote && turn.phase === "done"}
       />
@@ -798,7 +971,7 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify, h
             </div>
           ) : null}
 
-          {busy && <Progress turn={turn} />}
+          {busy ? <Progress turn={turn} /> : turn.phase === "done" ? <ThoughtProcess turn={turn} /> : null}
         </div>
 
         {turn.phase === "error" && (
@@ -933,6 +1106,7 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify, h
             <FreshnessLabel freshness={a.freshness} used={usedSystems} />
           </div>
           {!a.clarify && <SaveButton question={turn.question} href={`/ask?c=${encodeURIComponent(a.conversation_id)}`} />}
+          {!a.clarify && <AskSchedulePopover question={turn.question} spaceLabel={turn.spaceLabel} />}
           {!a.clarify && <AskOrganizer conversationId={a.conversation_id} records={a.subjects ?? []} />}
           {!a.clarify && (
             <>
@@ -942,9 +1116,11 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify, h
                 charts={(a.charts ?? []) as unknown as Record<string, unknown>[]}
                 citations={(a.cited ?? []).filter((t) => t.query).map((t) => ({ label: t.about, sql: t.query, count: t.records ?? t.rows?.length ?? 0 }))}
                 format={(a.charts ?? []).length > 0 ? "xlsx" : "docx"}
+                className={quietButton}
               />
               <ExcelExportButton
                 title={turn.question || "Workbench answer"}
+                className={quietButton}
                 req={() => ({
                   title: turn.question || "Workbench answer",
                   summary: a.direct_answer || "",
@@ -967,7 +1143,7 @@ function FullAnswerCard({ turn, onPick, onRetry, onAsk, onInstruct, onClarify, h
           {primary && (
             <Link
               href={refHref(primary)}
-              className="order-first mr-1.5 inline-flex h-8 items-center gap-1 rounded-lg bg-[color-mix(in_srgb,var(--fg)_6%,transparent)] px-3 text-[13px] font-medium text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]"
+              className="order-first mr-1 inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-surface px-2.5 text-[12px] font-medium text-fg transition-all duration-150 hover:border-border-strong hover:bg-surface-2 active:scale-[0.98]"
               data-testid="subject-link"
             >
               Open {recordLabel(primary.type, primary.label)}

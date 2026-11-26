@@ -161,11 +161,165 @@ STATE_MINIMUM = 10                     # source_defaults.MINIMUM
 # was never cleared in its old system (batches made in 2017-2019 still read On-Hold), and
 # nobody decides a release for stock that old. It stays readable on the batch itself.
 HOLD_STALE_DAYS = 365
-# 11-23 (limits audit #37): a reply owed stays listed 60 days (was 30: older ones vanished
-# unanswered); no cap on the To list ("more than 5 is a mailing") and none on the records a
-# message names ("more than 4 is a report"): the bulk and automated-sender tests carry that
-# judgement, a count of people does not.
-REPLY_DAYS = 60                        # was proactive_commitments.REPLY_DAYS 30
+# Open purchase orders and sales orders older than this (multi-year unclosed legacy ERP
+# headers from 2016-2022) are historic ERP artifacts rather than active operational alerts.
+# They stay searchable in Records and Ask, never screaming thousands of days overdue.
+LEGACY_STALE_DAYS = 365
+LEGACY_ORDER_ALERT_NAMES = frozenset({
+    "po_late",
+    "po_undated",
+    "customer_order_late",
+    "customer_order_open_long",
+    "customer_order_slower_than_usual",
+    "customer_order_at_risk",
+})
+# Replies older than 14 days are stale noise in Home Alerts and Needs-you; keep the
+# reply-owed window to 14 days so 2-month-old emails do not clog today's alerts.
+REPLY_DAYS = 14
+REPLY_ALERT_NAMES = frozenset({"needs_my_reply", "reply_owed"})
+# Automated Microsoft / Teams / Planner / system notifications that slip past is_bulk
+# (including Planner/Teams notifications relayed under a colleague's internal address,
+# and Microsoft service accounts like maccount@microsoft.com).
+AUTO_REPLY_SENDER_RE = (
+    r"^(?:maccount@microsoft\.com|quarantine@messaging\.microsoft\.com"
+    r"|stage-rail@plxcustomer\.io|cwadmin@emvue\.ca"
+    r"|(?:no-?reply|do-?not-?reply|password-expiry|stage-rail|quarantine|mailer-daemon|postmaster)@)"
+)
+AUTO_REPLY_SUBJECT_RE = (
+    r"(?:you were mentioned in a chat about a task in microsoft planner"
+    r"|audio conferencing for microsoft teams"
+    r"|shared a chat with you"
+    r"|microsoft teams meeting"
+    r"|uat (?:bc|business central) (?:scheduled )?sync has not (?:run|refreshed)"
+    r"|portal-to-bc sync has not (?:run|refreshed)"
+    r"|email-relay job failed"
+    r"|workbench api(?: staging)? (?:health|relations)"
+    r"|automated (?:daily |weekly |hourly |staging |uat |system |health |stage rail |qc |it |ops |monitoring |sync )*(?:health )?(?:alert|notice|check|report)\s*:"
+    r"|pr merge[- ]class(?: gate)?"
+    r"|merge[- ]class gate"
+    r"|plx required ci red:"
+    r"|microsoft 365 security:\s*you have messages in quarantine"
+    r"|\[action\].*stage rail loop)"
+)
+_AUTO_REPLY_SENDER_PY = re.compile(AUTO_REPLY_SENDER_RE, re.IGNORECASE)
+_AUTO_REPLY_WHY_SENDER_PY = re.compile(
+    r"(?:^|[\s<(\"'])(?:maccount@microsoft\.com|quarantine@messaging\.microsoft\.com"
+    r"|stage-rail@plxcustomer\.io|cwadmin@emvue\.ca"
+    r"|(?:no-?reply|do-?not-?reply|password-expiry|stage-rail|quarantine|mailer-daemon|postmaster)@)",
+    re.IGNORECASE,
+)
+_AUTO_REPLY_SUBJECT_PY = re.compile(AUTO_REPLY_SUBJECT_RE, re.IGNORECASE)
+
+
+def is_automated_reply_alert(text: Any = "", *, sender: Any = "", subject: Any = "") -> bool:
+    """True when a needs_my_reply / reply_owed alert comes from an automated Microsoft,
+    Teams, Planner, or IT/system monitoring notification sender or subject."""
+    from operating.assist_readings import is_automated_system_alert
+    s_sender = str(sender or "").strip()
+    if s_sender and _AUTO_REPLY_SENDER_PY.search(s_sender):
+        return True
+    s_subject = str(subject or "").strip()
+    if s_subject and _AUTO_REPLY_SUBJECT_PY.search(s_subject):
+        return True
+    s_text = str(text or "").strip()
+    if s_text and (_AUTO_REPLY_SUBJECT_PY.search(s_text) or _AUTO_REPLY_WHY_SENDER_PY.search(s_text)):
+        return True
+    return is_automated_system_alert(sender=s_sender, subject=s_subject, summary=s_text)
+
+
+def is_stale_reply_alert(
+    since: Any,
+    *,
+    now: Any = None,
+    max_days: int = REPLY_DAYS,
+) -> bool:
+    """True when ``since`` is strictly older than ``max_days`` days before ``now``."""
+    import datetime as dt
+    if since in (None, ""):
+        return False
+    if isinstance(since, dt.datetime):
+        at = since if since.tzinfo else since.replace(tzinfo=dt.timezone.utc)
+    elif isinstance(since, dt.date):
+        at = dt.datetime.combine(since, dt.time.min, tzinfo=dt.timezone.utc)
+    else:
+        try:
+            raw = str(since).strip().replace("Z", "+00:00")
+            parsed = dt.datetime.fromisoformat(raw)
+            at = parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError):
+            return False
+    if now is None:
+        ref = dt.datetime.now(dt.timezone.utc)
+    elif isinstance(now, dt.datetime):
+        ref = now if now.tzinfo else now.replace(tzinfo=dt.timezone.utc)
+    elif isinstance(now, dt.date):
+        ref = dt.datetime.combine(now, dt.time.max, tzinfo=dt.timezone.utc)
+    else:
+        try:
+            parsed_now = dt.datetime.fromisoformat(str(now).strip().replace("Z", "+00:00"))
+            ref = parsed_now if parsed_now.tzinfo else parsed_now.replace(tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError):
+            ref = dt.datetime.now(dt.timezone.utc)
+    return (ref - at) > dt.timedelta(days=max_days)
+
+
+def is_filtered_reply_alert(
+    *,
+    rule: Any = "",
+    kind: Any = "",
+    since: Any = None,
+    days: int | None = None,
+    text: Any = "",
+    sender: Any = "",
+    subject: Any = "",
+    now: Any = None,
+    max_days: int = REPLY_DAYS,
+) -> bool:
+    """True when a ``needs_my_reply`` / ``reply_owed`` alert should be filtered out
+    (either older than ``max_days`` days or an automated Microsoft/Teams/Planner/system notice)."""
+    r = str(rule or "").strip().lower()
+    k = str(kind or "").strip().lower()
+    if r not in REPLY_ALERT_NAMES and k not in REPLY_ALERT_NAMES:
+        return False
+    if days is not None and days > max_days:
+        return True
+    if is_stale_reply_alert(since, now=now, max_days=max_days):
+        return True
+    return is_automated_reply_alert(text, sender=sender, subject=subject)
+
+
+_LEGACY_DAYS_TEXT_RE = re.compile(
+    r"\b(\d{1,3}(?:,\d{3})+|\d{3,})\s+days?\s+(?:past|late|overdue|at\s+risk)\b",
+    re.IGNORECASE,
+)
+
+
+def is_legacy_stale_order_alert(
+    *,
+    rule: Any = "",
+    kind: Any = "",
+    since: Any = None,
+    days: int | None = None,
+    text: Any = "",
+    now: Any = None,
+    max_days: int = LEGACY_STALE_DAYS,
+) -> bool:
+    """True when an open order or purchase-order alert is a multi-year legacy ERP artifact
+    (strictly older than ``max_days`` days, default 365)."""
+    r = str(rule or "").strip().lower()
+    k = str(kind or "").strip().lower()
+    if r not in LEGACY_ORDER_ALERT_NAMES and k not in ("late_po", "customer_order_late", "customer_order_slower"):
+        return False
+    if days is not None and days > max_days:
+        return True
+    if is_stale_reply_alert(since, now=now, max_days=max_days):
+        return True
+    s_text = str(text or "")
+    if s_text:
+        m = _LEGACY_DAYS_TEXT_RE.search(s_text)
+        if m and int(m.group(1).replace(",", "")) > max_days:
+            return True
+    return False
 MARGIN_DAYS = 30                       # proactive_events.MARGIN_DAYS
 REVISION_DAYS = 14                     # proactive_events.REVISION_DAYS
 REVISED_DATES = ("expected_date", "bc_expected_receipt_date")   # proactive_events.REVISED_DATES
@@ -200,7 +354,8 @@ ONE = ("r.access_class, ARRAY[r.access_class]::integer[], r.ai_ok, "
 LATE_PO = Rule(
     "po_late", "late_po",
     "An open purchase order past its requested-by date: the model's own verdict "
-    "(purchase_orders.verdict = 'late'; a draft or unreleased PO is never late there).",
+    "(purchase_orders.verdict = 'late'; a draft or unreleased PO is never late there). "
+    "Multi-year unclosed legacy ERP POs over 365 days past due are counted in skips.",
     "purchase_orders", ("purchase_orders",),
     "SELECT r.handle, '' , coalesce(r.purchaser, ''), false, NULL::text, "
     "concat_ws(' ', 'PO', r.po_number, 'from', coalesce(r.supplier, 'an unnamed supplier'), "
@@ -208,12 +363,18 @@ LATE_PO = Rule(
     "'past its requested date of', to_char(r.requested_date, 'Mon DD, YYYY') || '.'), "
     "(r.requested_date + 1)::timestamptz, " + ONE + " "
     "FROM {s}.purchase_orders r WHERE " + measure_where("late_purchase_orders")
-    + " AND r.days_late > {p[grace]}",
+    + " AND r.days_late > {p[grace]}"
+    " AND NOT (r.days_late > {p[stale]} AND COALESCE(r.requested_date, r.order_date) < {p[day]}::date - {p[stale]})",
     "the PO is received, closed or cancelled, or its date moves (its verdict is no longer late)",
     "measure late_purchase_orders (operating/measures.json; its stated exclusion: held only "
     "in Business Central)",
     shows=("po_number", "supplier", "days_late", "requested_date"),
-    params={"grace": LATE_GRACE_DAYS}, measure="late_purchase_orders")
+    params={"grace": LATE_GRACE_DAYS, "stale": LEGACY_STALE_DAYS},
+    measure="late_purchase_orders",
+    skips="SELECT 'legacy_stale', count(*) FROM {s}.purchase_orders r WHERE "
+    + measure_where("late_purchase_orders")
+    + " AND r.days_late > {p[stale]} AND COALESCE(r.requested_date, r.order_date) < {p[day]}::date - {p[stale]} "
+    "HAVING count(*) > 0")
 
 # Due today, not confirmed (the old late list's ``po_due``: a late-rule PO with no days late
 # yet): an open PO whose requested-by date is the day judged, no supplier-promised date on
@@ -460,7 +621,9 @@ _AT_RISK_WITH = ("WITH " + ", ".join((
         "p.col_class AS pcol, greatest({p[day]}::date, p.promised_date) AS material, o AS pobj "
         "FROM {s}.purchase_orders p JOIN {s}.lineage g ON g.view = 'purchase_orders' "
         "AND g.handle = p.handle CROSS JOIN LATERAL unnest(g.object_ids) o "
-        "WHERE p.status = 'open' AND p.verdict = 'late')",
+        "WHERE p.status = 'open' AND p.verdict = 'late' "
+        "AND NOT (coalesce(p.days_late, 0) > {p[stale]} "
+        "AND COALESCE(p.requested_date, p.order_date) < {p[day]}::date - {p[stale]}))",
         _link("PurchaseOrderLine.line_of", "l1"), _link("PurchaseOrderLine.for_item", "l2"),
         _link("AssemblyOrderComponent.uses_item", "l3"),
         _link("AssemblyOrderComponent.component_of", "l4"),
@@ -481,6 +644,7 @@ _AT_RISK_WITH = ("WITH " + ", ".join((
         "array_agg(DISTINCT h.pc) AS pcs, bool_and(h.pai) AS pai, array_agg(DISTINCT h.po) AS srcs "
         "FROM hit h JOIN {s}.sales_orders r ON r.handle = h.ord "
         "WHERE r.status = 'open' AND r.required_date IS NOT NULL AND h.material > r.required_date "
+        "AND coalesce(greatest(r.order_date, r.required_date), r.required_date) >= {p[day]}::date - {p[stale]} "
         "GROUP BY r.handle, r.order_number, r.customer, r.salesperson, r.access_class, r.ai_ok, "
         "r.col_class, r.required_date)")) + " ")
 
@@ -501,7 +665,8 @@ AT_RISK = Rule(
     "x.ai_ok AND x.pai, ARRAY[x.col_class]::integer[], ARRAY[x.handle] FROM risk x",
     "the late PO is received or no longer late, or the order ships or its required date moves",
     "impact_chain (customer_order_at_risk, firm chains)",
-    shows=("order_number", "customer", "required_date"), params={"firm": list(FIRM_TIERS)},
+    shows=("order_number", "customer", "required_date"),
+    params={"firm": list(FIRM_TIERS), "stale": LEGACY_STALE_DAYS},
     side=("{s}.lineage", "ontology.links"),
     also_objects=_AT_RISK_WITH + "SELECT DISTINCT h.ord, o FROM hit h JOIN risk x ON x.handle = h.ord "
     "JOIN {s}.lineage lg ON lg.view = 'purchase_orders' AND lg.handle = h.po "
@@ -563,6 +728,7 @@ def _order_judged(which: str) -> str:
         "WHEN r.of_record IS FALSE AND r.systems <@ {p[retiring]} AND (touch.touched IS NULL "
         "OR touch.touched < {p[day]}::date - {p[active]}) THEN 'retiring_source_untouched' "
         "WHEN r.handle IN (SELECT handle FROM twin) THEN 'copy_of_order_of_record' "
+        "WHEN greatest(r.order_date, r.required_date) < {p[day]}::date - {p[stale]} THEN 'historic' "
         "WHEN greatest(r.order_date, r.required_date, inv.last_invoice) "
         "< {p[day]}::date - {p[active]} THEN 'historic' "
         "WHEN greatest(r.order_date, r.required_date, inv.last_invoice) IS NULL "
@@ -578,7 +744,8 @@ def _order_judged(which: str) -> str:
 
 
 _ORDER_JUDGED = _order_judged("late")
-_ORDER_PARAMS = {"active": ACTIVE_DAYS, "successor": list(SUCCESSOR_SYSTEMS),
+_ORDER_PARAMS = {"active": ACTIVE_DAYS, "stale": LEGACY_STALE_DAYS,
+                 "successor": list(SUCCESSOR_SYSTEMS),
                  "retiring": list(RETIRING_SYSTEMS), "touched": list(RETIRING_TOUCHED),
                  "created": list(RETIRING_CREATED), "twin": TWIN_DAYS}
 _ORDER_SIDE = ("{s}.lineage", "ontology.object_values")
@@ -645,8 +812,8 @@ SLOWER_ORDER = Rule(
 
 LATE_ORDER = Rule(
     "customer_order_late", "customer_order_late",
-    "An open customer order past its required date and still going: exactly the orders the "
-    "measure late_orders counts (its where, never a copy of it).",
+    "An open customer order past its required date and still going: the orders the "
+    "measure late_orders counts, excluding multi-year unclosed legacy ERP artifacts (>365 days).",
     "sales_orders", ("sales_orders",),
     "SELECT r.handle, '', coalesce(r.salesperson, ''), false, NULL::text, "
     "concat_ws(' ', 'Order', coalesce(r.order_number, 'with no order number'), 'for', "
@@ -657,11 +824,18 @@ LATE_ORDER = Rule(
     "ARRAY(SELECT DISTINCT c FROM unnest(ARRAY[r.access_class]) c WHERE c IS NOT NULL), "
     "r.ai_ok, ARRAY[r.col_class]::integer[], ARRAY[r.handle]::text[] "
     "FROM {s}.sales_orders r WHERE " + measure_where("late_orders").replace(
-        "to_jsonb(sales_orders)", "to_jsonb(r)"),
+        "to_jsonb(sales_orders)", "to_jsonb(r)")
+    + " AND NOT (r.days_late > {p[stale]} AND COALESCE(r.required_date, r.order_date) < {p[day]}::date - {p[stale]})",
     "the order ships, closes or is cancelled, its required date moves, or it stops being live "
     "(nothing left to ship, or no work on it for longer than closed orders take)",
     "measure late_orders (operating/measures.json)",
-    shows=("order_number", "customer", "days_late", "required_date"), measure="late_orders")
+    shows=("order_number", "customer", "days_late", "required_date"),
+    params={"stale": LEGACY_STALE_DAYS},
+    measure="late_orders",
+    skips="SELECT 'legacy_stale', count(*) FROM {s}.sales_orders r WHERE "
+    + measure_where("late_orders").replace("to_jsonb(sales_orders)", "to_jsonb(r)")
+    + " AND r.days_late > {p[stale]} AND COALESCE(r.required_date, r.order_date) < {p[day]}::date - {p[stale]} "
+    "HAVING count(*) > 0")
 
 # Open longer than usual: an order with no promised date is never "late", so an ASAP order
 # is not silently dropped: past the customer's own usual order-to-first-invoice time (its
@@ -979,6 +1153,9 @@ OWED_TESTS: tuple[tuple[str, str], ...] = (
     ("own mailbox", "e.mailbox_shared IS FALSE AND e.mailbox IS NOT NULL AND e.mailbox <> ''"),
     ("from someone else", "e.from_owner IS FALSE AND e.sender ~ '.@.'"),
     ("bulk", "e.is_bulk IS FALSE"),
+    ("automated notice",
+     "NOT (coalesce(lower(btrim(e.sender)), '') ~* '" + AUTO_REPLY_SENDER_RE + "' "
+     "OR coalesce(e.subject, '') ~* '" + AUTO_REPLY_SUBJECT_RE + "')"),
     ("on To", "e.owner_role = 'to'"),
     ("To list", "cardinality(e.to_addresses) >= 1"),
     ("known to you", "e.wrote_to_at < e.received_at OR e.wrote_in_at < e.received_at"),
@@ -1033,8 +1210,8 @@ _WAITING = (
 NEEDS_MY_REPLY = Rule(
     "needs_my_reply", "reply_owed",
     "A message to you (on To) from someone you have written to before (or in a thread you "
-    "wrote in), not bulk, in your own mailbox in the last 60 days, with no reply from you "
-    "in its thread since it came.",
+    "wrote in), not bulk or automated, in your own mailbox in the last 14 days, with no "
+    "reply from you in its thread since it came.",
     "emails", ("emails",),
     "SELECT x.handle, '', x.mailbox, true, x.mailbox, "
     "concat_ws(' ', x.sender, 'wrote', '\"' || left(coalesce(nullif(btrim(x.subject), ''), "
@@ -1043,7 +1220,7 @@ NEEDS_MY_REPLY = Rule(
     "(x.waiting - 1) || ' more since,' ELSE '' END, 'with no reply from you in the "
     "thread yet.'), x.received_at, NULL::integer, '{{}}'::integer[], x.all_ai, "
     "'{{}}'::integer[], '{{}}'::text[], x.units FROM (" + _WAITING + ") x WHERE x.nth = 1",
-    "the mailbox owner writes in the thread, or the message leaves the 60-day window",
+    "the mailbox owner writes in the thread, or the message leaves the 14-day window",
     "inbox_triage needs_my_reply (proactive_commitments reply_owed)",
     params={"days": REPLY_DAYS}, comms=True)
 

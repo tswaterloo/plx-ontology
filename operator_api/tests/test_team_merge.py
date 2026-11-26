@@ -118,5 +118,57 @@ class MergeIdentities(unittest.TestCase):
         self.assertEqual(total(merged), total(PEOPLE))
 
 
+class LivePgEnrichment(unittest.TestCase):
+    def test_enrich_from_pg_merges_actions_matters_and_omits_zero_meetings(self):
+        from datetime import date, datetime, timezone
+
+        class FakeCur:
+            def __init__(self, rows):
+                self._rows = rows
+            def fetchone(self):
+                return self._rows[0] if self._rows else None
+            def fetchall(self):
+                return list(self._rows)
+
+        class FakePg:
+            def execute(self, sql, params=None):
+                if "to_regclass('assist.actions')" in sql:
+                    return FakeCur([(True,)])
+                if "FROM assist.actions" in sql:
+                    return FakeCur([
+                        ("v", "mail", "mail_sent", date(2026, 11, 25), 7),
+                        ("v", "filemaker", "qc_tested", date(2026, 11, 25), 4),
+                        ("v", "sharepoint", "sharepoint_edit", date(2026, 11, 24), 3),
+                        ("w", "teams", "teams_sent", date(2026, 11, 25), 5),
+                    ])
+                if "to_regclass('assist.matters')" in sql:
+                    return FakeCur([(True,)])
+                if "FROM assist.matters" in sql:
+                    return FakeCur([("v", 6, 11), ("w", 2, 3)])
+                if "to_regclass('biz.meetings')" in sql:
+                    return FakeCur([(True,)])
+                if "FROM biz.meetings" in sql:
+                    return FakeCur([])
+                return FakeCur([(False,)])
+
+        merged, counts, members = tv.merge_identities(
+            PEOPLE, ["V", "W", "T"], {"V": Counter(tasks=1)}, DOMAINS,
+        )
+        # Seed a literal 0 meeting entry to verify it is stripped
+        merged["T"]["days"]["2026-11-20"] = {"meetings": 0, "mail_sent": 2}
+        enriched_people, enriched_counts, new_until = tv.enrich_from_pg(
+            FakePg(), merged, counts, members, until=date(2026, 11, 22),
+        )
+        self.assertEqual(new_until, date(2026, 11, 25))
+        self.assertEqual(enriched_people["V"]["days"]["2026-11-25"], {
+            "mail_sent": 7, "filemaker": 4, "teams": 5,
+        })
+        self.assertEqual(enriched_people["V"]["days"]["2026-11-24"]["sharepoint"], 3)
+        self.assertEqual(enriched_counts["V"]["tasks"], 8)          # 6 + 2 across V & W
+        self.assertEqual(enriched_counts["V"]["alerts_closed"], 14) # 11 + 3 across V & W
+        self.assertNotIn("meetings", enriched_people["T"]["days"]["2026-11-20"])
+        self.assertIn("filemaker", tv.DONE_CHANNELS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -234,6 +234,73 @@ class Routes(unittest.TestCase):
         self.assertEqual(mock_read.call_args.kwargs["units"], [1])
         self.assertEqual(mock_read.call_args.kwargs["mailboxes"], [ME])
 
+    def test_pg_replies_filters_stale_and_automated_microsoft_notifications(self):
+        from datetime import date, datetime, timezone
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from operator_api.briefs import BriefsMixin
+
+        class _Conn:
+            def execute(self, sql, params=None):
+                if "biz.comms_units" in sql:
+                    return SimpleNamespace(fetchall=lambda: [(1, f"mail:{ME}", [])])
+                return SimpleNamespace(fetchall=lambda: [])
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        class _Backend(BriefsMixin):
+            pg_dsn = "postgresql://unused"
+            @staticmethod
+            def today():
+                return date(2026, 11, 25)
+            @staticmethod
+            def _my_oids(r):
+                return frozenset({ME})
+            def pg(self):
+                return SimpleNamespace(connection=lambda: _Conn())
+            def _brief_run(self, reader, fn, priority=None):
+                view = SimpleNamespace(access=SimpleNamespace(grant=lambda: ([f"mail:{ME}"], [])))
+                return fn(view)
+
+        backend = _Backend()
+        reader = SimpleNamespace(session=SimpleNamespace(principals=(f"oid:{ME}",)))
+        rows = [
+            {
+                "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+                "handle": "graph-mail://me/old", "topic": "", "concerns": ME,
+                "why": 'alice@client.example wrote "Old email" on Oct 02 with no reply from you in the thread yet.',
+                "since": datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc), "state": "open", "resolved_at": None,
+            },
+            {
+                "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+                "handle": "graph-mail://me/planner", "topic": "", "concerns": ME,
+                "why": 'stefanie@petrasoap.com wrote "You were mentioned in a chat about a task in Microsoft Planner" on Nov 23.',
+                "since": datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc), "state": "open", "resolved_at": None,
+            },
+            {
+                "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+                "handle": "graph-mail://me/maccount", "topic": "", "concerns": ME,
+                "why": 'maccount@microsoft.com wrote "Audio Conferencing for Microsoft Teams has been turned off" on Nov 23.',
+                "since": datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc), "state": "open", "resolved_at": None,
+            },
+            {
+                "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+                "handle": "graph-mail://me/shared-chat", "topic": "", "concerns": ME,
+                "why": 'giulia@petrasoap.com wrote "RE: Giulia shared a chat with you" on Nov 24.',
+                "since": datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc), "state": "open", "resolved_at": None,
+            },
+            {
+                "rule": "needs_my_reply", "kind": "reply_owed", "record_table": "emails",
+                "handle": "graph-mail://me/real", "topic": "", "concerns": ME,
+                "why": 'buyer@client.example wrote "PO 10555 delivery date" on Nov 23 with no reply from you in the thread yet.',
+                "since": datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc), "state": "open", "resolved_at": None,
+            },
+        ]
+        with patch("operating.pg.alerts.read", return_value=rows):
+            got = backend.reply_triage(reader)
+        self.assertEqual(got.total, 1)
+        self.assertEqual(got.lines[0].object_id, "graph-mail://me/real")
+
 
 if __name__ == "__main__":
     unittest.main()

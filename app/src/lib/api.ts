@@ -893,6 +893,24 @@ export function getHomeNeeds(signal?: AbortSignal): Promise<HomeNeeds> {
   return getRead<HomeNeeds>("/api/home/needs", signal);
 }
 
+export type HomeItemStateValue = "open" | "closed" | "snoozed";
+
+export interface HomeItemStateResult {
+  item_id: string;
+  state: HomeItemStateValue;
+  until?: string | null;
+}
+
+/** Close, snooze, or reopen any Home Needs-you item for the signed-in reader. */
+export async function setHomeItemState(
+  itemId: string,
+  state: HomeItemStateValue,
+  until?: string,
+): Promise<HomeItemStateResult> {
+  const json = until ? { item_id: itemId, state, until } : { item_id: itemId, state };
+  return (await (await call("/api/home/item-state", { method: "POST", json })).json()) as HomeItemStateResult;
+}
+
 /** The sidebar's numbers (late count, the suppliers with the most, recent questions, as-of): small and kept per reader. */
 export function getSidebar(signal?: AbortSignal): Promise<SidebarResponse> {
   return getRead<SidebarResponse>("/api/sidebar", signal);
@@ -2252,42 +2270,90 @@ export async function streamWhy(id: string, on: (step: WhyStep) => void, signal?
   feed(dec.decode() + "\n");
 }
 
+/** Callback for a stored value during Refresh; may also carry `onFilling` for 425 warm-up. */
+export type InsightStoredHandler = ((old: InsightResult) => void) & { onFilling?: () => void };
+
+/** Polite retry window (visible time) while a cold insight warms after a deploy. */
+export const INSIGHT_FILL_WINDOW_MS = 90_000;
+const INSIGHT_FILL_DELAYS_MS = [1500, 2000, 2500, 3000] as const;
+
+/** Polite backoff delay (1.5s -> 3s) between 425 insight_filling polls. */
+export function insightFillDelay(attempt: number): number {
+  const idx = Math.max(0, Math.min(attempt, INSIGHT_FILL_DELAYS_MS.length - 1));
+  return INSIGHT_FILL_DELAYS_MS[idx];
+}
+
 /** One insight as you read it (kept from your read of the last few minutes; `again`: read
  * now): its statement, rows, chart and the people they name. */
-export async function getInsight(id: string, signal?: AbortSignal, again = false, onStored?: (old: InsightResult) => void): Promise<InsightResult> {
+export async function getInsight(id: string, signal?: AbortSignal, again = false, onStored?: InsightStoredHandler): Promise<InsightResult> {
   // the server never reads a tile in this request: a stored value comes back at once with its
   // read time; one with nothing stored yet says so (425, `insight_filling`) while its read runs
-  // in the background, and is asked for again until it is stored (no deadline: it is not cut).
-  // A Refresh gets the stored value at once (`onStored`, so it stays drawn) and is asked for
-  // again until a newer one is stored. Polling waits while the page is hidden.
+  // in the background, and is asked for again with polite backoff (1.5s -> 3s) up to 90s of
+  // visible time until it is stored. A Refresh gets the stored value at once (`onStored`, so it
+  // stays drawn) and is asked for again until a newer one is stored. Polling pauses while hidden.
   const background = quiet();
   let refreshing = again;
   let old: string | undefined;
+  let fillingAttempt = 0;
+  let refreshPollCount = 0;
+  let visibleWaitedMs = 0;
   for (;;) {
+    let delayMs = INSIGHT_FILL_POLL_MS;
+    let countTowardWindow = false;
     try {
       const path = `/api/insights/${encodeURIComponent(id)}${refreshing ? "?again=true" : ""}`;
       const got = await (background ? quietly(() => getJson<InsightResult>(path, signal)) : getJson<InsightResult>(path, signal));
-      if (!again || (old !== undefined && got.read_at !== old)) return got;
-      if (old === undefined) { old = got.read_at; onStored?.(got); }
+      if (!again || !got.read_at || (old !== undefined && got.read_at !== old)) return got;
+      if (old === undefined) {
+        old = got.read_at;
+        onStored?.(got);
+      } else if (++refreshPollCount >= 5) {
+        return got;
+      }
       refreshing = false;
+      countTowardWindow = true;
     } catch (e) {
-      if (!(e instanceof ApiError && e.code === "insight_filling") || signal?.aborted) throw e;
+      const isFilling = e instanceof ApiError && (e.code === "insight_filling" || e.status === 425);
+      if (!isFilling || signal?.aborted) throw e;
+      onStored?.onFilling?.();
+      if (visibleWaitedMs >= INSIGHT_FILL_WINDOW_MS) throw e;
+      delayMs = insightFillDelay(fillingAttempt++);
+      countTowardWindow = true;
     }
-    await insightPause(signal);
+    const slept = await insightPause(signal, delayMs);
     if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+    if (countTowardWindow) visibleWaitedMs += slept;
   }
 }
 
-/** Wait one poll interval, and while the page is hidden until it is shown again. */
-function insightPause(signal?: AbortSignal): Promise<void> {
+/** Wait one poll interval while visible, pausing while the page is hidden; returns visible ms slept. */
+function insightPause(signal?: AbortSignal, delayMs = INSIGHT_FILL_POLL_MS): Promise<number> {
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const done = () => { clearTimeout(timer); document.removeEventListener("visibilitychange", wake); signal?.removeEventListener("abort", done); resolve(); };
-    const wake = () => { if (!document.hidden) timer = setTimeout(done, INSIGHT_FILL_POLL_MS); else clearTimeout(timer); };
-    signal?.addEventListener("abort", done);
+    let startedAt = 0;
+    const done = (slept: number) => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", wake);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(slept);
+    };
+    const onAbort = () => done(startedAt ? Math.max(0, Date.now() - startedAt) : 0);
+    const arm = () => {
+      clearTimeout(timer);
+      startedAt = Date.now();
+      timer = setTimeout(() => done(delayMs), delayMs);
+    };
+    const wake = () => {
+      if (!document.hidden) arm();
+      else {
+        clearTimeout(timer);
+        startedAt = 0;
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     document.addEventListener("visibilitychange", wake);
     if (document.hidden) return;   // resumes on visibilitychange
-    timer = setTimeout(done, INSIGHT_FILL_POLL_MS);
+    arm();
   });
 }
 const INSIGHT_FILL_POLL_MS = 3000;

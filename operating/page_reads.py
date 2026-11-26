@@ -39,12 +39,12 @@ FILES_OK = "plx.reader_files_ok"   # the linked files this reader's item gate al
 MAX_READS = 12
 MAX_ROWS = 500
 MAX_OFFSET = 20000
-LOCK_MS = 100          # the longest a page read waits for a table lock (then: not ready)
+LOCK_MS = 500          # the longest a page read waits for a table lock (then: not ready)
 LIVE_FALLBACK = frozenset({"record_page", "plan_section"})   # reads whose page has a live path
-PAGE_SECONDS = 5.0      # a page read's statement limit (a page answers in < 2 s)
-PAGE_POOL = 4           # connections per store (PLX_PAGE_POOL)
+PAGE_SECONDS = 15.0     # a page read's statement limit
+PAGE_POOL = 16          # connections per store (PLX_PAGE_POOL)
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-POOL_WAIT = 2.0         # seconds a page waits for a free connection, then "busy"
+POOL_WAIT = 5.0         # seconds a page waits for a free connection, then "busy"
 
 
 @dataclass(frozen=True)
@@ -401,6 +401,18 @@ FIND_NEAR_SQL = (
 # naming it dated on or after that date, and no change to its own record after it was first seen.
 # The two lists are exact complements, so every order is in exactly one.
 CLOSED = "NOT (p.handle = ANY(string_to_array(%(closed)s, E'\\n')))"
+# Multi-year unclosed legacy ERP purchase orders and sales orders (e.g. 2016-2022 artifacts
+# over 365 days past their requested/order date) are folded into stale rather than polluting
+# active operational queues, while remaining searchable in Records and Ask.
+LEGACY_ZOMBIE_DAYS = 365
+LEGACY_PO = (
+    f"(p.days_late > {LEGACY_ZOMBIE_DAYS} "
+    f"AND COALESCE(p.requested_date, p.order_date) < CURRENT_DATE - {LEGACY_ZOMBIE_DAYS})"
+)
+LEGACY_ORDER = (
+    f"(days_late > {LEGACY_ZOMBIE_DAYS} "
+    f"AND COALESCE(required_date, order_date) < CURRENT_DATE - {LEGACY_ZOMBIE_DAYS})"
+)
 # the part of "no sign of life" the door can read: later than the longest lead, no receipt linked,
 # no change to the order's own record after it was first seen and after its needed-by date.
 # Mail and Teams are not in the door (no person-page view of them): the API reads their content-free
@@ -413,7 +425,7 @@ STALE_CORE = (
     "AND l.to_handle = p.handle) "
     "AND NOT EXISTS (SELECT 1 FROM records r WHERE r.handle = p.handle "
     "AND r.changed_at IS DISTINCT FROM r.first_seen AND r.changed_at::timestamptz::date > p.requested_date)")
-STALE = ("(" + STALE_CORE + " AND NOT (p.handle = ANY(string_to_array(%(alive)s, E'\\n'))))")
+STALE = ("(" + LEGACY_PO + " OR (" + STALE_CORE + " AND NOT (p.handle = ANY(string_to_array(%(alive)s, E'\\n')))))")
 _NOT_CLOSED = CLOSED.replace("p.handle", "handle")   # an alert on a closed order is no open item
 LIST_COLS = ("p.po_number, p.supplier, p.days_late, p.promised_date, p.requested_date, "
              "p.total, p.total_currency, p.purchaser, p.line_count, p.handle, p.withheld")
@@ -452,15 +464,17 @@ QUERIES: dict[str, Query] = {
         "SELECT po_number, handle, withheld FROM purchase_orders WHERE status = 'open' "
         "ORDER BY (verdict = 'late') DESC NULLS LAST, order_date DESC NULLS LAST, po_number, "
         "handle LIMIT %(limit)s", ("limit",), MAX_ROWS),
-    # customer orders past their required date (open only, the order view's days_late)
+    # customer orders past their required date (open only, the order view's days_late),
+    # excluding multi-year unclosed legacy ERP artifacts (> 365 days)
     "late_order_count": Query(
         "SELECT count(DISTINCT handle) AS late FROM sales_orders WHERE "
-        + where_sql("late_orders")),
+        + where_sql("late_orders") + f" AND NOT {LEGACY_ORDER}"),
     "late_order_list": Query(
         "SELECT order_number, customer, customer_po, days_late, required_date, order_date, "
         "value, value_currency, salesperson, handle, withheld FROM sales_orders "
-        "WHERE " + where_sql("late_orders") + " ORDER BY days_late DESC, order_number, "
-        "handle LIMIT %(limit)s OFFSET %(offset)s", ("limit", "offset"), MAX_ROWS),
+        "WHERE " + where_sql("late_orders") + f" AND NOT {LEGACY_ORDER}"
+        " ORDER BY days_late DESC, order_number, handle LIMIT %(limit)s OFFSET %(offset)s",
+        ("limit", "offset"), MAX_ROWS),
     # the SQL alert rules' open alerts (``operating.pg.alerts``; the guarded ``alerts`` view
     # shows one only when the reader holds every row it was computed from, as the door is
     # now). ``rules``: the alert types asked for, comma-separated (the page sends the ones on
@@ -476,7 +490,16 @@ QUERIES: dict[str, Query] = {
     "alerts_open": Query(
         "SELECT rule, kind, record_table, handle, topic, why, since, first_seen, "
         "(SELECT r.label FROM records r WHERE r.handle = alerts.handle ORDER BY r.record_id "
-        "LIMIT 1) AS subject FROM alerts "
+        "LIMIT 1) AS subject, "
+        "COALESCE("
+        "(SELECT p.days_late FROM purchase_orders p WHERE alerts.record_table = 'purchase_orders' "
+        "AND p.handle = alerts.handle LIMIT 1), "
+        "(SELECT s.days_late FROM sales_orders s WHERE alerts.record_table = 'sales_orders' "
+        "AND s.handle = alerts.handle LIMIT 1)"
+        ") AS days_late, "
+        "(SELECT p.supplier FROM purchase_orders p WHERE alerts.record_table = 'purchase_orders' "
+        "AND p.handle = alerts.handle LIMIT 1) AS supplier "
+        "FROM alerts "
         "WHERE state = 'open' AND rule = ANY(string_to_array(%(rules)s, ',')) AND " + _FRESH +
         " AND " + _NOT_CLOSED + " ORDER BY since, rule, handle, topic LIMIT %(limit)s "
         "OFFSET %(offset)s", ("rules", "closed", "limit", "offset"), MAX_ROWS),

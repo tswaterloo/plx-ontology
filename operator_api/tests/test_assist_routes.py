@@ -248,6 +248,23 @@ class AssistRoutes(unittest.TestCase):
         self.assertEqual(got.status_code, 200, got.text)
         self.assertEqual([w for w, _ in self.pool.logged()], ["person_line", "requested"])
 
+    def test_decide_matter_and_reopen_matter_work_directly_for_home_propagation(self) -> None:
+        from operator_api import assist_routes, models as m
+        from operating.session_identity import CHANNEL_CONSOLE, fixture_session
+        who = type("R", (), {
+            "key": OWNER[1], "email": OWNER[0],
+            "session": fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                       subject_email=OWNER[0], subject_oid=OWNER[1]),
+        })()
+        until = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        res = assist_routes.decide_matter(
+            self.backend, who, M_OK, m.AutopilotDecisionRequest(decision="snooze", until=until, note="later"),
+        )
+        self.assertEqual(res.item_id, M_OK)
+        self.assertNotIn(M_OK, self.matters(self.listed()))
+        self.assertTrue(assist_routes.reopen_matter(self.backend, who, M_OK, reason="undo"))
+        self.assertIn(M_OK, self.matters(self.listed()))
+
 
 if __name__ == "__main__":
     unittest.main()

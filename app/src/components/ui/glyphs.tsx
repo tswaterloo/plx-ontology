@@ -1,4 +1,4 @@
-import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Building2, ClipboardList, Truck, Database, FileText, FlaskConical, Gauge, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
+import { Activity, ChartColumn, BookMarked, BookOpen, Bot, BellRing, Briefcase, Calculator, ClipboardCheck, Building2, ClipboardList, Truck, Database, FileText, FlaskConical, Gauge, Layers, ListChecks, Mail, Package, CalendarClock, Clock3, History, Inbox, MessageCircle, MessageSquareText, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 /** Not on record: a closed ring with a bar (static; a dashed ring read as a loading spinner). */
@@ -32,6 +32,7 @@ export const PLACES: Record<string, { icon: LucideIcon; hue: string }> = {
   "/watching": { icon: BellRing, hue: "text-muted" },
   "/ask": { icon: MessageCircle, hue: "text-muted" },
   "/insights": { icon: ChartColumn, hue: "text-muted" },
+  "/artifacts": { icon: Layers, hue: "text-muted" },
   "/assist": { icon: Bot, hue: "text-muted" },
   "/autopilot": { icon: Bot, hue: "text-muted" },
   "/meetings": { icon: CalendarClock, hue: "text-muted" },

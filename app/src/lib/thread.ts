@@ -65,12 +65,33 @@ export function askUrlKey(p: { q: string | null; object: string | null; source?:
   return [p.q, p.object, p.source, p.meeting, p.item, p.page, p.brief ?? ""].join("\u0000");
 }
 
+/** Optional domain space hint attached when asking inside a Genie Space. */
+export interface RunSpaceOptions {
+  promptPrefix?: string;
+  spaceLabel?: string;
+}
+
 /** The request a turn was sent with, kept whole so Retry sends exactly it again. */
 export interface TurnRequest {
   objectId?: string;
   source?: string;
   files: Attachment[];
   extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep">;
+  promptPrefix?: string;
+  spaceLabel?: string;
+}
+
+/** A follow-up waiting in the conversation stream while an earlier turn finishes. */
+export interface QueuedFollowUp {
+  id: string;
+  question: string;
+  objectId?: string;
+  source?: string;
+  files: Attachment[];
+  extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep">;
+  queuedAt: string;
+  promptPrefix?: string;
+  spaceLabel?: string;
 }
 
 /** Every prior turn, whole, sent as context so follow-ups ("and the other one?") resolve. */
@@ -143,6 +164,7 @@ interface ThreadRecord {
   title: string;
   startedAt: string;
   turns: Turn[];
+  queue: QueuedFollowUp[];
   ctrl: AbortController | null;
   runSeq: number;
 }
@@ -150,6 +172,7 @@ interface ThreadRecord {
 interface ScopeSnapshot {
   currentId: string | null;
   turns: Turn[];
+  queued: readonly QueuedFollowUp[];
   busy: boolean;
   anyRunning: boolean;
   runningIds: ReadonlySet<string>;
@@ -157,6 +180,7 @@ interface ScopeSnapshot {
 }
 
 const EMPTY_TURNS: Turn[] = [];
+const EMPTY_QUEUE: readonly QueuedFollowUp[] = [];
 const EMPTY_SET: ReadonlySet<string> = new Set();
 const EMPTY_CHATS: readonly RunningChatInfo[] = [];
 
@@ -169,6 +193,7 @@ class ThreadStore {
   private snapshot: ScopeSnapshot = {
     currentId: null,
     turns: EMPTY_TURNS,
+    queued: EMPTY_QUEUE,
     busy: false,
     anyRunning: false,
     runningIds: EMPTY_SET,
@@ -191,6 +216,7 @@ class ThreadStore {
   private emit(): void {
     const current = this.currentId ? this.threads.get(this.currentId) : undefined;
     const turns = current ? current.turns : EMPTY_TURNS;
+    const queued = current && current.queue.length > 0 ? current.queue : EMPTY_QUEUE;
     const busy = isTurnBusy(turns[turns.length - 1]);
     const runningIds = new Set<string>();
     const runningChats: RunningChatInfo[] = [];
@@ -207,6 +233,7 @@ class ThreadStore {
     this.snapshot = {
       currentId: this.currentId,
       turns,
+      queued,
       busy,
       anyRunning: runningIds.size > 0,
       runningIds: runningIds.size > 0 ? runningIds : EMPTY_SET,
@@ -390,7 +417,8 @@ class ThreadStore {
           const rec = this.threads.get(cid);
           const turn = rec?.turns.find((t) => t.id === turnId);
           const matched = turns.length > 0 ? turns[turns.length - 1] : null;
-          if (turn && matched?.answer && matched.question === turn.question) {
+          const wireQuestion = turn?.request?.promptPrefix ? `${turn.request.promptPrefix}\n${turn.question}` : turn?.question;
+          if (turn && matched?.answer && (matched.question === turn.question || matched.question === wireQuestion)) {
             this.updateTurn(cid, turnId, (t) => applyEvent(t, { event: "answer", data: matched.answer as unknown as Answer }));
             outcome = "done";
             caught = null;
@@ -420,32 +448,37 @@ class ThreadStore {
     const rec = this.threads.get(cid);
     if (rec && rec.runSeq === seq) {
       rec.ctrl = null;
+      // Automatically dispatch the next queued follow-up the moment the active turn finishes.
+      if (!c.signal.aborted && rec.queue.length > 0) {
+        const [next, ...rest] = rec.queue;
+        rec.queue = rest;
+        this.emit();
+        void this.runInThread(
+          cid,
+          next.question,
+          next.objectId,
+          next.source,
+          next.files,
+          next.extra,
+          { promptPrefix: next.promptPrefix, spaceLabel: next.spaceLabel },
+        );
+        return;
+      }
       this.emit();
     }
   }
 
-  async run(
+  private async runInThread(
+    cid: string,
     question: string,
     objectId?: string,
     source?: string,
     files: Attachment[] = [],
     extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+    spaceOpts?: RunSpaceOptions,
   ): Promise<void> {
-    let rec = this.currentId ? this.threads.get(this.currentId) : undefined;
-    if (!rec) {
-      const cid = newConversationId();
-      rec = {
-        conversationId: cid,
-        title: question.trim().slice(0, 120) || "Untitled",
-        startedAt: new Date().toISOString(),
-        turns: [],
-        ctrl: null,
-        runSeq: 0,
-      };
-      this.threads.set(cid, rec);
-      this.currentId = cid;
-      this.rememberCurrent();
-    }
+    const rec = this.threads.get(cid);
+    if (!rec) return;
     const prior = rec.turns;
     rec.ctrl?.abort();
     const c = new AbortController();
@@ -458,14 +491,23 @@ class ThreadStore {
     // keeps none of them); after a reload the server asks for them by name instead
     const from = extra.instruction?.instruction_id;
     if (from && !files.length) files = prior.find((t) => t.answer?.answer_id === from)?.request?.files ?? [];
-    const request: TurnRequest = { ...(objectId ? { objectId } : {}), ...(source ? { source } : {}), files, extra };
-    const turn: Turn = { id, question, phase: "thinking", streamed: "", request };
+    const promptPrefix = spaceOpts?.promptPrefix?.trim() || undefined;
+    const spaceLabel = spaceOpts?.spaceLabel?.trim() || undefined;
+    const request: TurnRequest = {
+      ...(objectId ? { objectId } : {}),
+      ...(source ? { source } : {}),
+      files,
+      extra,
+      ...(promptPrefix ? { promptPrefix } : {}),
+      ...(spaceLabel ? { spaceLabel } : {}),
+    };
+    const turn: Turn = { id, question, phase: "thinking", streamed: "", request, ...(spaceLabel ? { spaceLabel } : {}) };
     rec.turns = [...prior, turn];
     rec.startedAt = new Date().toISOString();
-    const cid = rec.conversationId;
     this.emit();
 
     const conversation_id = conversationOf(prior) ?? cid;
+    const wireQuestion = promptPrefix ? `${promptPrefix}\n${question}` : question;
     await this.consume(
       cid,
       id,
@@ -474,7 +516,7 @@ class ThreadStore {
       (signal) =>
         apiClient.ask(
           {
-            question,
+            question: wireQuestion,
             history: historyOf(prior),
             conversation_id,
             ...(objectId ? { object_id: objectId } : {}),
@@ -486,6 +528,115 @@ class ThreadStore {
         ),
       this.scope === "ask",
     );
+  }
+
+  async run(
+    question: string,
+    objectId?: string,
+    source?: string,
+    files: Attachment[] = [],
+    extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+    spaceOpts?: RunSpaceOptions,
+  ): Promise<void> {
+    let rec = this.currentId ? this.threads.get(this.currentId) : undefined;
+    if (!rec) {
+      const cid = newConversationId();
+      rec = {
+        conversationId: cid,
+        title: question.trim().slice(0, 120) || "Untitled",
+        startedAt: new Date().toISOString(),
+        turns: [],
+        queue: [],
+        ctrl: null,
+        runSeq: 0,
+      };
+      this.threads.set(cid, rec);
+      this.currentId = cid;
+      this.rememberCurrent();
+    }
+    await this.runInThread(rec.conversationId, question, objectId, source, files, extra, spaceOpts);
+  }
+
+  /** Queue a follow-up right inside the active conversation stream; runs immediately if idle. */
+  queueFollowUp(
+    question: string,
+    objectId?: string,
+    source?: string,
+    files: Attachment[] = [],
+    extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+    spaceOpts?: RunSpaceOptions,
+  ): void {
+    const rec = this.currentId ? this.threads.get(this.currentId) : undefined;
+    if (!rec || !isTurnBusy(rec.turns[rec.turns.length - 1])) {
+      void this.run(question, objectId, source, files, extra, spaceOpts);
+      return;
+    }
+    const item: QueuedFollowUp = {
+      id: newId(),
+      question,
+      ...(objectId ? { objectId } : {}),
+      ...(source ? { source } : {}),
+      files,
+      extra,
+      queuedAt: new Date().toISOString(),
+      ...(spaceOpts?.promptPrefix ? { promptPrefix: spaceOpts.promptPrefix } : {}),
+      ...(spaceOpts?.spaceLabel ? { spaceLabel: spaceOpts.spaceLabel } : {}),
+    };
+    rec.queue = [...rec.queue, item];
+    this.emit();
+  }
+
+  /** Remove one queued follow-up before it runs. */
+  removeQueued(queueId: string): void {
+    const rec = this.currentId ? this.threads.get(this.currentId) : undefined;
+    if (!rec) return;
+    const next = rec.queue.filter((item) => item.id !== queueId);
+    if (next.length !== rec.queue.length) {
+      rec.queue = next;
+      this.emit();
+    }
+  }
+
+  /** Stop the active run cleanly and submit a steering follow-up immediately. */
+  async steer(
+    question: string,
+    objectId?: string,
+    source?: string,
+    files: Attachment[] = [],
+    extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+    spaceOpts?: RunSpaceOptions,
+  ): Promise<void> {
+    const rec = this.currentId ? this.threads.get(this.currentId) : undefined;
+    if (rec && isTurnBusy(rec.turns[rec.turns.length - 1])) {
+      const ctrl = rec.ctrl;
+      rec.ctrl = null;
+      rec.runSeq += 1;
+      ctrl?.abort();
+      const last = rec.turns[rec.turns.length - 1];
+      if (last && isTurnBusy(last)) {
+        rec.turns = rec.turns.map((t) =>
+          t.id === last.id ? { ...t, phase: "error", error: "Stopped for your follow-up." } : t,
+        );
+      }
+      this.emit();
+      await this.runInThread(rec.conversationId, question, objectId, source, files, extra, spaceOpts);
+      return;
+    }
+    await this.run(question, objectId, source, files, extra, spaceOpts);
+  }
+
+  /** Promote a queued follow-up card to steer immediately (stops the active run). */
+  async sendQueuedNow(queueId: string): Promise<void> {
+    const rec = this.currentId ? this.threads.get(this.currentId) : undefined;
+    if (!rec) return;
+    const item = rec.queue.find((q) => q.id === queueId);
+    if (!item) return;
+    rec.queue = rec.queue.filter((q) => q.id !== queueId);
+    this.emit();
+    await this.steer(item.question, item.objectId, item.source, item.files, item.extra, {
+      promptPrefix: item.promptPrefix,
+      spaceLabel: item.spaceLabel,
+    });
   }
 
   seed(
@@ -528,6 +679,7 @@ class ThreadStore {
       title,
       startedAt: active?.started_at ?? new Date().toISOString(),
       turns: restored,
+      queue: existing?.queue ?? [],
       ctrl: null,
       runSeq: (existing?.runSeq ?? 0) + 1,
     };
@@ -593,20 +745,67 @@ export function useThread(scope = "ask") {
    *  `source` to one document (a mail, attachment or file the reader has open); `extra`
    *  carries the page's context and an instruction's continuation (the one box's "do"). */
   const run = useCallback(
-    (question: string, objectId?: string, source?: string, files: Attachment[] = [], extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {}) =>
-      store.run(question, objectId, source, files, extra),
+    (
+      question: string,
+      objectId?: string,
+      source?: string,
+      files: Attachment[] = [],
+      extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+      spaceOpts?: RunSpaceOptions,
+    ) => store.run(question, objectId, source, files, extra, spaceOpts),
     [store],
   );
 
+  /** Queue a follow-up inside the stream while a turn is running (or run at once if idle). */
+  const queue = useCallback(
+    (
+      question: string,
+      objectId?: string,
+      source?: string,
+      files: Attachment[] = [],
+      extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+      spaceOpts?: RunSpaceOptions,
+    ) => store.queueFollowUp(question, objectId, source, files, extra, spaceOpts),
+    [store],
+  );
+
+  /** Stop the active run cleanly and submit a steering follow-up right away. */
+  const steer = useCallback(
+    (
+      question: string,
+      objectId?: string,
+      source?: string,
+      files: Attachment[] = [],
+      extra: Pick<AskRequest, "context" | "mode" | "instruction" | "clarified" | "deep"> = {},
+      spaceOpts?: RunSpaceOptions,
+    ) => store.steer(question, objectId, source, files, extra, spaceOpts),
+    [store],
+  );
+
+  const removeQueued = useCallback((queueId: string) => store.removeQueued(queueId), [store]);
+  const sendQueuedNow = useCallback((queueId: string) => store.sendQueuedNow(queueId), [store]);
+
   /** Send a turn's request again exactly as it was (its scope, page context and attachments). */
   const retry = useCallback(
-    (t: Turn) => store.run(t.question, t.request?.objectId, t.request?.source, t.request?.files ?? [], t.request?.extra ?? {}),
+    (t: Turn) =>
+      store.run(t.question, t.request?.objectId, t.request?.source, t.request?.files ?? [], t.request?.extra ?? {}, {
+        promptPrefix: t.request?.promptPrefix,
+        spaceLabel: t.request?.spaceLabel,
+      }),
     [store],
   );
 
   /** The same question again, thought through (AskRequest.deep): its scope, page context and files as it was asked. */
   const deeper = useCallback(
-    (t: Turn) => store.run(t.question, t.request?.objectId, t.request?.source, t.request?.files ?? [], { ...(t.request?.extra ?? {}), deep: true }),
+    (t: Turn) =>
+      store.run(
+        t.question,
+        t.request?.objectId,
+        t.request?.source,
+        t.request?.files ?? [],
+        { ...(t.request?.extra ?? {}), deep: true },
+        { promptPrefix: t.request?.promptPrefix, spaceLabel: t.request?.spaceLabel },
+      ),
     [store],
   );
 
@@ -616,7 +815,10 @@ export function useThread(scope = "ask") {
       // a new question: never the reply to a question asked back
       const extra = { ...(from.request?.extra ?? {}) };
       delete extra.clarified;
-      return store.run(next, from.request?.objectId, from.request?.source, [], extra);
+      return store.run(next, from.request?.objectId, from.request?.source, [], extra, {
+        promptPrefix: from.request?.promptPrefix,
+        spaceLabel: from.request?.spaceLabel,
+      });
     },
     [store],
   );
@@ -638,7 +840,12 @@ export function useThread(scope = "ask") {
 
   return {
     turns: snap.turns,
+    queued: snap.queued,
     run,
+    queue,
+    steer,
+    removeQueued,
+    sendQueuedNow,
     retry,
     deeper,
     followUp,

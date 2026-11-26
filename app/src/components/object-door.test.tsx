@@ -84,4 +84,41 @@ describe("a supplier invoice's record page", () => {
     expect(screen.getByRole("button", { name: /Save/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "History" })).toBeInTheDocument();
   });
+
+  it("renders the fast business-table door immediately before getObject resolves and lazily loads secondary sections", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(String(url));
+        return new Promise<Response>(() => {});
+      }),
+    );
+    render(<ObjectView type="PurchaseOrder" id="PurchaseOrder:p1" door={door} lazySections />);
+    expect(screen.getByTestId("door-instant-view")).toBeInTheDocument();
+    expect(screen.getByTestId("object-title")).toHaveTextContent("PO1");
+    expect(screen.getByText("Micro fiber towels")).toBeInTheDocument();
+    expect(screen.getByTestId("door-enriching")).toBeInTheDocument();
+  });
+
+  it("loads only primary sections (late, trail) on mount when lazySections is enabled", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        calls.push(String(url));
+        if (String(url).includes("/api/object-section/")) {
+          const sec = /object-section\/(\w+)\//.exec(String(url))?.[1] ?? "late";
+          return Promise.resolve(json({ object_id: "PurchaseOrder:p1", section: sec, applies: true, people: [{ name: "Ana", role: "buyer", sources: [] }] }));
+        }
+        return Promise.resolve(json({ ...po, complete: false }));
+      }),
+    );
+    render(<ObjectView type="PurchaseOrder" id="PurchaseOrder:p1" door={door} lazySections />);
+    await screen.findByTestId("lazy-section-people");
+    await waitFor(() => expect(calls.some((u) => u.includes("/object-section/late/"))).toBe(true));
+    expect(calls.some((u) => u.includes("/object-section/trail/"))).toBe(true);
+    expect(calls.some((u) => u.includes("/object-section/people/"))).toBe(false);
+    expect(calls.some((u) => u.includes("/object-section/landed_cost/"))).toBe(false);
+  });
 });

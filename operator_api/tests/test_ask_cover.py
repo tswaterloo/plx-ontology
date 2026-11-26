@@ -367,12 +367,148 @@ class CoverTests(unittest.TestCase):
             captured.update(kwargs)
             return lambda prompt: '{"flags": []}'
 
-        with mock.patch("operating.humanize.rewriter", side_effect=fake_rewriter):
+        with mock.patch("operating.humanize.rewriter", side_effect=fake_rewriter), \
+                mock.patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop(ac.MODEL_ENV, None)
             ac.call_for(object())
 
         self.assertEqual(captured["effort"], "low")
         self.assertEqual(captured["seconds"], ac.SECONDS)
         self.assertEqual(captured["feature"], ac.FEATURE)
+        self.assertEqual(captured["model"], "haiku")
+        self.assertEqual(captured["system_prompt"], ac.PROMPT)
+        self.assertEqual(captured["caller"], "operator_api.ask_cover")
+        with mock.patch.dict("os.environ", {ac.MODEL_ENV: "sonnet"}):
+            self.assertEqual(ac.model(), "sonnet")
+
+    def test_needs_sync_check_skips_low_risk_and_triggers_on_risky_or_untraced_answers(self):
+        complete_sql = {
+            "type": "tool_call",
+            "name": "plx.sql",
+            "arguments": {"names": "Croda"},
+            "result": json.dumps({
+                "result": "sql://" + "b" * 20,
+                "columns": ["kind", "n"],
+                "rows": [{"cite": "c", "cells": ["supplier", "2"]}],
+                "row_count": 1,
+                "profile": {"rows": 1, "limit_hit": False, "columns": []},
+            }),
+        }
+        # Plain factual lookup with complete reads and no untraced figures skips blocking sync cover
+        sync, reason = ac.needs_sync_check("Croda Canada is listed as a supplier.", [complete_sql])
+        self.assertFalse(sync)
+        self.assertEqual(reason, "low_risk_reads_complete")
+
+        # Non-empty untraced figures ALWAYS require synchronous check
+        sync, reason = ac.needs_sync_check("Croda Canada has 2 records.", [complete_sql], untraced=["2"])
+        self.assertTrue(sync)
+        self.assertEqual(reason, "untraced_figures")
+
+        # Limit-hit SQL ALWAYS requires synchronous check
+        sync, reason = ac.needs_sync_check("Here are the orders.", [sql_event(2)])
+        self.assertTrue(sync)
+        self.assertEqual(reason, "sql_limit_or_truncated")
+
+        # Widened meaning_continue cursor after exhaustive exact match does NOT trigger truncation sync
+        widened_search = {
+            "type": "tool_call",
+            "name": "plx.search",
+            "arguments": {"query": "20311 Terminal City"},
+            "result": json.dumps({
+                "documents": [],
+                "searched": {"sources": ["graph_mail"], "widened": "also items holding some of the words"},
+                "completeness": {
+                    "complete": False,
+                    "truncated": True,
+                    "returned": 0,
+                    "next_cursor": "m1:1:35:w",
+                    "reason": "meaning_continue",
+                },
+            }),
+        }
+        sync, reason = ac.needs_sync_check("Here are the related orders.", [widened_search])
+        self.assertFalse(sync)
+        self.assertEqual(reason, "low_risk_reads_complete")
+
+    def test_smart_cover_defers_low_risk_to_background_and_populates_claims_on_sync(self):
+        from dataclasses import dataclass, field
+        from types import SimpleNamespace
+        from unittest import mock
+        from operator_api import ask_check, simple_ask as sa
+
+        @dataclass
+        class FakeRun:
+            final_text: str
+            events: list = field(default_factory=list)
+            usage: dict = field(default_factory=dict)
+
+        complete_sql = {
+            "type": "tool_call",
+            "name": "plx.sql",
+            "arguments": {"names": "Croda"},
+            "result": json.dumps({
+                "result": "sql://" + "c" * 20,
+                "columns": ["kind", "n"],
+                "rows": [{"cite": "c", "cells": ["supplier", "2"]}],
+                "row_count": 1,
+                "profile": {"rows": 1, "limit_hit": False, "columns": []},
+            }),
+        }
+        bg_called = []
+        asker = SimpleNamespace(_cover_call=lambda p: (bg_called.append(p) or '{"flags": []}'))
+        emitted = []
+        checking = sa.Checking(asker, "Who is Croda?", lambda k, d: emitted.append((k, d)))
+        with mock.patch.dict("os.environ", {ask_check.ENABLE_ENV: "cover", ac.MODE_ENV: "smart"}):
+            got = checking.hook(FakeRun("Croda Canada is a supplier.", events=[complete_sql]))
+        self.assertIsNone(got)
+        self.assertIsNotNone(checking.shadow)
+        checking.shadow.join(timeout=2.0)
+        self.assertEqual(len(bg_called), 1)
+        self.assertEqual(checking.verdict.status, "checked")
+        self.assertEqual(checking.verdict.seconds, 0.0)
+        self.assertNotIn("check", [k for k, _ in emitted])
+
+        # When sync runs and finds a flag, Verdict.claims is populated (no longer hardcoded 0)
+        flag_json = json.dumps({
+            "flags": [{
+                "kind": "A",
+                "sentence": "Only two exist.",
+                "why": "limit reached",
+                "would_settle": "count all rows",
+            }]
+        })
+        asker2 = SimpleNamespace(_cover_call=lambda p: flag_json)
+        checking2 = sa.Checking(asker2, "How many exist?", lambda k, d: None)
+        with mock.patch.dict("os.environ", {ask_check.ENABLE_ENV: "cover", ac.MODE_ENV: "smart"}):
+            got2 = checking2.hook(FakeRun("Only two exist.", events=[sql_event(2)]))
+        self.assertIsNotNone(got2)
+        self.assertEqual(len(checking2.verdict.claims), 1)
+        self.assertEqual(checking2.verdict.payload()["claims"], 1)
+        self.assertEqual(checking2.verdict.claims[0]["claim"], "Only two exist.")
+
+    def test_cover_card_notes_widened_meaning_continue_and_untraced_figures(self):
+        widened_ev = {
+            "type": "tool_call",
+            "name": "plx.search",
+            "arguments": {"query": "20311 Terminal City", "since": "2026-11-01"},
+            "result": json.dumps({
+                "documents": [],
+                "searched": {"sources": ["graph_mail"], "widened": "also items holding some words"},
+                "completeness": {
+                    "complete": False,
+                    "truncated": True,
+                    "returned": 0,
+                    "next_cursor": "m1:1:35:w",
+                    "reason": "meaning_continue",
+                },
+            }),
+        }
+        prompt = ac.task("Is PO 20311 in mail?", "No exact match.", [widened_ev], untraced=["20311"])
+        self.assertIn("exact_matches_complete", prompt)
+        self.assertIn("widened: also items holding some words", prompt)
+        self.assertIn("UNTRACED FIGURES", prompt)
+        self.assertIn("20311", prompt)
 
 
 if __name__ == "__main__":

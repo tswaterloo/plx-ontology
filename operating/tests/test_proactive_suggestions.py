@@ -229,5 +229,52 @@ class Cardinality(unittest.TestCase):
         self.assertEqual((len(capped["suggestions"]), capped["more"]), (12, 48))
 
 
+class AccuracyAndRanking(unittest.TestCase):
+    def test_top_level_days_and_supplier_contact_fallback_and_ranking(self):
+        # SQL-backed BriefingItem carries top-level days (no facts.days)
+        sql_item = {
+            "rank": 1, "id": "alert:po_late:h1:", "event_type": "po_late",
+            "object_id": "PurchaseOrder:t:106001", "object_type": "PurchaseOrder",
+            "summary": "PO 106001 is overdue", "days": 154, "citations": [H],
+            "next_action": {"text": "Ask the supplier.", "rule": "po_late"},
+        }
+        empty_item = {
+            "rank": 1, "id": "alert:po_late:h2:", "event_type": "po_late",
+            "object_id": "PurchaseOrder:t:999", "object_type": "PurchaseOrder",
+            "summary": "PO 999 is overdue", "days": 200, "citations": [H],
+            "next_action": {"text": "Ask the supplier.", "rule": "po_late"},
+        }
+        eta = {"state": "no_confirmation", "text": "No.", "source": None}
+        po_trail = trail(eta)
+        po_trail["trails"][0]["subject"] = {"object_id": "PurchaseOrder:t:106001"}
+        po_trail["trails"][0]["days_late"] = 154
+        out = ps.build(
+            [empty_item, sql_item],
+            labels={"PurchaseOrder:t:106001": "PO 106001", "PurchaseOrder:t:999": "PO 999"},
+            trails={"PurchaseOrder:t:106001": po_trail},
+            late_drafts={},
+            supplier_contacts={
+                "PurchaseOrder:t:106001": {
+                    "name": "Croda", "address": "orders@croda.example",
+                    "basis": "Supplier email address on record.",
+                }
+            },
+        )
+        # High-confidence addressed card ranks #1 ahead of unchecked+unaddressed empty draft
+        self.assertEqual(out["suggestions"][0]["subject"]["object_id"], "PurchaseOrder:t:106001")
+        self.assertIn("PO 106001 is 154 days late", out["suggestions"][0]["headline"])
+        self.assertNotIn("vendor", out["suggestions"][0]["headline"].lower())
+        self.assertEqual(out["suggestions"][0]["draft"]["to"]["address"], "orders@croda.example")
+        # Fallback headline without days uses "supplier", never "vendor"
+        no_days = ps.build(
+            [{"rank": 1, "id": "a3", "event_type": "po_late", "object_id": PO,
+              "object_type": "PurchaseOrder", "summary": "Overdue", "citations": [H],
+              "next_action": {"text": "Ask.", "rule": "po_late"}}],
+            labels={PO: "PO100"}, trails={}, late_drafts={},
+        )["suggestions"][0]
+        self.assertIn("supplier's attention", no_days["headline"])
+        self.assertNotIn("vendor", no_days["headline"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

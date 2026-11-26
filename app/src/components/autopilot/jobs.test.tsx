@@ -45,7 +45,7 @@ describe("A finished job", () => {
     expect(screen.getByTestId("job-checked-details")).toHaveTextContent("$0.42");
     expect(screen.getByTestId("job-checklist")).toHaveTextContent("Call DSM if no answer by Friday");
     expect(screen.getByTestId("job-checklist")).not.toHaveTextContent("(piece 1)");
-    expect(screen.getByTestId("job-status")).toHaveTextContent("Partial · Needs context");
+    expect(screen.getByTestId("job-status")).toHaveTextContent("Needs context");
     expect(screen.getByText(/emails: failing since 3 PM/)).toBeInTheDocument();
     expect(screen.getByTestId("piece-reads")).toHaveTextContent("1 record opened and 1 lookup");
     expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();

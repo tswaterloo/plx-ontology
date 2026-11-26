@@ -692,7 +692,10 @@ def find(text: str, words: str, limit: int = MAX_FIND, skip: int = 0) -> dict:
             if seen <= skip:
                 continue
             if len(out) < limit:
-                out.append({"offset": start, "in": part, "line": line[:600]})
+                entry: dict[str, Any] = {"offset": start, "in": part, "line": line[:600]}
+                if len(line) > 600:
+                    entry["truncated"] = True
+                out.append(entry)
             else:
                 more += 1
     got = {"matches": out, "more": more, "matched_total": seen}

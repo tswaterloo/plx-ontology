@@ -798,3 +798,38 @@ class ReplayCeilingTest(unittest.TestCase):
                 self.assertEqual(s.open_one(leg, {"citation": "email:v1"}, leg)["error"]
                                  ["code"], "not_ready")
         self.assertEqual(calls, [])
+
+    def test_paged_scales_limit_proportionally_and_depth_said_explains_tiers(self):
+        from operating.pg import comms_search as cs
+        # Proportional byte-budget scaling avoids dropping 50 -> 25 when 38 hits fit
+        seen_limits = []
+
+        def search(args):
+            lim = args.get("limit", 20)
+            seen_limits.append(lim)
+            doc = {"citation": "graph-mail://box/m", "kind": "email",
+                   "snippet": {"untrusted_text": "x" * 1050}}
+            return {
+                "documents": [doc] * lim,
+                "completeness": {"complete": False, "truncated": True, "returned": lim,
+                                 "next_cursor": "c1:1|2026-11-25T00:00:00+00:00|graph-mail://box/m",
+                                 "reason": "page_cap"},
+            }
+
+        got = s.paged(search, {"query": "croda", "limit": 50},
+                      lambda r: s._encoded(r) <= s.MANY_BYTES)
+        self.assertEqual(seen_limits[0], 50)
+        self.assertGreater(seen_limits[1], 25)
+        self.assertEqual(len(seen_limits), 2)
+        self.assertLessEqual(s._encoded(got), s.MANY_BYTES)
+
+        # depth_said explains header->body tier order and exact-complete widened cursors
+        d_more = cs.depth_said("croda", {}, later=False, attachments=False, more=True)
+        self.assertIn("header matches newest first, then body-only matches newest first", d_more)
+        d_exact = cs.depth_said("20311 terminal", {}, later=False, attachments=False,
+                                more=False, exact_complete=True, exact_returned=0)
+        self.assertIn("all 0 exact every-word matches in this window are shown", d_exact)
+        sql_party = cs.count_sql(["emails"], guarded="biz_sql", biz="biz", since=True,
+                                 until=False, query=False, party_kind="domain")
+        self.assertIn("e.domains @> ARRAY[%(party)s]", sql_party)
+        self.assertIn("e.received_at >= %(since)s", sql_party)

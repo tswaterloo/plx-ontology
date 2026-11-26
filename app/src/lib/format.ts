@@ -93,8 +93,9 @@ function ulp(x: number): number {
  * not a bare decimal as given.
  */
 export function groupDigits(value: string): string {
-  const t = value.trim();
-  if (!/^-?\d+(?:\.\d+)?$/.test(t)) return value;
+  const s = String(value ?? "");
+  const t = s.trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(t)) return s;
   const v = floatResidue(t) ?? t;
   const neg = v.startsWith("-");
   const [int, frac] = (neg ? v.slice(1) : v).split(".");
@@ -104,8 +105,9 @@ export function groupDigits(value: string): string {
 
 /** A figure with its unit after it ("1234567.5 kg" -> "1,234,567.5 kg"): the number grouped, the rest as given. */
 export function formatNumber(value: string): string {
-  const m = /^(\s*-?\d+(?:\.\d+)?)(\D.*)?$/.exec(value);
-  return m ? `${groupDigits(m[1].trim())}${m[2] ?? ""}` : value;
+  const s = String(value ?? "");
+  const m = /^(\s*-?\d+(?:\.\d+)?)(\D.*)?$/.exec(s);
+  return m ? `${groupDigits(m[1].trim())}${m[2] ?? ""}` : s;
 }
 
 /** Each figure carrying a float's noise written as the figure it is (floatResidue). */
@@ -114,7 +116,7 @@ export function withoutFloatNoise(text: string): string {
 }
 
 export function formatMoney(amount: string, currency: string, locale = "en-CA"): string {
-  const a = withoutFloatNoise(amount.trim());
+  const a = withoutFloatNoise(String(amount ?? "").trim());
   const code = currencyCode(currency);
   if (!DECIMAL.test(a)) return `${a} ${code}`.trim();
   const neg = a.startsWith("-");
@@ -132,7 +134,7 @@ export function formatMoney(amount: string, currency: string, locale = "en-CA"):
  * "$9,923.21 CAD"): never uses floats, for order/invoice totals in list tables.
  */
 export function formatMoneyCents(amount: string, currency: string, locale = "en-CA"): string {
-  const a = withoutFloatNoise(amount.trim());
+  const a = withoutFloatNoise(String(amount ?? "").trim());
   const code = currencyCode(currency);
   if (!DECIMAL.test(a)) return `${a} ${code}`.trim();
   const neg = a.startsWith("-");

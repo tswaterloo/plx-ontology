@@ -61,14 +61,14 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
 
   if (state === "up-sent" || state === "down-sent") {
     return (
-      <p role="status" className="inline-flex h-8 items-center gap-1.5 px-2.5 text-[13px] text-muted" data-testid="feedback-thanks">
-        <Check className="size-[15px]" strokeWidth={2} aria-hidden />
+      <p role="status" className="inline-flex h-7 items-center gap-1.5 px-2 text-[12px] text-muted" data-testid="feedback-thanks">
+        <Check className="size-3.5" strokeWidth={2} aria-hidden />
         {state === "up-sent" ? "Marked correct" : "Sent to the Workbench team"}
       </p>
     );
   }
 
-  const quiet = "inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px] text-muted hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer [&_svg]:size-[15px]";
+  const quiet = "inline-flex h-7 items-center gap-1.5 rounded-lg border border-transparent px-2 py-1 text-[12px] font-medium text-muted transition-all duration-150 hover:border-border hover:bg-surface-2 hover:text-fg active:scale-[0.98] disabled:opacity-50 cursor-pointer [&_svg]:size-3.5";
   return (
     <div className="contents" data-testid="feedback">
       <button type="button" aria-label="Yes, this answer was right" title="Was this right? Yes" onClick={() => submit(1)} disabled={state === "sending"} className={quiet}>
@@ -82,7 +82,7 @@ export function Feedback({ answerId, facts = [] }: { answerId: string; facts?: s
         title="Was this right? No"
         onClick={() => setState(state === "down-open" ? "idle" : "down-open")}
         disabled={state === "sending"}
-        className={cn(quiet, state === "down-open" && "bg-hover text-fg")}
+        className={cn(quiet, state === "down-open" && "border-border bg-surface-2 text-fg")}
       >
         <ThumbsDown strokeWidth={2} aria-hidden />
         <span className="max-sm:hidden">Wrong</span>

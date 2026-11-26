@@ -123,21 +123,269 @@ def _int_count(raw: Any) -> Optional[int]:
     return None
 
 
+def _no_em_dash(text: str) -> str:
+    """Replace any em dash with a plain spaced hyphen."""
+    return text.replace("\u2014", " - ")
+
+
+# Executive neutral studio palette for Word, Excel, and PowerPoint exports.
+_STUDIO_HEAD_INK = "0F172A"
+_STUDIO_BODY_INK = "1F2937"
+_STUDIO_SUB_INK = "334155"
+_STUDIO_MUTED_INK = "64748B"
+_STUDIO_HEAD_FILL = "F1F5F9"
+_STUDIO_ZEBRA_FILL = "F8FAFC"
+_STUDIO_BORDER_LIGHT = "E2E8F0"
+_STUDIO_BORDER_RULE = "CBD5E1"
+_STUDIO_BORDER_ACCENT = "94A3B8"
+
+_W_NS = ('xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+         'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+
+STUDIO_DOCX_STYLES = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    f'<w:styles {_W_NS}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" '
+    'w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/>'
+    f'<w:color w:val="{_STUDIO_BODY_INK}"/><w:sz w:val="21"/><w:szCs w:val="21"/>'
+    '<w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>'
+    '<w:spacing w:after="140" w:line="288" w:lineRule="auto"/></w:pPr></w:pPrDefault>'
+    '</w:docDefaults>'
+    '<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>'
+    '<w:pPr/><w:rPr/></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="200"/></w:pPr>'
+    f'<w:rPr><w:b/><w:color w:val="{_STUDIO_HEAD_INK}"/><w:sz w:val="40"/></w:rPr></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/>'
+    f'<w:pBdr><w:bottom w:val="single" w:sz="6" w:space="6" w:color="{_STUDIO_BORDER_LIGHT}"/>'
+    '</w:pBdr><w:spacing w:before="320" w:after="140"/><w:outlineLvl w:val="0"/></w:pPr>'
+    f'<w:rPr><w:b/><w:color w:val="{_STUDIO_HEAD_INK}"/><w:sz w:val="34"/></w:rPr></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/>'
+    '<w:spacing w:before="260" w:after="100"/><w:outlineLvl w:val="1"/></w:pPr>'
+    f'<w:rPr><w:b/><w:color w:val="{_STUDIO_SUB_INK}"/><w:sz w:val="27"/></w:rPr></w:style>'
+    '<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/>'
+    '<w:spacing w:before="200" w:after="60"/><w:outlineLvl w:val="2"/></w:pPr>'
+    f'<w:rPr><w:b/><w:color w:val="{_STUDIO_SUB_INK}"/><w:sz w:val="23"/></w:rPr></w:style>'
+    '<w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="List Bullet"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="80"/></w:pPr>'
+    '<w:rPr/></w:style>'
+    '<w:style w:type="paragraph" w:styleId="TableText"><w:name w:val="Table Text"/>'
+    '<w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="30" w:after="30" '
+    'w:line="252" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="19"/></w:rPr></w:style>'
+    '<w:style w:type="table" w:styleId="PlainTable"><w:name w:val="Plain Table"/>'
+    '<w:tblPr><w:tblBorders>'
+    f'<w:top w:val="single" w:sz="6" w:space="0" w:color="{_STUDIO_BORDER_RULE}"/>'
+    f'<w:bottom w:val="single" w:sz="6" w:space="0" w:color="{_STUDIO_BORDER_RULE}"/>'
+    f'<w:insideH w:val="single" w:sz="4" w:space="0" w:color="{_STUDIO_BORDER_LIGHT}"/>'
+    f'<w:left w:val="none"/><w:right w:val="none"/>'
+    f'<w:insideV w:val="single" w:sz="2" w:space="0" w:color="{_STUDIO_BORDER_LIGHT}"/>'
+    '</w:tblBorders><w:tblCellMar>'
+    '<w:top w:w="80" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/>'
+    '<w:left w:w="110" w:type="dxa"/><w:right w:w="110" w:type="dxa"/>'
+    '</w:tblCellMar></w:tblPr></w:style></w:styles>'
+)
+
+STUDIO_DOCX_SECTION = (
+    '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+    '<w:pgMar w:top="1260" w:right="1260" w:bottom="1260" w:left="1260" '
+    'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
+)
+
+# Keeps the exact 16-entry cellXfs index contract of doc_render.XLSX_FORMATS and chart_ooxml.STYLES.
+STUDIO_XLSX_STYLES = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    '<numFmts count="6">'
+    '<numFmt numFmtId="164" formatCode="#,##0.00"/>'
+    '<numFmt numFmtId="165" formatCode="yyyy-mm-dd"/>'
+    '<numFmt numFmtId="166" formatCode="&quot;$&quot;#,##0.00;\\-&quot;$&quot;#,##0.00"/>'
+    '<numFmt numFmtId="167" formatCode="0.0%"/>'
+    '<numFmt numFmtId="168" formatCode="#,##0.0"/>'
+    '<numFmt numFmtId="169" formatCode="#,##0.000"/>'
+    '</numFmts>'
+    '<fonts count="4">'
+    f'<font><sz val="10.5"/><color rgb="FF{_STUDIO_BODY_INK}"/><name val="Calibri"/></font>'
+    f'<font><b/><sz val="10.5"/><color rgb="FF{_STUDIO_HEAD_INK}"/><name val="Calibri"/></font>'
+    f'<font><i/><sz val="9"/><color rgb="FF{_STUDIO_MUTED_INK}"/><name val="Calibri"/></font>'
+    f'<font><b/><sz val="13.5"/><color rgb="FF{_STUDIO_HEAD_INK}"/><name val="Calibri"/></font>'
+    '</fonts>'
+    '<fills count="3">'
+    '<fill><patternFill patternType="none"/></fill>'
+    '<fill><patternFill patternType="gray125"/></fill>'
+    f'<fill><patternFill patternType="solid"><fgColor rgb="FF{_STUDIO_HEAD_FILL}"/>'
+    '<bgColor indexed="64"/></patternFill></fill>'
+    '</fills>'
+    '<borders count="3">'
+    '<border><left/><right/><top/><bottom/><diagonal/></border>'
+    f'<border><left/><right/><top style="thin"><color rgb="FF{_STUDIO_BORDER_RULE}"/></top>'
+    f'<bottom style="medium"><color rgb="FF{_STUDIO_MUTED_INK}"/></bottom><diagonal/></border>'
+    f'<border><left/><right/><top/><bottom style="thin"><color rgb="FF{_STUDIO_BORDER_LIGHT}"/>'
+    '</bottom><diagonal/></border>'
+    '</borders>'
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+    '<cellXfs count="16">'
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" '
+    'applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1" '
+    'applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" '
+    'applyAlignment="1"><alignment wrapText="1" vertical="top"/></xf>'
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="3" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" '
+    'applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>'
+    '<xf numFmtId="165" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf>'
+    '<xf numFmtId="166" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="167" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" '
+    'applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="168" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="169" fontId="0" fillId="0" borderId="2" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="2" xfId="0" applyFont="1" applyBorder="1"/>'
+    '<xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="166" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '<xf numFmtId="3" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" '
+    'applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center"/></xf>'
+    '</cellXfs></styleSheet>'
+)
+
+
+def _polish_docx_block_xml(xml: str) -> str:
+    """Replace default blue table fills with crisp neutral studio fills and subtle zebra tint."""
+    xml = xml.replace('w:fill="D9E2F3"', f'w:fill="{_STUDIO_HEAD_FILL}"')
+    xml = xml.replace('w:color="8EAADB"', f'w:color="{_STUDIO_BORDER_RULE}"')
+    if "<w:tbl>" not in xml:
+        return xml
+    row_idx = 0
+
+    def _style_row(match: re.Match[str]) -> str:
+        nonlocal row_idx
+        row_xml = match.group(0)
+        is_header = "<w:tblHeader/>" in row_xml
+        if is_header:
+            row_idx = 0
+            return row_xml
+        row_idx += 1
+        if row_idx % 2 == 0 and "<w:shd " not in row_xml:
+            row_xml = row_xml.replace(
+                "</w:tcPr>",
+                f'<w:shd w:val="clear" w:color="auto" w:fill="{_STUDIO_ZEBRA_FILL}"/></w:tcPr>',
+            )
+        return row_xml
+
+    return re.sub(r"<w:tr>.*?</w:tr>", _style_row, xml, flags=re.S)
+
+
+def _polish_xlsx_sheet_xml(xml: str) -> str:
+    """Add crisp executive row heights and landscape fit-to-width print setup to a worksheet."""
+    def _row_height(match: re.Match[str]) -> str:
+        open_tag, inner, close_tag = match.group(1), match.group(2), match.group(3)
+        if "ht=" in open_tag:
+            return match.group(0)
+        if 's="9"' in inner:
+            ht = "26"
+        elif 's="5"' in inner:
+            ht = "24"
+        else:
+            ht = "19.5"
+        return f'{open_tag[:-1]} ht="{ht}" customHeight="1">{inner}{close_tag}'
+
+    xml = re.sub(r'(<row\s[^>]*>)(.*?)(</row>)', _row_height, xml, flags=re.S)
+    if "<sheetPr>" not in xml:
+        xml = xml.replace(
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>',
+            1,
+        )
+    if "<pageSetup" not in xml:
+        page = (
+            '<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
+            '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>'
+        )
+        xml = xml.replace("</worksheet>", page + "</worksheet>", 1)
+    return xml
+
+
+def _polish_pptx_bytes(raw_pptx: bytes, slide_count: int) -> bytes:
+    """Apply crisp executive slide styling (header rule, neutral table cells, slide numbers)."""
+    accent_rule = (
+        '<p:sp><p:nvSpPr><p:cNvPr id="90" name="HeaderRule"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>'
+        '<p:spPr><a:xfrm><a:off x="457200" y="960000"/><a:ext cx="11277600" cy="12700"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>'
+        f'<a:solidFill><a:srgbClr val="{_STUDIO_BORDER_LIGHT}"/></a:solidFill>'
+        '<a:ln><a:noFill/></a:ln></p:spPr></p:sp>'
+    )
+    table_border = (
+        f'<a:lnL w="6350"><a:noFill/></a:lnL><a:lnR w="6350"><a:noFill/></a:lnR>'
+        f'<a:lnT w="6350"><a:solidFill><a:srgbClr val="{_STUDIO_BORDER_LIGHT}"/></a:solidFill></a:lnT>'
+        f'<a:lnB w="6350"><a:solidFill><a:srgbClr val="{_STUDIO_BORDER_LIGHT}"/></a:solidFill></a:lnB>'
+    )
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(raw_pptx), "r") as src, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            body = src.read(info.filename)
+            m = re.fullmatch(r"ppt/slides/slide(\d+)\.xml", info.filename)
+            if m:
+                n = int(m.group(1))
+                xml = body.decode("utf-8")
+                xml = xml.replace('val="F3F4F6"', f'val="{_STUDIO_HEAD_FILL}"')
+                xml = xml.replace(
+                    "<a:tcPr>",
+                    f'<a:tcPr marL="91440" marR="91440" marT="54864" marB="54864" anchor="ctr">{table_border}',
+                )
+                xml = xml.replace(
+                    "<a:tcPr/>",
+                    f'<a:tcPr marL="91440" marR="91440" marT="54864" marB="54864" anchor="ctr">{table_border}</a:tcPr>',
+                )
+                footer = (
+                    f'<p:sp><p:nvSpPr><p:cNvPr id="91" name="SlideNumber"/>'
+                    '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+                    '<p:spPr><a:xfrm><a:off x="10800000" y="6460000"/><a:ext cx="934800" cy="260000"/>'
+                    '</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>'
+                    '<p:txBody><a:bodyPr lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/>'
+                    '<a:p><a:pPr algn="r"/><a:r><a:rPr lang="en-US" sz="900" dirty="0">'
+                    f'<a:solidFill><a:srgbClr val="{_STUDIO_MUTED_INK}"/></a:solidFill></a:rPr>'
+                    f'<a:t>{n} / {slide_count}</a:t></a:r></a:p></p:txBody></p:sp>'
+                )
+                xml = xml.replace("</p:spTree>", accent_rule + footer + "</p:spTree>", 1)
+                body = xml.encode("utf-8")
+            elif info.filename.startswith("ppt/theme/theme") and info.filename.endswith(".xml"):
+                xml = body.decode("utf-8").replace('val="1F2937"', f'val="{_STUDIO_HEAD_INK}"')
+                body = xml.encode("utf-8")
+            new_info = zipfile.ZipInfo(info.filename, _FIXED)
+            new_info.compress_type = zipfile.ZIP_DEFLATED
+            dst.writestr(new_info, body)
+    return out.getvalue()
+
+
 def _table_notes(t: Mapping[str, Any]) -> list[str]:
     if not (t.get("sql") or t.get("as_of") or t.get("measure")):
         return []
     from operating import chart_ooxml as ox
-    return ox.statement_provenance(
+    return [_no_em_dash(ln) for ln in ox.statement_provenance(
         count=_int_count(t.get("count")),
-        as_of=t.get("as_of"), sql=str(t.get("sql") or ""), measure=t.get("measure"))
+        as_of=t.get("as_of"), sql=str(t.get("sql") or ""), measure=t.get("measure"))]
 
 
 def _citation_notes(c: Mapping[str, Any]) -> list[str]:
     from operating import chart_ooxml as ox
-    return ox.statement_provenance(
+    return [_no_em_dash(ln) for ln in ox.statement_provenance(
         count=_int_count(c.get("count")),
         as_of=c.get("as_of"), sql=str(c.get("sql") or ""), measure=c.get("measure"),
-        title=str(c.get("label") or c.get("title") or ""))
+        title=str(c.get("label") or c.get("title") or ""))]
 
 
 def _docx(content: str, charts: Sequence[Mapping[str, Any]] = (),
@@ -145,8 +393,8 @@ def _docx(content: str, charts: Sequence[Mapping[str, Any]] = (),
           citations: Sequence[Sequence[str]] = ()) -> bytes:
     """A Word document of the content's blocks (``doc_render``: real heading styles, a
     styles part, letter pages, shaded header rows, numbers aligned, tracked changes for a
-    redline's marks) with each chart a native Word chart where it is placed and each cited
-    table or figure carrying its statement."""
+    redline's marks) with executive neutral studio styling, each chart a native Word chart
+    where it is placed, and each cited table or figure carrying its statement."""
     from operating import chart_docs, doc_render as dr
     from operating import chart_ooxml as ox
     parts: list[str] = []
@@ -167,21 +415,21 @@ def _docx(content: str, charts: Sequence[Mapping[str, Any]] = (),
             lines = table_notes.get(block[1]) if isinstance(table_notes, Mapping) else ()
             if lines:
                 parts.append("".join(
-                    f"<w:p>{chart_docs._w_run(ln, size=16, color=chart_docs.MUTED)}</w:p>"
+                    f"<w:p>{chart_docs._w_run(_no_em_dash(ln), size=16, color=chart_docs.MUTED)}</w:p>"
                     for ln in lines))
             continue
-        parts.append(dr.docx_block(block, ids))
+        parts.append(_polish_docx_block_xml(dr.docx_block(block, ids)))
     if citations:
         parts.append(dr.docx_block(("heading", 2, "Sources and statements"), ids))
         for entry in citations:
             parts.append("".join(
-                f"<w:p>{chart_docs._w_run(ln, size=16, color=chart_docs.MUTED)}</w:p>"
+                f"<w:p>{chart_docs._w_run(_no_em_dash(ln), size=16, color=chart_docs.MUTED)}</w:p>"
                 for ln in entry))
     while parts and parts[-1] == "<w:p/>":
         parts.pop()
     body = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             f'<w:document {chart_docs.DOC_NS}><w:body>' + "".join(parts)
-            + dr.DOCX_SECTION + "</w:body></w:document>")
+            + STUDIO_DOCX_SECTION + "</w:body></w:document>")
     main = "application/vnd.openxmlformats-officedocument.wordprocessingml."
     defaults = {**ox.BASE_TYPES, "xlsx": ox.CT_XLSX} if relations else dict(ox.BASE_TYPES)
     types = ox.content_types(defaults, {"/word/document.xml": main + "document.main+xml",
@@ -192,7 +440,7 @@ def _docx(content: str, charts: Sequence[Mapping[str, Any]] = (),
                              ("rIdNumbering", "numbering", "numbering.xml")]
     return ox.zip_parts({"[Content_Types].xml": types,
                          "_rels/.rels": _RELS.format(target="word/document.xml"),
-                         "word/document.xml": body, "word/styles.xml": dr.DOCX_STYLES,
+                         "word/document.xml": body, "word/styles.xml": STUDIO_DOCX_STYLES,
                          "word/numbering.xml": dr.DOCX_NUMBERING,
                          "word/_rels/document.xml.rels": ox.rels(relations), **extra})
 
@@ -245,8 +493,8 @@ def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX
           tables: Sequence[Mapping[str, Any]] = (),
           citations: Sequence[Mapping[str, Any]] = ()) -> bytes:
     """One row per line, cells split on "|" (a Markdown table's outer pipes and rule row
-    dropped), typed and formatted as a person would (``doc_render.xlsx_sheet``); each chart
-    its rows and native chart on a sheet of its own; a 'Sources' sheet when any table or
+    dropped), typed and formatted with executive neutral studio styling; each chart its
+    rows and native chart on a sheet of its own; a 'Sources' sheet when any table or
     citation carries its statement."""
     from operating import chart_ooxml as ox, doc_render as dr
     lines = [ln for ln in content.split("\n") if ln.strip() and not _CHART_AT.match(ln)
@@ -257,7 +505,7 @@ def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX
         if row.startswith("|") and row.endswith("|") and len(row) > 1:
             row = row[1:-1]   # a Markdown table's row: no empty first and last cell
         rows.append([c.strip() for c in row.split("|")])   # "Label:|" keeps its blank
-    sheet = dr.xlsx_sheet(rows, MAX_COLS)
+    sheet = _polish_xlsx_sheet_xml(dr.xlsx_sheet(rows, MAX_COLS))
     sheets = [("Sheet1", {"xl/worksheets/sheet1.xml": sheet},
                {"/xl/worksheets/sheet1.xml": ox.SHEET_CT})]
     first = 1
@@ -268,10 +516,12 @@ def _xlsx(content: str, charts: Sequence[Mapping[str, Any]] = (), cap: int = MAX
         first += made
     if any(t.get("sql") or t.get("as_of") or t.get("measure") for t in tables) or citations:
         s_idx = len(sheets) + 1
-        src_xml = dr.xlsx_sheet(_sources_rows(tables, charts, citations), MAX_COLS, literal=True)
+        src_xml = _polish_xlsx_sheet_xml(
+            dr.xlsx_sheet(_sources_rows(tables, charts, citations), MAX_COLS, literal=True)
+        )
         sheets.append(("Sources", {f"xl/worksheets/sheet{s_idx}.xml": src_xml},
                        {f"/xl/worksheets/sheet{s_idx}.xml": ox.SHEET_CT}))
-    return ox.workbook(sheets, styles=dr.XLSX_STYLES)
+    return ox.workbook(sheets, styles=STUDIO_XLSX_STYLES)
 
 
 def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = (),
@@ -282,6 +532,36 @@ def _pdf(content: str, charts: Sequence[Mapping[str, Any]] = (),
         return doc_render.pdf(content, charts, table_notes=table_notes, citations=citations)
     except ImportError:
         raise FileRefused("pdf_unavailable") from None
+
+
+SLIDE_BULLET_CAP = 8   # max bullets/lines on a single text slide before clean continuation
+
+
+def _paginate_slide_lines(slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split overcrowded text slides and keep table lead copy concise so text never overlaps."""
+    out: list[dict[str, Any]] = []
+    for sl in slides:
+        lines = list(sl.get("lines") or ())
+        has_chart = sl.get("chart") is not None
+        has_table = sl.get("table") is not None
+        if has_table and not has_chart and len(lines) > 2:
+            # Keep at most 2 concise lead lines above a slide table; move extra bullets to notes.
+            extra = lines[2:]
+            notes = list(sl.get("notes") or ()) + extra
+            out.append({**sl, "lines": lines[:2], "notes": notes})
+            continue
+        if not has_chart and not has_table and len(lines) > SLIDE_BULLET_CAP:
+            title = str(sl.get("title") or "")
+            for start in range(0, len(lines), SLIDE_BULLET_CAP):
+                chunk = lines[start:start + SLIDE_BULLET_CAP]
+                chunk_title = title if start == 0 else f"{title} (continued)".strip()
+                item = {**sl, "title": chunk_title, "lines": chunk}
+                if start > 0 and "notes" in item:
+                    item.pop("notes", None)
+                out.append(item)
+            continue
+        out.append(sl)
+    return out
 
 
 def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = (),
@@ -360,7 +640,9 @@ def _pptx(content: str, charts: Sequence[Mapping[str, Any]] = (),
         all_notes = [ln for entry in citations for ln in entry]
         slides.append({"title": "Sources", "lines": summary_lines or ["Statements in speaker notes."],
                        "notes": all_notes})
-    return chart_docs.pptx(slides)
+    slides = _paginate_slide_lines(slides)
+    raw = chart_docs.pptx(slides)
+    return _polish_pptx_bytes(raw, max(len(slides), 1))
 
 
 def data_rows(content: str) -> int:
@@ -418,7 +700,7 @@ def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
     content, cap = _with_tables(kind, content, clean_tables, table_notes)
     content = mask_served(content)   # an exported file never holds a card or a secret
     from operating.doc_render import without_doubt_marks
-    content = without_doubt_marks(content)   # "(unverified)" is the chat's, not the file's
+    content = _no_em_dash(without_doubt_marks(content))   # "(unverified)" and em dashes never enter files
     charts = [_masked(c) for c in list(charts)[:MAX_DOC_CHARTS]]
     if kind == "xlsx":
         return _xlsx(content, charts, cap, clean_tables, clean_cites)
@@ -426,6 +708,77 @@ def make(kind: str, content: str, charts: Sequence[Mapping[str, Any]] = (),
         return _csv(content, charts, cap)
     return {"docx": _docx, "pdf": _pdf, "pptx": _pptx}[kind](
         content, charts, table_notes, cite_notes)
+
+
+def add_excel_sheet(
+    xlsx_bytes: bytes,
+    sheet_name: str,
+    headers: Sequence[Any],
+    rows: Sequence[Any],
+    *,
+    title: Optional[str] = None,
+    formulas: Optional[Mapping[Any, str] | Sequence[tuple[str, str]]] = None,
+    number_formats: Optional[Mapping[Any, str]] = None,
+    if_exists: str = "error",
+) -> bytes:
+    """Add a styled worksheet tab to an existing ``.xlsx`` workbook via ``doc_excel_ops``."""
+    from operating import doc_excel_ops as deo
+    return deo.add_sheet_to_workbook(
+        xlsx_bytes,
+        sheet_name,
+        headers,
+        rows,
+        title=title,
+        formulas=formulas,
+        number_formats=number_formats,
+        if_exists=if_exists,
+    )
+
+
+def append_excel_rows(
+    xlsx_bytes: bytes,
+    sheet_name: str,
+    rows: Sequence[Any],
+    *,
+    match_headers: bool = True,
+    create_if_missing: bool = True,
+    headers: Optional[Sequence[Any]] = None,
+    number_formats: Optional[Mapping[Any, str]] = None,
+) -> bytes:
+    """Append rows to an existing worksheet (or create it if missing) via ``doc_excel_ops``."""
+    from operating import doc_excel_ops as deo
+    return deo.append_rows_to_sheet(
+        xlsx_bytes,
+        sheet_name,
+        rows,
+        match_headers=match_headers,
+        create_if_missing=create_if_missing,
+        headers=headers,
+        number_formats=number_formats,
+    )
+
+
+def update_excel_cells(
+    xlsx_bytes: bytes,
+    updates: Mapping[str, Any],
+    *,
+    sheet_name: Optional[str] = None,
+    allow_formula_overwrite: bool = False,
+) -> bytes:
+    """Update named or addressed cells in an existing ``.xlsx`` workbook via ``doc_excel_ops``."""
+    from operating import doc_excel_ops as deo
+    return deo.update_named_cells(
+        xlsx_bytes,
+        updates,
+        sheet_name=sheet_name,
+        allow_formula_overwrite=allow_formula_overwrite,
+    )
+
+
+def inspect_excel(xlsx_bytes: bytes) -> dict[str, Any]:
+    """Summarize sheets, headers, row counts, and defined names of an ``.xlsx`` workbook."""
+    from operating import doc_excel_ops as deo
+    return deo.inspect_workbook(xlsx_bytes)
 
 
 def table(title: Any, columns: Sequence[Any], rows: Sequence[Sequence[Any]],
@@ -832,6 +1185,7 @@ class UploadDesk:
             return True
 
 
-__all__ = ["FileRefused", "KINDS", "LIVE_MISSING", "MEDIA", "NO_WRITE", "Target",
-           "UploadDesk", "WRITE_UNKNOWN", "file_name", "folder_writable", "make",
-           "target_of"]
+__all__ = ["FileRefused", "KINDS", "LIVE_MISSING", "MEDIA", "NO_WRITE", "STUDIO_DOCX_STYLES",
+           "STUDIO_XLSX_STYLES", "Target", "UploadDesk", "WRITE_UNKNOWN", "add_excel_sheet",
+           "append_excel_rows", "file_name", "folder_writable", "inspect_excel", "make",
+           "target_of", "update_excel_cells"]

@@ -15,6 +15,7 @@ export const PAGE_INTROS = {
   "/meetings": "",
   "/team": "What people are working on and what waits on whom.",
   "/insights": "",
+  "/artifacts": "",
   "/records": "",
   "/orders": "Purchase orders, late first, and sales orders.",
   "/customers": "Every customer. The ones you opened lately and saved come first.",

@@ -332,10 +332,22 @@ class Polish(unittest.TestCase):
         self.assertTrue(os.path.isdir(cwd))
         self.assertEqual(os.listdir(cwd), [])                    # nothing to discover there
         self.assertNotIn(os.path.realpath(os.getcwd()), os.path.realpath(cwd) + os.sep)
-        # a caller names its model
-        with mock.patch.object(humanize.subprocess, "run", run):
-            humanize.rewriter(model="claude-sonnet-5-5")("x")
+        # a caller names its model, custom system_prompt, and telemetry caller
+        with mock.patch.object(humanize.subprocess, "run", run), \
+                mock.patch.dict(os.environ, {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}):
+            humanize.rewriter(model="claude-sonnet-5-5",
+                              system_prompt="Custom rubric.",
+                              caller="operator_api.ask_cover")("x")
         self.assertEqual(seen["argv"][seen["argv"].index("--model") + 1], "claude-sonnet-5-5")
+        self.assertEqual(seen["argv"][seen["argv"].index("--system-prompt") + 1], "Custom rubric.")
+        self.assertIn("--exclude-dynamic-system-prompt-sections", seen["argv"])
+        self.assertIn("plx.caller=operator_api.ask_cover",
+                      seen["env"]["OTEL_RESOURCE_ATTRIBUTES"])
+        # REWRITE_TASK places static Hard rules before dynamic Flagged spots
+        self.assertLess(humanize.REWRITE_TASK.index("Hard rules:"),
+                        humanize.REWRITE_TASK.index("Flagged: {spots}"))
+        from operating import ai_watcher
+        self.assertEqual(ai_watcher.MODEL, "sonnet")
 
     def test_no_model_call_unless_the_unit_enables_it(self):
         self.assertIsNone(humanize.default_rewriter())

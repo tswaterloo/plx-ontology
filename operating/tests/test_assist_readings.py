@@ -246,16 +246,70 @@ class ReadingsThroughTheDoor(unittest.TestCase):
         def rows(n):
             return [(f"k{i}", NOW - dt.timedelta(hours=i + 1), "s@x", f"h{i}", f"o{i}") for i in range(n)]
         m = {"said": NOW, "key": "now", "view": "emails", "text": "ask"}
-        texts = {(f"h{i}", f"o{i}"): ("Please note line %d. " % i * 400, "") for i in range(30)}
-        out, left = ar.earlier_of(m, rows(30), texts)
-        self.assertEqual((len(out), left), (30, 0))                 # 30 earlier messages, none cut
-        self.assertTrue(all(len(x["text"]) > 1500 for x in out))     # each whole (no 1,500 cut)
-        window = ar.MODEL_WINDOW_CHARS
-        texts = {(f"h{i}", f"o{i}"): ("x " * (window // 8), "") for i in range(30)}
-        out, left = ar.earlier_of(m, rows(30), texts)
-        self.assertGreater(left, 0)                                  # the window, said as a count
+        # Default bounds cap earlier context to EARLIER_MAX_MESSAGES and EARLIER_MAX_CHARS
+        short_texts = {(f"h{i}", f"o{i}"): (f"Short line {i}.", "") for i in range(30)}
+        out, left = ar.earlier_of(m, rows(30), short_texts)
+        self.assertEqual(len(out), ar.EARLIER_MAX_MESSAGES)
         self.assertEqual(len(out) + left, 30)
         self.assertEqual(out[-1]["sent"], ar._minute(NOW - dt.timedelta(hours=1)))   # newest kept
+
+        long_texts = {(f"h{i}", f"o{i}"): ("Please note line %d. " % i * 100, "") for i in range(30)}
+        out_c, left_c = ar.earlier_of(m, rows(30), long_texts)
+        self.assertLessEqual(sum(len(x["text"]) for x in out_c), ar.EARLIER_MAX_CHARS)
+        self.assertGreater(left_c, 0)
+        self.assertEqual(len(out_c) + left_c, 30)
+
+        # Callers requesting unbounded earlier count still honor the model window
+        window = ar.MODEL_WINDOW_CHARS
+        huge_texts = {(f"h{i}", f"o{i}"): ("x " * (window // 8), "") for i in range(30)}
+        out_w, left_w = ar.earlier_of(m, rows(30), huge_texts, max_messages=None, max_chars=None)
+        self.assertGreater(left_w, 0)
+        self.assertEqual(len(out_w) + left_w, 30)
+        self.assertEqual(out_w[-1]["sent"], ar._minute(NOW - dt.timedelta(hours=1)))
+
+    def test_claude_read_uses_system_prompt_neutral_dir_and_bounded_thread_sql(self):
+        import types
+        from unittest import mock
+        from operating import chat_ask_model as cam, humanize
+
+        seen = {}
+
+        def fake_run(argv, **kw):
+            seen["argv"] = argv
+            seen.update(kw)
+            return types.SimpleNamespace(stdout=json.dumps({
+                "result": json.dumps([{"n": 1, "needs_act": False, "summary": "ok"}])
+            }))
+
+        batch = [{"key": "k1", "view": "emails", "said": NOW, "subject": "Subj",
+                  "people": [], "earlier": [], "earlier_left": 0, "text": "Just an FYI."}]
+        with mock.patch.object(cam, "credential_path_safe", lambda e, h: True):
+            got = ar.claude_read("haiku", call=fake_run)(batch)
+        self.assertEqual(len(got), 1)
+        argv = seen["argv"]
+        self.assertIn("--system-prompt", argv)
+        self.assertIn("--exclude-dynamic-system-prompt-sections", argv)
+        self.assertEqual(argv[argv.index("--system-prompt") + 1], ar.system_prompt())
+        self.assertEqual(seen["cwd"], humanize.neutral_dir())
+        self.assertIn("Just an FYI.", seen["input"])
+        self.assertNotIn("You read workplace emails", seen["input"])
+
+        # thread_rows SQL bounds per-chat and per-thread rows via ROW_NUMBER()
+        executed = []
+
+        class _FakePG:
+            def execute(self, sql, params=None):
+                executed.append((sql, params))
+                return types.SimpleNamespace(fetchall=lambda: [])
+
+        ar.thread_rows(_FakePG(), "biz", [
+            {"view": "emails", "thread": "t1"},
+            {"view": "teams_messages", "thread": "c1"},
+        ], covered=1)
+        self.assertEqual(len(executed), 2)
+        for sql, params in executed:
+            self.assertIn("ROW_NUMBER() OVER (PARTITION BY", sql)
+            self.assertEqual(params["lim"], ar.THREAD_HISTORY_LIMIT)
 
     def test_a_message_over_the_models_window_is_read_in_pages_never_cut(self):
         seen = []
@@ -470,6 +524,50 @@ class Parse(unittest.TestCase):
         self.assertTrue(ar.is_system_alert_mail("alerts@example.com", "ALERT: disk space low"))
         self.assertFalse(ar.is_system_alert_mail("buyer@customer.example", "PO 90412 delivery date"))
         self.assertFalse(ar.is_system_alert_mail("cos@petrasoap.com", "[ACTION REQUIRED] New Sourcing Request: Bluzen"))
+
+    def test_one_on_one_teams_participants_and_actor_resolution(self):
+        vince = "29e05178-1111-4222-8333-444444444444"
+        theo = "55555555-6666-4777-8888-999999999999"
+        staff = ar.Staff([
+            (vince, "vince@petrasoap.com", "Vince Alton"),
+            (theo, "theo@petrasoap.com", "Theo Park"),
+        ])
+        # Sender parsing handles uppercase JSON id, plain UUID, plain email, and rejects garbage
+        self.assertEqual(ar.teams_sender(json.dumps({"id": vince.upper(), "display_name": "Vince"})),
+                         (vince, "Vince", ""))
+        self.assertEqual(ar.teams_sender(vince.upper()), (vince, "", "user"))
+        self.assertEqual(ar.teams_sender("Vince@PetraSoap.com"), ("vince@petrasoap.com", "", "user"))
+        self.assertEqual(ar.teams_sender("not json"), ("", "", ""))
+
+        # URL-encoded 1:1 Teams chat handle resolves both participants and marks recipient as 'to'
+        handle = f"teams-chat://19%3A{vince}_{theo}%40unq.gbl.spaces/msg-1"
+        m = {
+            "view": "teams_messages",
+            "handle": handle,
+            "thread": f"19:{vince}_{theo}@unq.gbl.spaces",
+            "chat_type": "oneOnOne",
+            "sender": json.dumps({"id": vince.upper(), "display_name": "Vince Alton", "kind": "user"}),
+            "text": "Two things need your attention on Workbench email sending.",
+            "said": NOW,
+        }
+        people_list = ar.participants(m, staff)
+        self.assertEqual(
+            [(p["label"], p["role"], p["persons"], p["name"]) for p in people_list],
+            [
+                ("P1", "sender", [vince], "Vince Alton"),
+                ("P2", "to", [theo], "Theo Park"),
+            ],
+        )
+        m["people"] = people_list
+        # Even if the model leaves actor blank or picks the sender, 1:1 fallback resolves Theo
+        for bad_actor in ("", "OUT", "P1"):
+            r = ar.reading_of(
+                {"needs_act": True, "actor": bad_actor, "act": "configure endpoint",
+                 "act_class": "do", "summary": "Two things need your attention", "quote": "", "items": []},
+                m,
+            )
+            self.assertEqual((r["actor_person"], r["actor_basis"], r["sender_person"]),
+                             (theo, "teams_one_on_one", vince))
 
 
 if __name__ == "__main__":

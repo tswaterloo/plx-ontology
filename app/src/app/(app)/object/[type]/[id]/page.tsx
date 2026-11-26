@@ -1,9 +1,10 @@
 "use client";
 
 import { notFound, useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ObjectView } from "@/components/object-view";
 import { bizPage, isObjectType } from "@/lib/api";
+import { ApiError, plainError } from "@/lib/errors";
 import { doorKey } from "@/lib/format";
 import type { BizPage } from "@/lib/types";
 
@@ -17,11 +18,10 @@ function safeDecode(s: string): string {
 
 /**
  * Every record kind opens the one record page (Follow, Save, history, landed cost, margin,
- * sheets and mail). An order, customer or supplier also reads its business tables' page
- * (about 100 ms) beside it, for the lines, invoices and what is owed, each number linking
- * to its record; a record without one, or one it cannot read, shows its own page alone.
+ * sheets and mail). An order, customer, supplier, product, batch, or invoice reads its fast
+ * business-table page (~100 ms) beside the ontology read so header, KPIs, lines, and open
+ * balances render immediately while ontology enrichment loads progressively.
  */
-/** An item's, a batch's or a supplier invoice's page over the business tables (stock, batches, QC readings, what is owed). */
 type ItemKind = "product" | "batch" | "supplier_invoice";
 const ITEM_KINDS: Readonly<Record<string, ItemKind>> = {
   Product: "product",
@@ -42,12 +42,41 @@ export default function ObjectPageRoute() {
   const record = safeDecode(id);
   const door = doorKey(null, type, record) ?? itemKey(type, record);
   const [page, setPage] = useState<BizPage | null>(null);
+  const [doorError, setDoorError] = useState<string | null>(null);
+  const [doorAttempt, setDoorAttempt] = useState(0);
+  const retryDoor = useCallback(() => setDoorAttempt((n) => n + 1), []);
+
   useEffect(() => {
     setPage(null);
+    setDoorError(null);
     if (!door?.record) return;
     const ctl = new AbortController();
-    bizPage(door.kind, { record: door.record }, ctl.signal).then(setPage, () => undefined);
+    bizPage(door.kind, { record: door.record }, ctl.signal).then(
+      (p) => {
+        if (!ctl.signal.aborted) {
+          setPage(p);
+          setDoorError(null);
+        }
+      },
+      (err) => {
+        if (ctl.signal.aborted) return;
+        // 404 simply means no business table page exists for this record kind
+        if (err instanceof ApiError && err.status === 404) return;
+        setDoorError(plainError(err));
+      },
+    );
     return () => ctl.abort();
-  }, [door?.kind, door?.record]);
-  return <ObjectView key={record} type={type} id={record} door={page} />;
+  }, [door?.kind, door?.record, doorAttempt]);
+
+  return (
+    <ObjectView
+      key={record}
+      type={type}
+      id={record}
+      door={page}
+      doorError={doorError}
+      onRetryDoor={door ? retryDoor : undefined}
+      lazySections
+    />
+  );
 }

@@ -22,6 +22,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   getHomeNeeds: (...args: unknown[]) => api.needs(...args),
+  getUpcomingMeetings: () => Promise.resolve({ meetings: [] }),
   decideAutopilotItem: (...args: unknown[]) => api.decide(...args),
   getPoClosure: () => Promise.resolve({ closed: false }),
   closePo: (...args: unknown[]) => api.close(...args),
@@ -90,16 +91,16 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-describe("Sidebar navigation and Home tabs remain intact", () => {
-  it("keeps the full owner sidebar menu intact and switches Home section tabs via ?show=", async () => {
+describe("Sidebar navigation and Home deep links remain intact", () => {
+  it("folds Meetings into Home, removes redundant Home SectionTabs, and keeps ?show=alerts and ?show=late working", async () => {
     const secs = navSectionsFor({ owner: true, ops_reader: true, feedback_admin: true });
     expect(secs.filter((s) => s.group !== "account").map((s) => s.label)).toEqual([
       "Home",
       "Assist",
       "Ask",
       "Insights",
+      "Artifacts",
       "Data",
-      "Meetings",
       "Team",
       "Admin",
     ]);
@@ -107,24 +108,21 @@ describe("Sidebar navigation and Home tabs remain intact", () => {
     api.needs.mockResolvedValue(needs([item(1)]));
     nav.search = "show=alerts";
     const alertsView = render(<HomePage />);
-    await screen.findAllByRole("link", { name: "Alerts" });
-    const tabs = screen.getByTestId("section-tabs-home");
-    expect(within(tabs).getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
-      ["Needs you", "/"],
-      ["Alerts", "/?show=alerts"],
-      ["Late POs", "/?show=late"],
-    ]);
+    await screen.findByRole("heading", { name: "What fired" });
+    expect(screen.queryByTestId("section-tabs-home")).toBeNull();
     expect(screen.queryByTestId("needs-you")).toBeNull();
     alertsView.unmount();
 
     nav.search = "show=late";
     const lateView = render(<HomePage />);
     expect(await screen.findByTestId("late-header")).toBeInTheDocument();
+    expect(screen.queryByTestId("section-tabs-home")).toBeNull();
     lateView.unmount();
 
     nav.search = "";
     render(<HomePage />);
     expect(await screen.findByTestId("needs-you")).toBeInTheDocument();
+    expect(screen.queryByTestId("section-tabs-home")).toBeNull();
   });
 });
 
@@ -165,21 +163,23 @@ describe("Unified Needs-you list and inline filters", () => {
     render(<HomePage />);
     await waitFor(() => expect(rowTexts()).toHaveLength(3));
     expect(rowTexts()[0]).toContain("Re: packing slip");
-    expect(rowTexts()[0]).toContain("Maya · Mail · Reply");
+    expect(rowTexts()[0]).toContain("Maya");
+    expect(rowTexts()[0]).toContain("Mail");
     expect(rowTexts()[0]).toContain("Draft ready");
     expect(rowTexts()[0]).not.toContain("new_message");
     expect(rowTexts()[1]).toContain("PO 9182");
     expect(rowTexts()[2]).toContain("Batch on hold");
 
-    // No cluttered category tablist inside Needs you header.
+    // No cluttered category tablist inside Home header.
     const header = screen.getByTestId("home-header");
     expect(within(header).queryByRole("tab")).toBeNull();
 
-    // Filter cleanly with inline kind chip.
-    const filters = screen.getByTestId("kind-filters");
-    fireEvent.click(within(filters).getByRole("button", { name: /^Late PO/ }));
-    await waitFor(() => expect(rowTexts()).toHaveLength(1));
+    // Filter cleanly with unified section pill ("Alerts & late" holds both late PO and alert).
+    const filters = screen.getByTestId("section-filters");
+    fireEvent.click(within(filters).getByTestId("filter-section-holds_alerts"));
+    await waitFor(() => expect(rowTexts()).toHaveLength(2));
     expect(rowTexts()[0]).toContain("PO 9182");
+    expect(rowTexts()[1]).toContain("Batch on hold");
 
     // Clear filters restores every item.
     fireEvent.click(screen.getByTestId("clear-filters"));
@@ -398,15 +398,15 @@ describe("Error and empty states", () => {
     );
     render(<HomePage />);
     await waitFor(() => expect(rowTexts()).toHaveLength(2));
-    expect(rowTexts()[0]).toContain("Mission Control");
-    expect(rowTexts()[0]).not.toMatch(/· MC ·/);
-    expect(rowTexts()[0]).toContain("29 Oct");
-    expect(rowTexts()[0]).not.toContain("2026-10-29");
-    expect(rowTexts()[0]).not.toContain("Still open? Nothing has happened");
+    expect(rowTexts()[0]).toContain("28%");
+    expect(rowTexts()[0]).not.toContain("28 %");
+    expect(rowTexts()[0]).toContain("24 Jun");
+    expect(rowTexts()[1]).toContain("Mission Control");
+    expect(rowTexts()[1]).not.toMatch(/· MC ·/);
+    expect(rowTexts()[1]).toContain("29 Oct");
+    expect(rowTexts()[1]).not.toContain("2026-10-29");
+    expect(rowTexts()[1]).not.toContain("Still open? Nothing has happened");
     expect(screen.getByTestId("need-private")).toHaveAttribute("aria-label", "Only you can see this");
-    expect(rowTexts()[1]).toContain("28%");
-    expect(rowTexts()[1]).not.toContain("28 %");
-    expect(rowTexts()[1]).toContain("24 Jun");
 
     // Repetitive internal ops alerts are collapsed into System and ops notices.
     const opsToggle = screen.getByTestId("ops-notices-toggle");
@@ -414,7 +414,7 @@ describe("Error and empty states", () => {
     fireEvent.click(opsToggle);
     expect(screen.getByTestId("ops-notices-list")).toHaveTextContent("Workbench API health 14 Nov: ALERT");
 
-    fireEvent.click(screen.getAllByTestId("need-row")[1]);
+    fireEvent.click(screen.getAllByTestId("need-row")[0]);
     const detail = await screen.findByTestId("need-detail");
     expect(within(detail).getByTestId("need-next-step")).toHaveTextContent("Check the customer's agreed price for the product.");
   });

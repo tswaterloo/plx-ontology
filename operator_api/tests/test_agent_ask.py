@@ -493,3 +493,55 @@ class ReplyProseTests(unittest.TestCase):
         own_stop = "I stopped researching at the time limit; the lots were not checked."
         self.assertEqual(aa.reply_prose(STOPPED_LINE + "\n\n" + block, {"text": own_stop}),
                          own_stop)
+
+
+class AuthDetectionAndWarmProcessTests(unittest.TestCase):
+    def test_auth_text_and_session_failure_match_oauth_401_variants(self):
+        for msg in (
+            "OAuth access token has expired",
+            "Please re-authenticate to continue.",
+            "Your token has expired",
+            "token expired",
+            'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+            "HTTP 401 Unauthorized",
+            "401 oauth token invalid",
+        ):
+            self.assertEqual(
+                aa.session_failure(msg, {"is_error": True, "exit_code": 1}, [], None),
+                "sign_in",
+                msg,
+            )
+        # Normal answer mentioning 401 with no error does not false-positive
+        self.assertIsNone(
+            aa.session_failure("There are 401 open cases.", {"is_error": False}, [], None)
+        )
+
+    def test_warm_process_closes_and_marks_dead_on_error_result(self):
+        import io
+        from operating import agent_session
+
+        class _FakeChild:
+            def __init__(self) -> None:
+                self.stdin = io.StringIO()
+                self.stdout = io.StringIO(
+                    json.dumps({"type": "result", "is_error": True,
+                                "result": "OAuth access token has expired"}) + "\n"
+                )
+                self.returncode = 0
+                self.pid = 99999
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        child = _FakeChild()
+        with mock.patch("subprocess.Popen", return_value=child):
+            proc = agent_session.WarmProcess(["claude"], "/tmp", {})
+            rc, out = proc.turn("hello", 10)
+        self.assertEqual(rc, 1)
+        self.assertTrue(proc.dead)
+        self.assertIn("OAuth access token has expired", out)
+        with self.assertRaises(agent_session.ToolsUnattached):
+            proc.turn("retry on dead proc", 10)

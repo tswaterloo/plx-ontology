@@ -194,7 +194,7 @@ export function OrderLine({ ordered, needed, neededLabel = "Needed by", daysLate
           p == null ? null : (
             <span
               key={i}
-              className={cn("absolute top-1/2 size-[10px] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg", i === 2 ? (late ? "bg-dot-late" : "bg-fg") : "bg-[color-mix(in_srgb,var(--fg)_55%,var(--bg))]")}
+              className={cn("absolute top-1/2 size-[10px] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-bg", i === 2 ? (late ? "bg-late" : "bg-fg") : "bg-[color-mix(in_srgb,var(--fg)_55%,var(--bg))]")}
               style={{ left: `${p}%` }}
             />
           ),

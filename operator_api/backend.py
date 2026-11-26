@@ -2072,11 +2072,18 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 if left <= 1.0:
                     note_cut()   # a card left without its trail: not complete
                     break
-                trail = briefing_trail(self, view, head, labels.get(head["object_id"]),
-                                       seconds=min(left, BRIEFING_TRAIL_SECONDS))
+                trail = briefing_trail(
+                    self, view, head, labels.get(head["object_id"]),
+                    seconds=min(left, BRIEFING_TRAIL_SECONDS),
+                    allow_live=True,
+                )
                 if trail is not None:
                     trails[head["object_id"]] = trail.model_dump(mode="json")
-        built = ps.build(items, labels=labels, trails=trails, late_drafts=drafts)
+        supplier_contacts = self._supplier_contacts_for_pos(view, pos) if pos else {}
+        built = ps.build(
+            items, labels=labels, trails=trails, late_drafts=drafts,
+            supplier_contacts=supplier_contacts,
+        )
         return m.Suggestions(
             status="read", total=built["total"], more=built["more"],
             by_kind=built["by_kind"], collapsed=built["collapsed"],
@@ -2084,6 +2091,123 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             rank_basis=str(found.get("rank_basis") or bf.RANK_BASIS), note=SUGGESTIONS_NOTE,
             as_of=self.freshness().as_of or found.get("as_of"),
             complete=bool(found.get("complete")))
+
+    def _supplier_contacts_for_pos(self, view: Any, pos: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Fallback supplier contact addresses for purchase-order suggestion cards: checks
+        ``biz.suppliers.email`` first, then the most recent non-bulk inbound ``biz.emails``
+        sender for that supplier (strictly checked against reader access and people exclusion)."""
+        if not pos or not getattr(self, "pg_dsn", None) or not callable(getattr(self, "pg", None)):
+            return {}
+        grant = getattr(getattr(view, "access", None), "grant", None)
+        if grant is None:
+            return {}
+        try:
+            with view._request():
+                may_read, held = grant()
+        except Exception:  # noqa: BLE001 - fail closed
+            return {}
+        if not callable(may_read):
+            return {}
+        try:
+            from .feedback import address_guard
+            people = address_guard()
+        except Exception:  # noqa: BLE001
+            people = None
+        from operating import briefs as br
+        if br.people_unavailable(people):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        try:
+            with self.pg().connection() as conn:
+                if conn.execute("SELECT to_regclass('biz.purchase_orders') IS NULL").fetchone()[0]:
+                    return {}
+                if conn.execute("SELECT to_regclass('biz.suppliers') IS NULL").fetchone()[0]:
+                    return {}
+                rows = conn.execute(
+                    "SELECT o.object_id, p.supplier, s.handle, s.email "
+                    "FROM ontology.objects o "
+                    "JOIN ontology.object_versions v ON v.object_id = o.object_id "
+                    "AND v.superseded_at IS NULL "
+                    "JOIN biz.purchase_orders p ON p.handle = v.l1_handle "
+                    "LEFT JOIN biz.suppliers s ON s.handle = p.supplier_handle "
+                    "WHERE o.object_id = ANY(%s)",
+                    (list(pos),),
+                ).fetchall()
+                missing_suppliers: dict[str, list[tuple[str, str]]] = {}
+                for oid, sup_name, sup_handle, sup_email in rows:
+                    if oid in out:
+                        continue
+                    addr = str(sup_email or "").strip().lower()
+                    if addr and "@" in addr:
+                        try:
+                            if not people.is_excluded(addr):
+                                out[str(oid)] = {
+                                    "name": str(sup_name or "").strip() or None,
+                                    "address": addr,
+                                    "basis": "Supplier email address on record.",
+                                    "source": {"handle": str(sup_handle), "label": str(sup_name or "Supplier"),
+                                               "system": "Supplier", "open_url": None} if sup_handle else None,
+                                }
+                                continue
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if sup_handle:
+                        missing_suppliers.setdefault(str(sup_handle), []).append(
+                            (str(oid), str(sup_name or "").strip())
+                        )
+                if missing_suppliers and conn.execute(
+                        "SELECT to_regclass('biz.emails') IS NOT NULL").fetchone()[0]:
+                    sup_handles = sorted(missing_suppliers)
+                    mail_rows = conn.execute(
+                        "SELECT sh, e.sender, e.handle, e.audience_keys, e.rec_marks "
+                        "FROM unnest(%s::text[]) AS sh "
+                        "JOIN LATERAL ("
+                        "  SELECT sender, handle, audience_keys, rec_marks "
+                        "  FROM biz.emails "
+                        "  WHERE sh = ANY(suppliers) AND COALESCE(excluded, false) = false "
+                        "    AND COALESCE(is_bulk, false) = false "
+                        "    AND COALESCE(bulk_sender, false) = false "
+                        "    AND sender IS NOT NULL AND sender <> '' "
+                        "  ORDER BY received_at DESC LIMIT 8"
+                        ") e ON true",
+                        (sup_handles,),
+                    ).fetchall()
+                    homes = br._home_domains(people)
+                    found_by_sup: dict[str, dict[str, Any]] = {}
+                    for sh, sender, mhandle, auds, marks in mail_rows:
+                        if sh in found_by_sup:
+                            continue
+                        if not auds or not all(may_read(str(a)) for a in auds if a):
+                            continue
+                        if not br._marks_allowed(marks, frozenset(held or ())):
+                            continue
+                        addr = str(sender or "").strip().lower()
+                        if "@" not in addr:
+                            continue
+                        dom = addr.rpartition("@")[2]
+                        if homes and dom in homes:
+                            continue
+                        try:
+                            if people.is_excluded(addr):
+                                continue
+                        except Exception:  # noqa: BLE001
+                            continue
+                        found_by_sup[str(sh)] = {
+                            "address": addr,
+                            "basis": "Recent inbound message from this supplier.",
+                            "source": {"handle": str(mhandle), "label": "Email",
+                                       "system": "Email", "open_url": None} if mhandle else None,
+                        }
+                    for sh, entries in missing_suppliers.items():
+                        hit = found_by_sup.get(sh)
+                        if not hit:
+                            continue
+                        for oid, sup_name in entries:
+                            if oid not in out:
+                                out[oid] = {**hit, "name": sup_name or None}
+        except Exception:  # noqa: BLE001 - optional enrichment, never fails Suggestions
+            return out
+        return out
 
     # ---- object page ---------------------------------------------------------------------
 
@@ -2417,8 +2541,8 @@ def card_words(view: Any, oid: str, *, supplier: bool = False,
 
 
 def briefing_trail(backend: "WorkspaceBackend", view: Any, item: Mapping[str, Any],
-                   label: Optional[str], *, seconds: float = BRIEFING_TRAIL_SECONDS
-                   ) -> Optional[m.EvidenceTrail]:
+                   label: Optional[str], *, seconds: float = BRIEFING_TRAIL_SECONDS,
+                   allow_live: bool = False) -> Optional[m.EvidenceTrail]:
     """The evidence for one briefing item, read as the reader: a purchase order's lateness trail
     (``operator_api.trail.for_page``), else the why trail of the record; None when none is
     built (the item stands without it)."""
@@ -2428,7 +2552,8 @@ def briefing_trail(backend: "WorkspaceBackend", view: Any, item: Mapping[str, An
     if kind == "PurchaseOrder":
         return trails.for_page(backend, view, oid, label or "Purchase order",
                                object_url=object_url, open_url=open_url,
-                               host_schemes=HOST_READ_SCHEMES, seconds=seconds)
+                               host_schemes=HOST_READ_SCHEMES, seconds=seconds,
+                               allow_live=allow_live)
     question = BRIEFING_QUESTIONS.get(str(item.get("event_type")))
     if question is None:
         return None

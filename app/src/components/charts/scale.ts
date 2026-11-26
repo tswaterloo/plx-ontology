@@ -3,28 +3,33 @@
 
 export type Theme = "light" | "dark";
 
-// One categorical palette: refined executive BI tones (enterprise blue, emerald-sage, cool slate,
-// warm amber, muted violet, coral-rose, crisp sky, soft silver), legible on both light and dark grounds.
+// Desaturated Databricks Genie-calibrated editorial chart palette (ZERO neon cyan, ZERO purple).
 export const PALETTE: Record<Theme, string[]> = {
-  light: ["#2563EB", "#2F855A", "#64748B", "#C27803", "#5B6AD0", "#C53030", "#0284C7", "#475569"],
-  dark: ["#60A5FA", "#34D399", "#94A3B8", "#F0B45C", "#A78BFA", "#F87171", "#38BDF8", "#CBD5E1"],
+  light: ["#2b6cb0", "#2f855a", "#b7791f", "#c53030", "#2c7a7b", "#c05621", "#3182ce", "#689f38"],
+  dark: ["#5c9ce6", "#5da56f", "#dca138", "#d95b48", "#4ca6a8", "#d98245", "#7ea6d6", "#8fb35a"],
 };
 
 export const INK: Record<Theme, { text: string; muted: string; grid: string; axis: string; ground: string }> = {
-  light: { text: "#0F172A", muted: "#526071", grid: "#E5E8EE", axis: "#CBD2DC", ground: "#FFFFFF" },
-  dark: { text: "#ECEEF2", muted: "#969CA8", grid: "#23262F", axis: "#363B47", ground: "#101114" },
+  light: { text: "#111318", muted: "#3f4652", grid: "#e4e7ec", axis: "#cfd5de", ground: "#ffffff" },
+  dark: { text: "#f3f3f3", muted: "#c8c8c8", grid: "#2a2a2a", axis: "#3d3d3d", ground: "#1e1e1e" },
 };
 
 // waterfall: rise, fall, total
 export const MOVE: Record<Theme, { up: string; down: string; total: string }> = {
-  light: { up: "#2F855A", down: "#C53030", total: "#475569" },
-  dark: { up: "#34D399", down: "#F87171", total: "#94A3B8" },
+  light: { up: "#2f855a", down: "#c53030", total: "#3f4652" },
+  dark: { up: "#5da56f", down: "#d95b48", total: "#c8c8c8" },
 };
 
-// the sequential ramp of heatmaps and coloured tables (low -> high)
-const RAMP: Record<Theme, [number[], number[]]> = {
-  light: [[0xee, 0xf4, 0xfb], [0x1f, 0x5a, 0x99]],
-  dark: [[0x16, 0x1a, 0x22], [0x25, 0x63, 0xeb]],
+// semantic threshold colours matching Genie (sage emerald on-target, warm ochre watch, terracotta alert)
+export const THRESHOLD: Record<Theme, { ok: string; risk: string; late: string }> = {
+  light: { ok: "#2f855a", risk: "#c0821a", late: "#c53030" },
+  dark: { ok: "#5da56f", risk: "#dca138", late: "#d95b48" },
+};
+
+// 3-stop diverging ramp of heatmaps and coloured tables: neutral matte/cream -> warm ochre -> terracotta coral
+const RAMP_STOPS: Record<Theme, [[number, number, number], [number, number, number], [number, number, number]]> = {
+  light: [[0xf4, 0xf4, 0xf4], [0xf6, 0xcb, 0x8b], [0xd9, 0x48, 0x48]],
+  dark: [[0x26, 0x26, 0x26], [0xd9, 0x92, 0x4e], [0xd9, 0x5b, 0x48]],
 };
 
 export function colour(i: number, theme: Theme): string {
@@ -32,18 +37,51 @@ export function colour(i: number, theme: Theme): string {
   return p[((i % p.length) + p.length) % p.length];
 }
 
-/** The ramp colour of ``v`` between ``lo`` and ``hi``. */
-export function ramp(v: number, lo: number, hi: number, theme: Theme): string {
-  const t = hi > lo ? Math.min(1, Math.max(0, (v - lo) / (hi - lo))) : 0.5;
-  const [a, b] = RAMP[theme];
-  return `rgb(${a.map((x, i) => Math.round(x + (b[i] - x) * t)).join(",")})`;
+/** Semantic bar fill colour relative to a target threshold (emerald >= target, amber >= 75% target, coral-red below). */
+export function thresholdColour(v: number, target: number, theme: Theme): string {
+  const t = THRESHOLD[theme];
+  if (v >= target) return t.ok;
+  if (v >= target * 0.75) return t.risk;
+  return t.late;
 }
 
-/** Text that reads on a ramp colour of position ``t`` (0..1). */
+function rampRgb(v: number, lo: number, hi: number, theme: Theme): [number, number, number] {
+  const t = hi > lo ? Math.min(1, Math.max(0, (v - lo) / (hi - lo))) : 0.5;
+  const [low, mid, high] = RAMP_STOPS[theme];
+  const [a, b, u] = t <= 0.5 ? [low, mid, t * 2] : [mid, high, (t - 0.5) * 2];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * u),
+    Math.round(a[1] + (b[1] - a[1]) * u),
+    Math.round(a[2] + (b[2] - a[2]) * u),
+  ];
+}
+
+function relativeLuminance(r: number, g: number, b: number): number {
+  const lin = (c: number) => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+/** High-contrast foreground ink for any `#rrggbb` colour fill. */
+export function inkForHex(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
+  if (!m) return "#f4f2ec";
+  const lum = relativeLuminance(parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16));
+  return lum > 0.34 ? "#141413" : "#ffffff";
+}
+
+/** The ramp colour of ``v`` between ``lo`` and ``hi``. */
+export function ramp(v: number, lo: number, hi: number, theme: Theme): string {
+  const [r, g, b] = rampRgb(v, lo, hi, theme);
+  return `rgb(${r},${g},${b})`;
+}
+
+/** Text that reads cleanly on a ramp colour of position ``v`` in ``lo..hi``. */
 export function inkOn(v: number, lo: number, hi: number, theme: Theme): string {
-  const t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
-  if (theme === "dark") return t > 0.65 ? "#FFFFFF" : "#ECEEF2";
-  return t > 0.55 ? "#FFFFFF" : "#0F172A";
+  const [r, g, b] = rampRgb(v, lo, hi, theme);
+  return relativeLuminance(r, g, b) > 0.34 ? "#141413" : "#f4f2ec";
 }
 
 /** Round ticks covering lo..hi, 1, 2 or 5 times a power of ten apart (the last >= hi). */

@@ -115,14 +115,16 @@ def take(text: str) -> tuple[str, Optional[dict[str, Any]], list[dict[str, str]]
 # ---------------------------------------------------------------- the items block
 
 ITEMS_LINE = (
-    "- A list of things for the person to act on, or of messages and records you found, "
-    "goes in one ```items block, not prose or a table: {\"groups\": [{\"title\": "
-    "\"Decide\", \"items\": [{\"source\": \"Mail\", \"who\": \"name\", "
-    "\"when\": \"24 Nov, 9:12 AM\", \"ref\": \"<the ref or handle a result showed for "
-    "it>\", \"text\": \"one or two short lines: what is needed\"}]}]}. Groups by what "
-    "the person must do (Decide, Reply, Follow up, Heads up), in that order; source: Mail, "
-    "Teams, Planner, Mission Control, Business Central, Calendar...; quotes short. Every "
-    "item goes in; outside the block only the opening line and what is not an item.")
+    "- Only for an open action or inbox list of things the person needs to act on now "
+    "(what do I have to do, decide, reply to, or follow up on), put those action items in "
+    "one ```items block: {\"groups\": [{\"title\": \"Decide\", \"items\": [{\"source\": "
+    "\"Mail\", \"who\": \"name\", \"when\": \"24 Nov, 9:12 AM\", \"ref\": \"<the ref or "
+    "handle a result showed for it>\", \"text\": \"one or two short lines: what is "
+    "needed\"}]}]}. Groups by what the person must do (Decide, Reply, Follow up, Heads up), "
+    "in that order; source: Mail, Teams, Planner, Mission Control, Business Central, "
+    "Calendar...; quotes short. For factual or historical questions (such as what happened "
+    "or what was promised), write the findings directly in prose or a markdown table in the "
+    "answer text rather than hiding them in an items block.")
 
 SOURCE_LABELS = {"graph-mail": "Mail", "teams-chat": "Teams", "teams-channel": "Teams",
                  "calendar-event": "Calendar", "meeting-transcript": "Meeting",

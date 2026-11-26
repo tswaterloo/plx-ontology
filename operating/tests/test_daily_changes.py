@@ -158,6 +158,11 @@ class DailyChanges(unittest.TestCase):
         row = c.execute("SELECT system, created, owner_only FROM biz.daily_changes WHERE "
                         "system = 'unknown'").fetchone()
         self.assertEqual(tuple(row), ("unknown", 4, True))
+        # chunked regroup with tiny slice size matches exact totals and orphan counts
+        got_small = dc.regroup(c, regroup_chunk=2)
+        self.assertEqual(got_small["orphans"], 1)
+        self.assertEqual((got_small["removed_rows"], got_small["added_rows"]), (0, 0))
+        self.assertEqual(got_small["groups"], got["groups"])
 
     def test_the_view_shows_a_reader_the_groups_of_its_classes_only(self):
         c = self.conn()

@@ -1,21 +1,106 @@
 "use client";
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Ellipsis, PanelLeftClose, Pin, Search, SquarePen } from "lucide-react";
+import { Ellipsis, EyeOff, Loader2, MessageSquare, PanelLeftClose, Pin, Plus, Search, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAskChats, updateAskChat } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
-import { ago, formatDateTime } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
+import { useShortcut } from "@/lib/platform";
 import { useAskRunning } from "@/lib/thread";
 import type { AskChat, AskChats } from "@/lib/types";
 
 /** Rows drawn at first; more are drawn as the list is scrolled, so every chat is reachable and none is cut. */
 const DRAW_STEP = 60;
 
+const LEADING_FILLER = /^(?:hey\s+petra[,:]?\s*|hi[,:]?\s*|hello[,:]?\s*|no[,\s]+any\s+other\s+|no[,\s]+|any\s+other\s+|actually[,\s]+|wait[,\s]+|also[,\s]+|okay[,\s]+|ok[,\s]+|well[,\s]+|so[,\s]+|can\s+you\s+|could\s+you\s+|would\s+you\s+|please\s+|figure\s+out\s+|find\s+out\s+|show\s+me\s+|tell\s+me\s+|give\s+me\s+|help\s+me\s+|i\s+want\s+to\s+know\s+|i\s+need\s+to\s+)/i;
+const SPACE_PREFIX = /^Focus\s+on\s+[^:]{1,140}:\s*/i;
+const TRAILING_PARENS = /\s*\([^)]*\)?\s*$/;
+const DANGLING_TAIL_WORDS = new Set([
+  "and", "or", "but", "so", "why", "how", "what", "when", "where", "which", "who",
+  "the", "a", "an", "to", "of", "for", "in", "on", "at", "by", "with", "from",
+  "about", "into", "as", "if", "because", "is", "are", "was", "were", "be", "been",
+  "that", "this", "these", "those", "it", "my", "our", "your", "their", "create", "make",
+]);
+const TITLE_MAX_CHARS = 52;
+
+/** Client-side title cleaner matching backend cleanup: strips scope prefixes, conversational noise, parenthetical asides, and dangling tails (~52 chars). */
+export function cleanChatTitle(raw: string, named = false): string {
+  const collapsed = raw.trim().replace(/\s+/g, " ");
+  if (!collapsed) return "Untitled chat";
+  if (named) return collapsed;
+
+  let cleaned = collapsed.replace(SPACE_PREFIX, "").trim();
+
+  // If the user typed a follow-up clause after a first question/sentence, keep the crisp opening topic.
+  const firstBreak = cleaned.search(/[?!.]\s+/);
+  if (firstBreak >= 12) {
+    cleaned = cleaned.slice(0, firstBreak + 1).trim();
+  }
+
+  // Strip trailing parenthetical asides or truncated "(..." notes.
+  cleaned = cleaned.replace(TRAILING_PARENS, "").trim();
+  cleaned = cleaned.replace(/\.{2,}$/, "").trim();
+
+  for (let i = 0; i < 4; i++) {
+    const next = cleaned.replace(LEADING_FILLER, "").trim();
+    if (!next || next === cleaned) break;
+    cleaned = next;
+  }
+
+  // Re-strip trailing parentheticals or trailing punctuation left behind.
+  cleaned = cleaned.replace(TRAILING_PARENS, "").replace(/[,;:\-]+$/, "").trim();
+
+  // Cap cleanly around ~52 chars on a word boundary and trim dangling stop/fragment words.
+  if (cleaned.length > TITLE_MAX_CHARS) {
+    const hadQuestion = cleaned.endsWith("?");
+    const slice = cleaned.slice(0, TITLE_MAX_CHARS);
+    const cutAt = slice.lastIndexOf(" ");
+    let clipped = (cutAt >= 20 ? slice.slice(0, cutAt) : slice).replace(/[,;:\-?!.]+$/, "").trim();
+    const words = clipped.split(" ");
+    while (words.length > 2 && DANGLING_TAIL_WORDS.has(words[words.length - 1].toLowerCase())) {
+      words.pop();
+    }
+    clipped = words.join(" ").replace(/[,;:\-]+$/, "").trim();
+    cleaned = hadQuestion && clipped && !clipped.endsWith("?") ? `${clipped}?` : clipped;
+  } else {
+    // Also trim dangling fragment words on shorter noisy prompts (e.g. truncated trailing "and why").
+    const hadQuestion = cleaned.endsWith("?");
+    const body = hadQuestion ? cleaned.slice(0, -1).trim() : cleaned;
+    const words = body.split(" ");
+    if (words.length > 3) {
+      while (words.length > 3 && DANGLING_TAIL_WORDS.has(words[words.length - 1].toLowerCase())) {
+        words.pop();
+      }
+      const nextBody = words.join(" ").replace(/[,;:\-]+$/, "").trim();
+      cleaned = hadQuestion ? `${nextBody}?` : nextBody;
+    }
+  }
+
+  const finalTitle = cleaned || collapsed;
+  return /^[a-z]/.test(finalTitle) ? finalTitle[0].toUpperCase() + finalTitle.slice(1) : finalTitle;
+}
+
+/** Crisp compact age label for sidebar rows ("now", "12m", "2h", "3d", "1w", "2mo"). */
+export function compactAge(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const s = Math.max(0, Math.round((now.getTime() - d.getTime()) / 1000));
+  if (s < 60) return "now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h`;
+  const days = Math.round(h / 24);
+  if (days < 7) return `${days}d`;
+  if (days < 35) return `${Math.max(1, Math.round(days / 7))}w`;
+  return `${Math.max(1, Math.round(days / 30))}mo`;
+}
+
 type Entry = { head: AskChat; same: AskChat[] };
-const said = (c: AskChat) => c.title.trim().replace(/\s+/g, " ").toLowerCase();
+const said = (c: AskChat) => cleanChatTitle(c.title, c.named).toLowerCase();
 
 /** One entry per distinct title, newest first; the older chats with the same title ride behind it, still reachable. A chat you named is its own entry. */
 function collapse(chats: AskChat[]): Entry[] {
@@ -34,21 +119,50 @@ function collapse(chats: AskChat[]): Entry[] {
   return out;
 }
 
-const GROUPS = ["Today", "Yesterday", "Previous 7 days", "Older"] as const;
+export const GROUPS = ["Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older"] as const;
 /** Which time heading a chat sits under, by the calendar days between now and its last question. */
-function groupOf(last: string, now: Date): (typeof GROUPS)[number] {
+export function groupOf(last: string, now: Date): (typeof GROUPS)[number] {
   const t = new Date(last);
+  if (Number.isNaN(t.getTime())) return "Older";
   const day = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
   const days = Math.round((day(now) - day(t)) / 86_400_000);
-  return days <= 0 ? "Today" : days === 1 ? "Yesterday" : days <= 7 ? "Previous 7 days" : "Older";
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days <= 7) return "Previous 7 days";
+  if (days <= 30) return "Previous 30 days";
+  return "Older";
+}
+
+function newestFirst(a: AskChat, b: AskChat): number {
+  const ta = new Date(a.last_at).getTime();
+  const tb = new Date(b.last_at).getTime();
+  const va = Number.isNaN(ta) ? 0 : ta;
+  const vb = Number.isNaN(tb) ? 0 : tb;
+  return vb - va;
+}
+
+function ChatListSkeleton() {
+  const widths = ["w-4/5", "w-3/5", "w-11/12", "w-2/3", "w-3/4"];
+  return (
+    <div className="space-y-[18px] pt-1" aria-busy="true" aria-label="Loading chats" data-testid="ask-chats-skeleton">
+      <div>
+        <div className="mx-2.5 mb-2 h-3 w-12 rounded bg-surface-2/90 skeleton-shimmer" />
+        <div className="space-y-1">
+          {widths.map((w, i) => (
+            <div key={i} className="flex h-8 items-center rounded-lg px-2.5">
+              <div className={cn("h-3.5 rounded bg-surface-2/80 skeleton-shimmer", w)} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /**
- * Your Ask conversations, like a chat app's list: New chat and search on top, pinned first, then
- * your chats under Today, Yesterday, Previous 7 days and Older, one line each. The same question
- * asked again shows as one row with a count; the count opens the older ones. Open a chat to read
- * it and go on asking in it; rename, pin or delete it from its menu; search names and questions.
- * Deleting takes it off this list only: your work log keeps the record of what was asked.
+ * Your Ask conversations, styled as a calm desktop rail: full-width New chat and quiet borderless
+ * search on top, then Pinned, Today, Yesterday, Previous 7 days, and Older groups with 4px row
+ * rhythm and 18px group spacing. Hover reveals quiet Pin, Hide, and overflow menu actions.
  */
 export function AskChatList({
   current,
@@ -71,6 +185,8 @@ export function AskChatList({
   const [drawn, setDrawn] = useState(DRAW_STEP);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const more = useRef<HTMLDivElement>(null);
+  const { mod } = useShortcut();
+  const newChatShortcut = mod === "⌘" ? "⌘⇧O" : "Ctrl+Shift+O";
 
   useEffect(() => {
     const c = new AbortController();
@@ -132,8 +248,8 @@ export function AskChatList({
     return extras.length ? [...extras, ...out] : out;
   })();
   const chats = mergedChats;
-  const pinned = chats.filter((c) => c.pinned);
-  const entries = collapse(chats.filter((c) => !c.pinned));
+  const pinned = chats.filter((c) => c.pinned).sort(newestFirst);
+  const entries = collapse(chats.filter((c) => !c.pinned).sort(newestFirst));
   // the rows still to draw: as the foot of the list scrolls into view, the next batch is drawn
   const total = entries.reduce((n, e) => n + 1 + (open.has(e.head.conversation_id) ? e.same.length : 0), 0);
   useEffect(() => {
@@ -194,67 +310,99 @@ export function AskChatList({
   };
 
   const shown = entries.slice(0, drawn);
-  const heading = "px-2 pt-3.5 pb-1 text-[10.5px] font-medium uppercase tracking-[0.05em] text-faint";
+  const heading = "px-2.5 pb-1 text-[11px] font-semibold tracking-[0.02em] text-faint";
+  const loading = list === null && !problem;
+
   return (
-    <nav className={cn("flex min-h-0 flex-col bg-bg-subtle", className)} aria-label="Chats" data-testid="ask-chats">
-      <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
-        <span className="text-[12px] font-medium text-muted">Chats</span>
-        <div className="flex items-center gap-1">
+    <nav className={cn("flex min-h-0 flex-col bg-sidebar", className)} aria-label="Chats" data-testid="ask-chats">
+      <div className="flex shrink-0 items-center gap-1.5 px-2.5 pt-2.5 pb-2">
+        <button
+          type="button"
+          onClick={onNew}
+          aria-label="New chat"
+          title={`New chat (${newChatShortcut})`}
+          className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg border border-border bg-surface px-2.5 text-[13px] font-medium text-fg shadow-sm transition-all duration-150 hover:border-border-strong hover:bg-surface-2 active:scale-[0.98] cursor-pointer"
+          data-testid="new-chat"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Plus className="size-3.5 shrink-0 text-muted" strokeWidth={2.2} aria-hidden />
+            <span className="truncate">New chat</span>
+          </span>
+          <kbd className="shrink-0 font-sans text-[10.5px] font-normal tracking-tight text-faint">{newChatShortcut}</kbd>
+        </button>
+        {onCollapse && (
           <button
             type="button"
-            onClick={onNew}
-            aria-label="New chat"
-            title="New chat"
-            className="inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
-            data-testid="new-chat"
+            onClick={onCollapse}
+            aria-label="Hide chats"
+            title="Hide chats"
+            data-testid="collapse-ask-chats"
+            className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted transition-all duration-150 hover:bg-surface-2 hover:text-fg active:scale-[0.96] cursor-pointer"
           >
-            <SquarePen className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
-            <span>New</span>
+            <PanelLeftClose className="size-4" strokeWidth={1.85} aria-hidden />
           </button>
-          {onCollapse && (
+        )}
+      </div>
+
+      <div className="shrink-0 px-2.5 pb-2.5">
+        <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-surface/80 px-2.5 text-[12.5px] text-fg transition-all duration-150 focus-within:border-border-strong focus-within:bg-surface focus-within:ring-2 focus-within:ring-fg/10">
+          <Search className="size-3.5 shrink-0 text-faint" strokeWidth={2} aria-hidden />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value.slice(0, 200))}
+            placeholder="Search chats"
+            aria-label="Search chats"
+            className="min-w-0 flex-1 bg-transparent text-[12.5px] text-fg outline-none focus-visible:outline-none placeholder:text-faint"
+          />
+          {q && (
             <button
               type="button"
-              onClick={onCollapse}
-              aria-label="Hide chats"
-              title="Hide chats"
-              data-testid="collapse-ask-chats"
-              className="inline-flex size-7 items-center justify-center rounded-sm text-faint hover:bg-hover hover:text-fg cursor-pointer"
+              onClick={() => setQ("")}
+              aria-label="Clear search"
+              className="inline-flex size-5 shrink-0 items-center justify-center rounded text-faint hover:text-fg cursor-pointer"
             >
-              <PanelLeftClose className="size-3.5" strokeWidth={2} aria-hidden />
+              <X className="size-3" strokeWidth={2.2} aria-hidden />
             </button>
           )}
-        </div>
+        </label>
       </div>
-      <label className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-3 text-[12.5px] text-fg">
-        <Search className="size-3.5 shrink-0 text-faint" strokeWidth={2} aria-hidden />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value.slice(0, 200))}
-          placeholder="Search chats"
-          aria-label="Search chats"
-          className="min-w-0 flex-1 bg-transparent text-[12.5px] outline-none focus-visible:outline-none placeholder:text-faint"
-        />
-      </label>
+
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {problem && <p className="px-2.5 py-2 text-[12px] text-late" role="alert">{problem}</p>}
-        {list && !list.available && <p className="px-2.5 py-2 text-[12px] text-muted">Your chats can't be listed just now.</p>}
-        {list && list.available && chats.length === 0 && <p className="px-2.5 py-2 text-[12px] text-muted">{q ? "No chat matches that." : "Your questions will be listed here."}</p>}
-        {pinned.length > 0 && (
-          <section aria-label="Pinned">
-            <h3 className={heading}>Pinned</h3>
-            <ul className="space-y-0.5">{pinned.map((c) => row(c))}</ul>
-          </section>
+        {problem && (
+          <p className="px-2.5 py-2 text-[12px] text-late" role="alert">
+            {problem}
+          </p>
         )}
-        {GROUPS.map((g) => {
-          const mine = shown.filter((e) => groupOf(e.head.last_at, now) === g);
-          if (mine.length === 0) return null;
-          return (
-            <section key={g} aria-label={g}>
-              <h3 className={heading}>{g}</h3>
-              <ul className="space-y-0.5">{mine.flatMap(entry)}</ul>
+        {loading && <ChatListSkeleton />}
+        {list && list.available === false && (
+          <p className="px-2.5 py-2 text-[12px] text-muted">Your chats can&apos;t be listed just now.</p>
+        )}
+        {list && list.available !== false && chats.length === 0 && (
+          <div className="flex flex-col items-center gap-1.5 px-4 py-10 text-center" data-testid="ask-chats-empty">
+            <MessageSquare className="size-4 text-faint" strokeWidth={1.8} aria-hidden />
+            <p className="text-[12.5px] leading-5 text-muted">
+              {q ? "No chat matches that." : "Your questions will be listed here."}
+            </p>
+          </div>
+        )}
+        <div className="space-y-4">
+          {pinned.length > 0 && (
+            <section aria-label="Pinned">
+              <h3 className={heading}>Pinned</h3>
+              <ul className="space-y-0.5">{pinned.map((c) => row(c))}</ul>
             </section>
-          );
-        })}
+          )}
+          {GROUPS.map((g) => {
+            const mine = shown.filter((e) => groupOf(e.head.last_at, now) === g);
+            if (mine.length === 0) return null;
+            return (
+              <section key={g} aria-label={g}>
+                <h3 className={heading}>{g}</h3>
+                <ul className="space-y-0.5">{mine.flatMap(entry)}</ul>
+              </section>
+            );
+          })}
+        </div>
         {entries.length > drawn && <div ref={more} className="h-4" data-testid="more-chats" aria-hidden />}
       </div>
     </nav>
@@ -288,18 +436,20 @@ function ChatRow({
   onDelete: (sure: boolean) => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const displayTitle = cleanChatTitle(chat.title, chat.named);
+  const age = compactAge(chat.last_at);
   useEffect(() => {
     if (renaming) input.current?.select();
   }, [renaming]);
   if (renaming) {
     return (
-      <li className="px-1 py-0.5">
+      <li className="px-1">
         <input
           ref={input}
-          defaultValue={chat.title}
+          defaultValue={displayTitle}
           maxLength={120}
           aria-label="Chat name"
-          className="h-8 w-full rounded-md border border-border-strong bg-bg px-2 text-[13px] outline-none"
+          className="h-8 w-full rounded-lg border border-border-strong bg-bg px-2.5 text-[13px] text-fg outline-none"
           onKeyDown={(e) => {
             if (e.key === "Enter") onRename(e.currentTarget.value);
             if (e.key === "Escape") onRename(null);
@@ -311,10 +461,10 @@ function ChatRow({
   }
   if (deleting) {
     return (
-      <li className="rounded-md bg-hover px-2 py-1.5 text-[12px]" role="group" aria-label="Delete this chat">
-        <p className="truncate font-medium">{chat.title}</p>
-        <p className="text-muted">Delete it from your chats? Your work log keeps the record.</p>
-        <div className="mt-1 flex gap-3">
+      <li className="rounded-lg bg-surface-2/90 px-2.5 py-2 text-[12px]" role="group" aria-label="Delete this chat">
+        <p className="truncate font-medium text-fg">{displayTitle}</p>
+        <p className="mt-0.5 text-muted">Delete it from your chats? Your work log keeps the record.</p>
+        <div className="mt-1.5 flex gap-3">
           <button type="button" className="font-medium text-late hover:underline cursor-pointer" onClick={() => onDelete(true)}>
             Delete
           </button>
@@ -328,29 +478,38 @@ function ChatRow({
   return (
     <li
       className={cn(
-        "group flex items-center rounded-[5px] transition-colors",
+        "group relative flex h-[32px] items-center rounded-lg transition-colors duration-150",
         nested && "ml-3 border-l border-border pl-1",
-        active ? "bg-nav-on font-medium text-fg" : "text-fg/80 hover:bg-hover hover:text-fg",
+        active ? "bg-row-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
       )}
     >
       <Link
         href={`/ask?c=${encodeURIComponent(chat.conversation_id)}`}
-        className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-[13px] leading-5"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 px-2.5 text-[13px] leading-5"
         aria-current={active ? "page" : undefined}
-        title={`${chat.title}\n${chat.questions === 1 ? "1 question" : `${chat.questions} questions`}, last ${formatDateTime(chat.last_at)}`}
+        title={`${displayTitle}\n${chat.questions === 1 ? "1 question" : `${chat.questions} questions`}, last ${formatDateTime(chat.last_at)}`}
       >
-        {chat.pinned && <Pin className="size-3 shrink-0 text-accent" strokeWidth={2} aria-label="Pinned" />}
-        <span className="min-w-0 flex-1 truncate">{chat.title}</span>
         {chat.running && (
-          <span
-            className="size-2 shrink-0 rounded-full bg-accent skeleton-shimmer"
+          <Loader2
+            className="size-3.5 shrink-0 animate-spin text-accent"
+            strokeWidth={2}
             role="status"
             aria-label="Working on an answer"
-            title="Working on an answer"
-            data-testid="chat-running-dot"
+            data-testid="chat-running-indicator"
           />
         )}
-        {nested && <span className="shrink-0 text-[11px] text-faint tabular-nums">{ago(chat.last_at)}</span>}
+        {chat.pinned && !chat.running && (
+          <Pin className="size-3 shrink-0 text-faint" strokeWidth={2} aria-label="Pinned" />
+        )}
+        <span className="min-w-0 flex-1 truncate">{displayTitle}</span>
+        {age && !count && (
+          <span
+            className="shrink-0 text-[11px] font-normal text-faint tabular-nums transition-opacity duration-150 group-hover:opacity-0 group-focus-within:opacity-0"
+            data-testid="chat-row-age"
+          >
+            {age}
+          </span>
+        )}
       </Link>
       {count ? (
         <button
@@ -358,29 +517,60 @@ function ChatRow({
           onClick={onToggle}
           aria-expanded={expanded}
           aria-label={expanded ? `Hide the ${count - 1} earlier times this was asked` : `Asked ${count} times: show the earlier ones`}
-          className="mr-1 h-5 shrink-0 rounded-sm px-1.5 text-[11px] text-faint tabular-nums hover:bg-hover hover:text-fg cursor-pointer"
+          className="mr-1.5 h-5 shrink-0 rounded px-1.5 text-[11px] text-faint tabular-nums hover:bg-surface-2 hover:text-fg group-hover:opacity-0 cursor-pointer"
         >
           {count}
         </button>
       ) : null}
-      <Menu.Root>
-        <Menu.Trigger className="mr-1 hidden size-6 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg group-hover:flex group-focus-within:flex focus-visible:flex data-[state=open]:flex cursor-pointer" aria-label={`More for ${chat.title}`}>
-          <Ellipsis className="size-3.5" strokeWidth={2} aria-hidden />
-        </Menu.Trigger>
-        <Menu.Portal>
-          <Menu.Content align="end" sideOffset={4} className="z-50 min-w-32 rounded-lg border border-border-strong bg-raised p-1.5 shadow-pop">
-            <Menu.Item onSelect={() => onMenu("rename")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
-              Rename
-            </Menu.Item>
-            <Menu.Item onSelect={() => onMenu("pin")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
-              {chat.pinned ? "Unpin" : "Pin"}
-            </Menu.Item>
-            <Menu.Item onSelect={() => onMenu("delete")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row text-late outline-none data-[highlighted]:bg-hover">
-              Delete
-            </Menu.Item>
-          </Menu.Content>
-        </Menu.Portal>
-      </Menu.Root>
+      <div
+        className={cn(
+          "pointer-events-none absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-0.5 rounded-md pl-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 has-[[data-state=open]]:pointer-events-auto has-[[data-state=open]]:opacity-100",
+          active ? "bg-row-on" : "bg-sidebar",
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => onMenu("pin")}
+          aria-label={chat.pinned ? `Unpin ${displayTitle}` : `Pin ${displayTitle}`}
+          title={chat.pinned ? "Unpin" : "Pin"}
+          className={cn(
+            "inline-flex size-6 items-center justify-center rounded-md text-faint hover:bg-surface-2 hover:text-fg cursor-pointer",
+            chat.pinned && "text-fg",
+          )}
+        >
+          <Pin className="size-3" strokeWidth={2} aria-hidden />
+        </button>
+        <button
+          type="button"
+          onClick={() => onMenu("delete")}
+          aria-label={`Hide ${displayTitle}`}
+          title="Hide"
+          className="inline-flex size-6 items-center justify-center rounded-md text-faint hover:bg-surface-2 hover:text-fg cursor-pointer"
+        >
+          <EyeOff className="size-3" strokeWidth={2} aria-hidden />
+        </button>
+        <Menu.Root>
+          <Menu.Trigger
+            className="inline-flex size-6 items-center justify-center rounded-md text-faint hover:bg-surface-2 hover:text-fg cursor-pointer"
+            aria-label={`More for ${displayTitle}`}
+          >
+            <Ellipsis className="size-3.5" strokeWidth={2} aria-hidden />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Content align="end" sideOffset={4} className="z-50 min-w-32 rounded-lg border border-border-strong bg-raised p-1 shadow-pop">
+              <Menu.Item onSelect={() => onMenu("rename")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
+                Rename
+              </Menu.Item>
+              <Menu.Item onSelect={() => onMenu("pin")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row outline-none data-[highlighted]:bg-hover">
+                {chat.pinned ? "Unpin" : "Pin"}
+              </Menu.Item>
+              <Menu.Item onSelect={() => onMenu("delete")} className="flex cursor-pointer items-center rounded-md px-2 py-1.5 text-row text-late outline-none data-[highlighted]:bg-hover">
+                Delete
+              </Menu.Item>
+            </Menu.Content>
+          </Menu.Portal>
+        </Menu.Root>
+      </div>
     </li>
   );
 }

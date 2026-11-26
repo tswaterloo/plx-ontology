@@ -82,6 +82,48 @@ class PlainLanguageTests(unittest.TestCase):
         self.assertEqual(monthly["trigger"], {"cadence": "monthly", "day": 15, "hour": 9, "minute": 0})
         self.assertEqual(monthly["instruction"], "Send AR summary")
 
+    def test_parses_mid_sentence_and_trailing_schedules_and_events(self):
+        s1 = aw.parse_plain_language("Send me late POs grouped by supplier every monday at 8am")
+        self.assertEqual(s1["trigger_kind"], "schedule")
+        self.assertEqual(s1["trigger"], {"cadence": "weekly", "weekday": "monday", "hour": 8, "minute": 0})
+        self.assertEqual(s1["instruction"], "Send me late POs grouped by supplier")
+
+        s2 = aw.parse_plain_language("Check open customer orders every weekday at 9am")
+        self.assertEqual(s2["trigger_kind"], "schedule")
+        self.assertEqual(s2["trigger"], {"cadence": "weekdays", "hour": 9, "minute": 0})
+
+        s3 = aw.parse_plain_language("Prepare an AR digest daily at 8am")
+        self.assertEqual(s3["trigger_kind"], "schedule")
+        self.assertEqual(s3["trigger"], {"cadence": "daily", "hour": 8, "minute": 0})
+
+        s4 = aw.parse_plain_language("Check open holds hourly")
+        self.assertEqual(s4["trigger_kind"], "schedule")
+        self.assertEqual(s4["trigger"], {"cadence": "hourly", "every_hours": 1})
+
+        s5 = aw.parse_plain_language("Summarize urgent mail every morning")
+        self.assertEqual(s5["trigger_kind"], "schedule")
+        self.assertEqual(s5["trigger"], {"cadence": "daily", "hour": 8, "minute": 0})
+
+        s6 = aw.parse_plain_language("Send weekly scorecard weekly on friday at 4pm")
+        self.assertEqual(s6["trigger_kind"], "schedule")
+        self.assertEqual(s6["trigger"], {"cadence": "weekly", "weekday": "friday", "hour": 16, "minute": 0})
+
+        e1 = aw.parse_plain_language("Draft a chase email if a PO is late")
+        self.assertEqual(e1["trigger_kind"], "event")
+        self.assertEqual(e1["trigger"], {"event": "po_late"})
+
+        e2 = aw.parse_plain_language("List affected orders when a QC hold happens")
+        self.assertEqual(e2["trigger_kind"], "event")
+        self.assertEqual(e2["trigger"], {"event": "qc_hold"})
+
+        e3 = aw.parse_plain_language("Draft a reply when Croda emails")
+        self.assertEqual(e3["trigger_kind"], "event")
+        self.assertEqual(e3["trigger"], {"event": "mail_from", "sender": "Croda"})
+
+        e4 = aw.parse_plain_language("Prepare a reply if Stephen messages on Teams")
+        self.assertEqual(e4["trigger_kind"], "event")
+        self.assertEqual(e4["trigger"], {"event": "teams_from", "sender": "Stephen"})
+
     def test_mc_approval_trigger_and_template_are_absent(self):
         self.assertNotIn("approval_arrived", aw.EVENT_KINDS)
         for tpl in aw.TEMPLATES:

@@ -190,4 +190,14 @@ describe("Reliability: open problems in words", () => {
     expect(knownTech.open).toBe(false);
     expect(knownTech).toHaveTextContent("Tracked in disk request #23");
   });
+
+  it("never claims nothing needs attention when monitoring checks are paused", async () => {
+    api.body = { ...base, running: false, open: [] };
+    render(<OpsPage />);
+    const paused = await screen.findByTestId("ops-checks-paused");
+    expect(paused).toHaveTextContent("Monitoring checks are paused");
+    expect(paused).toHaveTextContent("Checks are not currently running, so new issues will not appear until monitoring resumes.");
+    expect(screen.getByTestId("ops-refresh-status")).toHaveTextContent("Refresh status");
+    expect(screen.queryByText("Nothing needs attention.")).toBeNull();
+  });
 });

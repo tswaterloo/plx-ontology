@@ -111,7 +111,7 @@ AGENT = "plx.agent.investigate"     # the agent definition whose read-only tools
 READER_ENV = "PLX_WATCHER_READER"   # JSON claims of the employee it reads as
 READER_CLAIMS = ("uid", "email", "entraTenantId", "entraObjectId")
 MODEL_ENV = "PLX_WATCHER_MODEL"
-MODEL = "opus"
+MODEL = "sonnet"
 SWITCH_STATES = ("off", "dry", "on")
 WATCH_DIR = "ai-watcher"
 

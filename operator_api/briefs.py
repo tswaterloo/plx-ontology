@@ -462,12 +462,22 @@ def _people() -> Any:
     return address_guard()
 
 
-def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
-                ) -> Optional[list[dict[str, Any]]]:
+def upcoming_of(view: Any, who: Any = None, state_dir: Any = None, *,
+                pg: Any = None) -> Optional[list[dict[str, Any]]]:
     """The reader's calendar from the start of today (business time) for two weeks, each meeting
-    with the open action items of its series' earlier meetings the reader may see."""
+    with the open action items of its series' earlier meetings the reader may see.
+
+    When ``pg`` (a Postgres pool provider) is supplied and ``biz.meetings`` is available,
+    reads directly from Postgres via ``br.upcoming_meetings_pg`` (fast btree index) with the
+    same fail-closed access, marking, and people checks, falling back to the legacy ontology
+    search path only when Postgres ``biz.meetings`` is unavailable."""
     from datetime import datetime
-    held = _held(view)
+    import logging
+    grant = getattr(getattr(view, "access", None), "grant", None)
+    if grant is None:
+        return None
+    with view._request():
+        may_read, held = grant()
     if held is None:
         return None
     from zoneinfo import ZoneInfo
@@ -479,9 +489,25 @@ def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
     viewer = _viewer(who, held) if who is not None else None
     mine = None if viewer is None else (
         {a for a in viewer.addresses if a} | {o.rpartition(":")[2] for o in viewer.oids if o})
-    with view._request():
-        raw = br.upcoming_meetings(view._call, held, people=_people(), since=since,
-                                   reader=mine or None)
+    raw: Optional[list[dict[str, Any]]] = None
+    if pg is not None and callable(may_read):
+        try:
+            pool = pg() if callable(pg) else pg
+            with pool.connection() as conn:
+                raw = br.upcoming_meetings_pg(
+                    conn, held, may_read=may_read, people=_people(),
+                    since=since, reader=mine or None,
+                )
+        except Exception as exc:  # noqa: BLE001 - fall back to ontology path if PG unavailable
+            logging.getLogger("operator_api.briefs").warning(
+                "upcoming meetings PG fast path unavailable (%s): falling back",
+                type(exc).__name__,
+            )
+            raw = None
+    if raw is None:
+        with view._request():
+            raw = br.upcoming_meetings(view._call, held, people=_people(), since=since,
+                                       reader=mine or None)
     store = _follow_ups(state_dir) if who is not None else None
     if store is not None:
         from operating import meeting_followup as mf
@@ -497,9 +523,13 @@ def upcoming_of(view: Any, who: Any = None, state_dir: Any = None
     return raw
 
 
-def upcoming_model(view: Any, who: Any = None, state_dir: Any = None) -> m.UpcomingMeetings:
+def upcoming_model(view: Any, who: Any = None, state_dir: Any = None, *,
+                   pg: Any = None) -> m.UpcomingMeetings:
     """``upcoming_of`` as the route's model (no meeting for a reader without a grant)."""
-    raw = upcoming_of(view, who, state_dir) or []
+    try:
+        raw = upcoming_of(view, who, state_dir, pg=pg) or []
+    except TypeError:
+        raw = upcoming_of(view, who, state_dir) or []
     return m.UpcomingMeetings(meetings=[upcoming_entry(e) for e in raw])
 
 
@@ -829,6 +859,8 @@ class BriefsMixin:
             since = row.get("since")
             days = max(0, (today - since.date()).days) if since is not None else 0
             why_clean = clean_text(row["why"], strip_email_noise=True)
+            if days > pg_alerts.REPLY_DAYS or pg_alerts.is_automated_reply_alert(why_clean):
+                continue
             lines.append({
                 "id": f"pg:{row['rule']}:{row['handle']}",
                 "kind": row["kind"],
@@ -858,8 +890,19 @@ class BriefsMixin:
                     ) -> list[dict[str, Any]]:
         """The lines whose message the triage model did not read as owed nothing (fyi,
         automated, notice: ``operating.autopilot_triage``, kept for the reader's own
-        mailboxes in the autopilot queue); a message with no reading stays."""
+        mailboxes in the autopilot queue); a message with no reading stays. Stale (>14 days)
+        and automated Microsoft / Teams / Planner / system notifications are always dropped."""
         from operating import autopilot_triage as at
+        from operating.pg import alerts as pg_alerts
+        lines = [
+            x for x in lines
+            if int(x.get("days") or 0) <= pg_alerts.REPLY_DAYS
+            and not pg_alerts.is_automated_reply_alert(
+                x.get("summary") or "",
+                sender=x.get("sender") or "",
+                subject=x.get("subject") or "",
+            )
+        ]
         state = getattr(self, "state_dir", None)
         if not state or not lines:
             return lines
@@ -1279,6 +1322,7 @@ class BriefsMixin:
         with view._request():
             key = page_key(view, ("upcoming_meetings", hour, getattr(who, "key", None),
                                   _follow_up_stamp(state_dir) if who is not None else None))
-        return self.page_cache.kept(view, key, lambda: upcoming_model(view, who, state_dir),
+        pg_provider = self.pg if getattr(self, "pg_dsn", None) and callable(getattr(self, "pg", None)) else None
+        return self.page_cache.kept(view, key, lambda: upcoming_model(view, who, state_dir, pg=pg_provider),
                                     page_handles,
                                     copy=lambda model: model.model_copy(deep=True))

@@ -501,8 +501,10 @@ def owners_of(rule: str, event: Mapping[str, Any], *, directory: Mapping[str, st
             # one item the role holds, never a copy per member (11-23 audit: each QC-hold
             # item existed twice, one per quality member)
             return [POOL_PREFIX + name], None
-        found = _approvers(directory)
-        return (found, None) if found else ([], "role_unassigned")
+        if name == "owner":
+            found = _approvers(directory)
+            return (found, None) if found else ([], "role_unassigned")
+        return [], "role_unassigned"
     return [], "owner_rule_unknown"
 
 

@@ -183,3 +183,7 @@ def _shipments(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             cust = customer_link(row, order_thing, so_ordered_by, cthings, ORDER_RECORD_SYSTEM)
         add_chain(row, cust, chains)
         yield row
+
+
+from operating.pg import business_views as _bv  # noqa: E402
+_bv._register_submodules()

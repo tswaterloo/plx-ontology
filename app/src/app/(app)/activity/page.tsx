@@ -32,16 +32,14 @@ const KIND: Record<string, string> = {
   assign: "Assigned",
 };
 
-/** A task by a plain line glyph. */
 const TASK: Record<string, LucideIcon> = { create_follow_up: ListChecks, mark_done: Check, snooze: Clock3, dismiss: X };
 
-function KindTile({ kind }: { kind: string }) {
+function KindIcon({ kind }: { kind: string }) {
   const Icon = kind === "teams_message" ? MessageCircle : (TASK[kind] ?? Mail);
-  // the source's own colour: Teams and Mail by their ink, the Workbench's own tasks in the accent
-  const ink = kind === "teams_message" ? "var(--sys-teams-ink)" : TASK[kind] ? "var(--accent)" : "var(--sys-mail-ink)";
+  const ink = kind === "teams_message" ? "var(--sys-teams-ink)" : TASK[kind] ? "var(--fg-muted)" : "var(--sys-mail-ink)";
   return (
-    <span className="flex size-8 shrink-0 items-center" style={{ color: ink }} aria-hidden>
-      <Icon className="size-4" strokeWidth={1.8} />
+    <span className="flex size-7 shrink-0 items-center justify-center" style={{ color: ink }} aria-hidden>
+      <Icon className="size-4" strokeWidth={1.75} />
     </span>
   );
 }
@@ -77,31 +75,31 @@ function Row({ r }: { r: ActionLogRow }) {
   const cites = (r.citations ?? []).length;
   return (
     <li
-      className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-start gap-x-3 rounded-md px-3 py-2.5 transition-colors hover:bg-hover lg:grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px] lg:items-center"
+      className="grid grid-cols-[32px_minmax(0,1fr)_auto] items-start gap-x-3 px-4 py-3 transition-colors duration-150 hover:bg-row-on lg:grid-cols-[32px_minmax(0,1fr)_minmax(0,240px)_184px_80px] lg:items-center"
       data-testid="actions-log-row"
       title={`${formatDateTime(r.at)}, by ${r.actor}`}
     >
-      <KindTile kind={r.kind} />
+      <KindIcon kind={r.kind} />
       <div className="min-w-0">
-        <div className="truncate text-[13px] leading-[18px] font-semibold" title={titleText}>{title}</div>
-        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted" title={line || undefined}>
+        <div className="truncate text-[14px] leading-5 font-medium text-fg" title={titleText}>{title}</div>
+        <div className="mt-0.5 truncate text-[12.5px] leading-[18px] text-muted" title={line || undefined}>
           {line}
           {label && mail && <span className="lg:hidden"> · {label}</span>}
         </div>
       </div>
       <div className="hidden min-w-0 lg:block">
-        <div className="truncate text-[13px] leading-[18px]" title={label || "Follow-up"}>{label || "Follow-up"}</div>
-        <div className="mt-0.5 truncate text-[12px] leading-4 text-muted" title={r.actor}>
+        <div className="truncate text-[13.5px] leading-5 text-fg" title={label || "Follow-up"}>{label || "Follow-up"}</div>
+        <div className="mt-0.5 truncate text-[12.5px] leading-[18px] text-muted" title={r.actor}>
           {r.actor}
-          {cites > 0 && <span className="text-faint"> · {plural(cites, "cited fact")}</span>}
-          {r.replayed && <span className="text-faint"> · repeat of an earlier confirm</span>}
+          {cites > 0 && <span> · {plural(cites, "cited fact")}</span>}
+          {r.replayed && <span> · repeat of an earlier confirm</span>}
         </div>
       </div>
-      <div className="hidden min-w-0 lg:block">{chip && <StatusWord shown={chip} title={chip.title ?? r.text} className="text-[12px]" />}</div>
-      <span className="self-start pt-px text-right text-[12px] leading-4 tabular-nums text-muted lg:self-center lg:pt-0">{timeOf(r.at)}</span>
+      <div className="hidden min-w-0 lg:block">{chip && <StatusWord shown={chip} title={chip.title ?? r.text} className="text-[12.5px]" />}</div>
+      <span className="self-start pt-0.5 text-right text-[12.5px] leading-4 tabular-nums text-muted lg:self-center lg:pt-0">{timeOf(r.at)}</span>
       {chip && (
-        <div className="col-start-2 col-end-4 mt-1 lg:hidden">
-          <StatusWord shown={chip} title={chip.title ?? r.text} className="text-[12px]" />
+        <div className="col-start-2 col-end-4 mt-1.5 lg:hidden">
+          <StatusWord shown={chip} title={chip.title ?? r.text} className="text-[12.5px]" />
         </div>
       )}
     </li>
@@ -110,14 +108,19 @@ function Row({ r }: { r: ActionLogRow }) {
 
 function Empty() {
   return (
-    <div className="max-w-xl px-6 py-8" data-testid="activity-empty">
-      <p className="text-[13px] font-medium">Nothing sent, approved or logged yet.</p>
-      <p className="mt-1 text-[13px] leading-5 text-muted">
-        Each message you send, task you set and item you put away from Home, a record page or Ask shows here, with whom it went to, the record it was about and whether it went out.
-      </p>
-      <Link href="/" className="mt-3 inline-block text-[13px] font-medium text-accent hover:underline">
-        Open Home
-      </Link>
+    <div className="mx-auto w-full max-w-[1360px] px-4 py-10 sm:px-6" data-testid="activity-empty">
+      <div className="max-w-lg space-y-2">
+        <p className="text-[14px] font-medium text-fg">Nothing sent, approved or logged yet.</p>
+        <p className="text-[13px] leading-5 text-muted">
+          Each message you send, task you set and item you put away from Home, a record page or Ask shows here, with whom it went to, the record it was about and whether it went out.
+        </p>
+        <Link
+          href="/"
+          className="mt-3 inline-flex h-8 items-center rounded-md bg-fg px-3 text-[12.5px] font-medium text-bg transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.98]"
+        >
+          Open Home
+        </Link>
+      </div>
     </div>
   );
 }
@@ -126,7 +129,6 @@ const WEEK_MS = 7 * 86_400_000;
 const TASKS = new Set(["create_follow_up", "mark_done", "assign"]);
 const OUTBOUND = new Set(["send_email", "reply_in_thread", "forward", "teams_message"]);
 
-/** The last seven days in counts, and the actions whose outcome needs a look. */
 function weekOf(rows: ActionLogRow[], now = Date.now()) {
   const week = rows.filter((r) => now - Date.parse(r.at) <= WEEK_MS);
   const out = week.filter((r) => OUTBOUND.has(r.kind));
@@ -146,7 +148,7 @@ function weekOf(rows: ActionLogRow[], now = Date.now()) {
 
 function Summary({ rows }: { rows: ActionLogRow[] }) {
   const w = weekOf(rows);
-  const cells: [string, number, string?][] = [
+  const cells: [string, number][] = [
     ["Sent", w.sent],
     ["Not sent", w.notSent],
     ["Tasks set or done", w.tasks],
@@ -154,25 +156,32 @@ function Summary({ rows }: { rows: ActionLogRow[] }) {
     ["People reached", w.people],
     ["Records", w.records],
   ];
-  if (cells.every(([, n]) => n === 0) && w.busiest.length === 0) return null;
+  const shown = cells.filter(([, n]) => n > 0);
+  if (shown.length === 0 && w.busiest.length === 0) return null;
   return (
-    <section className="border-b border-border px-6 py-3" aria-label="Last 7 days" data-testid="activity-summary">
-      <h2 className="text-[12px] font-medium text-muted">Last 7 days</h2>
-      <dl className="mt-1 grid grid-cols-3 gap-x-6 gap-y-1 sm:grid-cols-6">
-        {cells.filter(([, n]) => n > 0).map(([label, n]) => (
-          <div key={label}>
-            <dt className="text-[11px] leading-4 text-muted">{label}</dt>
-            <dd className="text-[18px] font-semibold tabular-nums">{n}</dd>
-          </div>
-        ))}
-      </dl>
+    <section className="space-y-3" aria-label="Last 7 days" data-testid="activity-summary">
+      <h2 className="text-[12.5px] font-medium text-muted">Last 7 days</h2>
+      {shown.length > 0 && (
+        <dl className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
+          {shown.map(([label, n]) => (
+            <div
+              key={label}
+              className="rounded-xl border border-border bg-surface px-4 py-3 tabular-nums"
+            >
+              <dt className="truncate text-[12px] font-medium leading-4 text-muted">{label}</dt>
+              <dd className="mt-1 text-[22px] leading-7 font-semibold tracking-[-0.02em] text-fg">{n}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {w.busiest.length > 0 && (
-        <p className="mt-2 text-[12px] text-muted" data-testid="activity-busiest">
+        <p className="text-[12.5px] text-muted" data-testid="activity-busiest">
           Most worked on:{" "}
           {w.busiest.map(([label, n], i) => (
             <span key={label}>
               {i > 0 && " · "}
-              <span className="font-medium text-fg">{label}</span> {n}
+              <span className="font-medium text-fg">{label}</span>{" "}
+              <span className="num text-muted">{n}</span>
             </span>
           ))}
         </p>
@@ -181,7 +190,6 @@ function Summary({ rows }: { rows: ActionLogRow[] }) {
   );
 }
 
-/** The journal's views: what went out, what did not, what needs a look, tasks, put away. */
 const VIEWS: { key: string; label: string; test: (r: ActionLogRow) => boolean }[] = [
   { key: "all", label: "All", test: () => true },
   { key: "sent", label: "Sent", test: (r) => OUTBOUND.has(r.kind) && r.status === "sent" },
@@ -191,7 +199,6 @@ const VIEWS: { key: string; label: string; test: (r: ActionLogRow) => boolean }[
   { key: "away", label: "Put away", test: (r) => r.kind === "snooze" || r.kind === "dismiss" },
 ];
 
-/** Your actions journal: every action you confirmed, newest first (append-only on the server). */
 export default function ActivityPage() {
   const { data: log, error: failed, retry: load, at } = useRead<ActionsLog>("/api/actions/log", (s) => getActionsLog(s));
   const rows: ActionLogRow[] | null = log ? (log.rows ?? []) : null;
@@ -218,14 +225,21 @@ export default function ActivityPage() {
   }, [rows, view, q]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-list">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar
         pin="Messages and tasks"
         heading
         title={
           <>
             Messages and tasks
-            {rows && rows.length > 0 && <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal num text-faint">{rows.length}</span></>}
+            {rows && rows.length > 0 && (
+              <>
+                {" "}
+                <span className="ml-1 text-[13px] font-normal tracking-normal num text-muted">
+                  {rows.length}
+                </span>
+              </>
+            )}
           </>
         }
         actions={
@@ -234,13 +248,12 @@ export default function ActivityPage() {
             <span className="max-sm:sr-only">Refresh</span>
           </ToolbarButton>
         }
-        className="bg-list"
       />
       <SectionTabs section="work-log" />
-      <PageIntro path="/activity" />
-      <StoredAge at={at} className="px-6 pb-1" />
+      <PageIntro path="/activity" className="mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-6" />
+      <StoredAge at={at} className="mx-auto w-full max-w-[1360px] px-4 pb-1 sm:px-6" />
       {error ? (
-        <div className="p-5">
+        <div className="mx-auto w-full max-w-[1360px] px-4 py-5 sm:px-6">
           <LoadProblem message={error} onRetry={load} />
         </div>
       ) : !rows ? (
@@ -248,29 +261,35 @@ export default function ActivityPage() {
       ) : rows.length === 0 ? (
         <Empty />
       ) : (
-        <div className="pb-8" data-testid="actions-log">
+        <div className="mx-auto w-full max-w-[1360px] space-y-6 px-4 py-5 sm:px-6" data-testid="actions-log">
           <Summary rows={rows} />
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border px-6">
-            <div className="flex h-9 items-stretch gap-5 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Show">
-              {VIEWS.filter((v) => v.key === "all" || counts[v.key] > 0).map((v) => (
-                <button
-                  key={v.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={view === v.key}
-                  onClick={() => setView(v.key)}
-                  className={cn(
-                    "relative flex shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap transition-colors cursor-pointer",
-                    view === v.key ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
-                  )}
-                >
-                  {v.label}
-                  <span className="num text-[12px] font-normal text-faint">{counts[v.key]}</span>
-                </button>
-              ))}
+
+          <div className="sticky top-12 z-10 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-border bg-bg/95 backdrop-blur-sm">
+            <div className="flex h-10 items-stretch gap-5 overflow-x-auto [scrollbar-width:none]" role="tablist" aria-label="Show">
+              {VIEWS.filter((v) => v.key === "all" || counts[v.key] > 0).map((v) => {
+                const active = view === v.key;
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setView(v.key)}
+                    className={cn(
+                      "relative flex shrink-0 items-center gap-1.5 text-[13px] whitespace-nowrap transition-colors duration-150 cursor-pointer",
+                      active
+                        ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-fg"
+                        : "text-muted hover:text-fg",
+                    )}
+                  >
+                    {v.label}
+                    <span className="num text-[12px] font-normal text-muted">{counts[v.key]}</span>
+                  </button>
+                );
+              })}
             </div>
-            <div className="relative my-1.5 w-full max-w-[240px]">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+            <div className="relative my-1.5 w-full sm:w-60">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted" aria-hidden />
               <input
                 type="search"
                 value={search}
@@ -283,56 +302,68 @@ export default function ActivityPage() {
                 }}
                 placeholder="Filter activity"
                 aria-label="Filter activity"
-                className="h-7 w-full rounded-md border border-border bg-bg pl-7.5 pr-7 text-[12px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent placeholder:text-faint dark:bg-surface"
+                className="h-8 w-full rounded-md border border-border bg-surface pl-8 pr-7 text-[12.5px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/40 placeholder:text-muted"
               />
               {search && (
                 <button
                   type="button"
                   onClick={() => setSearch("")}
                   aria-label="Clear filter"
-                  className="absolute right-1 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted hover:bg-hover hover:text-fg"
+                  className="absolute right-1.5 top-1/2 inline-flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-muted hover:bg-hover hover:text-fg active:scale-[0.95]"
                 >
                   <X className="size-3" aria-hidden />
                 </button>
               )}
             </div>
           </div>
-          <div className="hidden h-8 grid-cols-[44px_minmax(0,1fr)_minmax(0,240px)_184px_80px] items-end gap-x-3 px-6 pb-1 text-[11px] leading-4 text-faint lg:grid" aria-hidden>
-            <span />
-            <span>Action</span>
-            <span>Record</span>
-            <span>Result</span>
-            <span className="text-right">Time</span>
-          </div>
+
           {days.length === 0 ? (
-            <div className="flex flex-wrap items-center gap-3 px-6 py-8 text-[13px] text-muted">
-              <span>No activity matches &ldquo;{search.trim()}&rdquo;.</span>
+            <div className="flex flex-wrap items-center gap-3 py-8 text-[13.5px] text-muted">
+              <span>
+                {search.trim()
+                  ? <>No activity matches &ldquo;{search.trim()}&rdquo;.</>
+                  : "No activity matches this filter."}
+              </span>
               <button
                 type="button"
                 onClick={() => {
                   setSearch("");
                   setView("all");
                 }}
-                className="cursor-pointer rounded border border-border bg-bg px-2 py-0.5 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover dark:bg-surface"
+                className="inline-flex h-7 cursor-pointer items-center rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2 active:scale-[0.98]"
               >
                 Clear filters
               </button>
             </div>
           ) : (
-            days.map((d) => (
-              <section key={d.key} aria-label={d.label}>
-                <div className="sticky top-12 z-10 flex h-9 items-end bg-list px-6 pb-1.5">
-                  <h2 className="text-[12px] font-medium text-muted">
-                    {d.label} <span className="font-normal num text-faint">{d.rows.length}</span>
-                  </h2>
-                </div>
-                <ul className="px-3">
-                  {d.rows.map((r) => (
-                    <Row key={r.seq} r={r} />
-                  ))}
-                </ul>
-              </section>
-            ))
+            <div className="space-y-5">
+              <div className="hidden grid-cols-[32px_minmax(0,1fr)_minmax(0,240px)_184px_80px] items-center gap-x-3 px-4 text-[11.5px] font-medium text-muted lg:grid" aria-hidden>
+                <span />
+                <span>Action</span>
+                <span>Record</span>
+                <span>Result</span>
+                <span className="text-right">Time</span>
+              </div>
+              {days.map((d) => (
+                <section
+                  key={d.key}
+                  aria-label={d.label}
+                  className="overflow-hidden rounded-xl border border-border bg-surface"
+                >
+                  <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+                    <h2 className="text-[12.5px] font-semibold text-fg">
+                      {d.label}{" "}
+                      <span className="ml-1 font-normal num text-muted">{d.rows.length}</span>
+                    </h2>
+                  </div>
+                  <ul className="divide-y divide-border">
+                    {d.rows.map((r) => (
+                      <Row key={r.seq} r={r} />
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
           )}
         </div>
       )}

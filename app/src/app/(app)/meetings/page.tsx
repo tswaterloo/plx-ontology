@@ -16,9 +16,6 @@ const VIEWS = [
   { view: "follow-ups", label: "Follow-ups" },
 ] as const;
 
-/** Follow-ups: your action items from recorded meetings (the meeting autopilot's), each
- * linking to its meeting's decisions; ?person= shows another person's for meetings you
- * organised. */
 function FollowUps({ person }: { person: string | null }) {
   return <MyActionItemsPanel person={person} />;
 }
@@ -27,26 +24,34 @@ function Meetings() {
   const params = useSearchParams();
   const view = VIEWS.find((v) => v.view === params.get("view"))?.view ?? "upcoming";
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar heading title="Meetings" />
-      <nav className="flex h-9 shrink-0 items-stretch gap-5 overflow-x-auto border-b border-border bg-bg px-4 [scrollbar-width:none] lg:px-5 [&::-webkit-scrollbar]:hidden" aria-label="Meetings" role="tablist">
-        {VIEWS.map((v) => (
-          <Link
-            key={v.view}
-            href={v.view === "upcoming" ? "/meetings" : `/meetings?view=${v.view}`}
-            role="tab"
-            aria-selected={view === v.view}
-            className={cn(
-              "relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors",
-              view === v.view ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-accent" : "text-muted hover:text-fg",
-            )}
-          >
-            {v.label}
-          </Link>
-        ))}
+      <nav
+        className="flex h-10 shrink-0 items-center border-b border-border bg-bg"
+        aria-label="Meetings"
+        role="tablist"
+      >
+        <div className="mx-auto flex h-full w-full max-w-[1360px] items-stretch gap-5 overflow-x-auto px-4 [scrollbar-width:none] sm:px-6 [&::-webkit-scrollbar]:hidden">
+          {VIEWS.map((v) => (
+            <Link
+              key={v.view}
+              href={v.view === "upcoming" ? "/meetings" : `/meetings?view=${v.view}`}
+              role="tab"
+              aria-selected={view === v.view}
+              className={cn(
+                "relative flex shrink-0 items-center whitespace-nowrap text-[13px] transition-colors duration-150",
+                view === v.view
+                  ? "font-medium text-fg after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-fg"
+                  : "text-muted hover:text-fg",
+              )}
+            >
+              {v.label}
+            </Link>
+          ))}
+        </div>
       </nav>
-      <PageIntro path="/meetings" />
-      <div className="p-5" data-testid={`meetings-${view}`}>
+      <PageIntro path="/meetings" className="mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-6" />
+      <div className="mx-auto w-full max-w-[1360px] px-4 py-5 sm:px-6" data-testid={`meetings-${view}`}>
         {view === "weekly" ? <WeeklyReview /> : view === "follow-ups" ? <FollowUps person={params.get("person")} /> : <Upcoming />}
       </div>
     </div>

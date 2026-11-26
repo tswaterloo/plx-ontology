@@ -372,7 +372,7 @@ class TheCall(unittest.TestCase):
                                       "input_tokens": 7}})
 
         def runner(argv, **k):
-            seen["argv"], seen["input"] = argv, k["input"]
+            seen["argv"], seen["input"], seen["cwd"] = argv, k["input"], k.get("cwd")
             cfg = json.loads(argv[argv.index("--mcp-config") + 1]) if "--mcp-config" in argv else None
             seen["file"] = cfg["mcpServers"]["plan"]["args"][-1] if cfg else None
             if cfg:
@@ -388,11 +388,15 @@ class TheCall(unittest.TestCase):
 
     def test_a_call_with_cases_attaches_the_tool_without_a_turn_bound_and_removes_its_file(self):
         import os
+        from operating import humanize
         got, seen, costs = self.run_call(precedents=[{"situation": "a"}])
         self.assertEqual(got, "ok")
         argv = seen["argv"]
         self.assertNotIn("--max-turns", argv)
         self.assertEqual(argv[argv.index("--allowedTools") + 1], plan.TOOL_NAME)
+        self.assertEqual(argv[argv.index("--system-prompt") + 1], plan.SYSTEM_PROMPT)
+        self.assertIn("--exclude-dynamic-system-prompt-sections", argv)
+        self.assertEqual(seen["cwd"], humanize.neutral_dir())
         self.assertEqual(seen["held"], [{"situation": "a"}])
         self.assertFalse(os.path.exists(seen["file"]))                       # the person's cases are not left behind
         self.assertEqual(costs[0], {"usd": 0.02, "tokens_in": 5, "turns": 3, "tool": True,

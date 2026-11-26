@@ -126,6 +126,42 @@ class Stale(unittest.TestCase):
         live, _ = self.split("p1")
         self.assertEqual(live, ["p10"])
 
+    def test_legacy_multi_year_zombie_pos_and_orders_fold_out_of_active_lists(self):
+        # Even without any closed PO baseline or with a recent ERP sync touch, a 2018 zombie PO
+        # (> 365 days late and requested before CURRENT_DATE - 365) folds into stale, never live.
+        self.add(
+            po("zombie2018", 2900, ordered="2018-04-01", requested="2018-05-01"),
+            po("recent2026", 12, ordered="2026-10-01", requested="2026-11-01"),
+        )
+        self.c.execute(
+            "INSERT INTO records VALUES ('zombie2018', 'r-z', '2026-11-20T10:00:00Z', "
+            "'2018-04-01T10:00:00Z')"
+        )
+        live, stale = self.split(alive="zombie2018")
+        self.assertEqual(live, ["recent2026"])
+        self.assertEqual(stale, ["zombie2018"])
+
+        # Legacy 2017-2022 zombie sales orders are also excluded from active late_order_* reads.
+        self.c.execute(
+            "CREATE TABLE sales_orders (handle text, order_number text, customer text, "
+            "customer_po text, order_type text, of_record boolean, days_late int, "
+            "required_date date, order_date date, status text, value numeric, "
+            "value_currency text, salesperson text, line_count int, withheld boolean, "
+            "source_systems text, verdict text)"
+        )
+        self.c.execute(
+            "INSERT INTO sales_orders VALUES "
+            "('so-2020', 'SO-2020', 'OldCo', 'CPO-1', 'standard', true, 2100, '2020-06-01', "
+            "'2020-05-01', 'open', 100, 'CAD', 'Rep', 1, false, 'sage', 'late'),"
+            "('so-2026', 'SO-2026', 'NewCo', 'CPO-2', 'standard', true, 10, '2026-11-01', "
+            "'2026-10-15', 'open', 200, 'CAD', 'Rep', 1, false, 'bc', 'late')"
+        )
+        self.assertEqual(self.c.execute(pr.QUERIES["late_order_count"].sql).fetchone()[0], 1)
+        got_orders = [r[9] for r in self.c.execute(
+            pr.QUERIES["late_order_list"].sql, {"limit": 50, "offset": 0}
+        ).fetchall()]
+        self.assertEqual(got_orders, ["so-2026"])
+
 
 if __name__ == "__main__":
     unittest.main()

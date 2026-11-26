@@ -2366,7 +2366,10 @@ class WarmProcess:
             # the conversation in it is not continued
             self.close()
             return (0 if ended else self.child.returncode), "".join(lines)
-        return (1 if errored else 0), "".join(lines)
+        if errored:
+            self.close()
+            return 1, "".join(lines)
+        return 0, "".join(lines)
 
     def close(self) -> None:
         with self._lock:

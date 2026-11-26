@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from operating import autopilot_write as aw
@@ -38,6 +39,496 @@ from operating import write_classes as wc
 
 SUPPORTED_SYSTEMS: tuple[str, ...] = readiness.SYSTEMS
 DRY_RUN_ONLY_SYSTEMS: frozenset[str] = frozenset({"mc"})
+CANONICAL_SYSTEMS: tuple[str, ...] = (
+    "bc",
+    "portal",
+    "planner",
+    "sharepoint",
+    "calendar",
+    "mc",
+    "filemaker",
+    "sage",
+)
+
+# Canonical (system, operation) -> write-adapter operation name ("" when no direct adapter op exists yet).
+CANONICAL_TO_ADAPTER_OP: Mapping[tuple[str, str], str] = {
+    ("bc", "create_purchase_order"): "purchase_order_create",
+    ("bc", "update_purchase_order"): "purchase_order_update",
+    ("bc", "delete_purchase_order"): "purchase_order_delete",
+    ("bc", "add_purchase_order_line"): "purchase_order_line_create",
+    ("bc", "update_purchase_order_line"): "purchase_order_line_update",
+    ("bc", "comment_purchase_order"): "purchase_order_comment",
+    ("bc", "attach_purchase_order"): "purchase_order_attach",
+    ("bc", "create_sales_order"): "sales_order_create",
+    ("bc", "update_sales_order"): "sales_order_update",
+    ("bc", "delete_sales_order"): "sales_order_delete",
+    ("bc", "add_sales_order_line"): "sales_order_line_create",
+    ("bc", "update_sales_order_line"): "sales_order_line_update",
+    ("bc", "add_sales_order_charge"): "sales_order_charge_line",
+    ("bc", "comment_sales_order"): "sales_order_comment",
+    ("bc", "attach_sales_order"): "sales_order_attach",
+    ("bc", "add_sales_invoice_charge"): "sales_invoice_charge_line",
+    ("bc", "attach_sales_invoice"): "sales_invoice_attach",
+    ("bc", "create_quote"): "",
+    ("bc", "update_quote"): "",
+    ("bc", "record_receipt"): "",
+    ("bc", "update_inventory"): "",
+    ("bc", "record_qc"): "",
+    ("portal", "update_order"): "sales-order.update",
+    ("portal", "update_purchase_order"): "purchase-order.update",
+    ("portal", "create_ship_release"): "ship-release.create",
+    ("portal", "update_ship_release"): "ship-release.update",
+    ("portal", "add_note"): "activity.note",
+    ("portal", "create_contact"): "customer-contact.create",
+    ("portal", "update_contact"): "customer-contact.update",
+    ("portal", "create_location"): "customer-location.create",
+    ("portal", "update_location"): "customer-location.update",
+    ("planner", "create_task"): "task_create",
+    ("planner", "update_task"): "task_update",
+    ("sharepoint", "upload_document"): "file_upload",
+    ("sharepoint", "replace_document"): "file_replace",
+    ("sharepoint", "create_list_item"): "list_item_create",
+    ("sharepoint", "update_list_item"): "list_item_update",
+    ("calendar", "schedule_meeting"): "event_create",
+    ("calendar", "update_meeting"): "event_update",
+    ("calendar", "respond_meeting"): "event_respond",
+    ("mc", "add_note"): "task_note",
+    ("mc", "update_task"): "task_update",
+    ("mc", "decide_approval"): "approval_decide",
+    ("filemaker", "create_record"): "record_create",
+    ("filemaker", "update_record"): "record_edit",
+}
+
+_ADAPTER_OPS_BY_SYSTEM: dict[str, frozenset[str]] = {}
+for _cls in wa.ADAPTER_TYPES:
+    _existing = set(_ADAPTER_OPS_BY_SYSTEM.get(_cls.system, frozenset()))
+    _existing.update(getattr(_cls, "operations", {}).keys())
+    _ADAPTER_OPS_BY_SYSTEM[_cls.system] = frozenset(_existing)
+
+_SYSTEM_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("planner", re.compile(r"\b(?:microsoft\s+|ms\s+)?planner\b", re.I)),
+    ("bc", re.compile(r"\b(?:microsoft\s+)?(?:dynamics\s*365\s*)?(?:business\s*central|d365(?:\s*bc)?|navision|bc)\b", re.I)),
+    ("portal", re.compile(r"\b(?:petra\s+|customer\s+|operations?\s+|ops\s+|order\s+|web\s+)?portal\b", re.I)),
+    ("sharepoint", re.compile(r"\b(?:microsoft\s+|ms\s+)?(?:share\s*point(?:\s+online)?|one\s*drive)\b", re.I)),
+    ("calendar", re.compile(r"\b(?:outlook\s+|microsoft\s+|ms\s+|teams\s+|exchange\s+|office\s*365\s+)?calendar\b", re.I)),
+    ("mc", re.compile(r"\b(?:mission[\s_-]*control|mc)\b", re.I)),
+    ("filemaker", re.compile(r"\b(?:file\s*maker(?:\s+pro)?|fm\s+pro)\b", re.I)),
+    ("sage", re.compile(r"\bsage(?:\s*(?:50|100|300|intacct|accounting))?\b", re.I)),
+)
+
+_GENERIC_CONTEXT_TOKENS: frozenset[str] = frozenset({
+    "bc", "erp", "d365", "dynamics", "dynamics 365", "business central", "microsoft",
+    "ms", "online", "legacy", "sandbox", "production", "prod", "live", "app",
+    "system", "platform", "portal", "planner", "sharepoint", "calendar", "mc",
+    "mission control", "filemaker", "sage", "read-only", "read only",
+})
+
+_PARENS_RE = re.compile(r"^(.*?)\s*\(([^()]+)\)\s*$")
+_COMBINED_OP_RE = re.compile(r"\s*(?:::|->)\s*")
+_SEP_CONTEXT_RE = re.compile(r"^\s*([^:\-]+?)\s*(?::|\s+-\s+)\s*(.+?)\s*$")
+_PLAN_SUFFIX_RE = re.compile(r"\s+(?:plan|board|planner)$", re.I)
+_FOLDER_SUFFIX_RE = re.compile(r"\s+(?:folder|library|site|drive)$", re.I)
+_SNAKE_BAD_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _clean_text(raw: Any) -> str:
+    return re.sub(r"\s+", " ", str(raw or "").replace("\u2014", " ").replace("\u2013", " ")).strip()
+
+
+def _match_canonical_system(text: str) -> str:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return ""
+    low = cleaned.lower()
+    if low in CANONICAL_SYSTEMS:
+        return low
+    for canonical, pat in _SYSTEM_PATTERNS:
+        if pat.search(cleaned):
+            return canonical
+    return ""
+
+
+def _to_snake(text: str) -> str:
+    return _SNAKE_BAD_RE.sub("_", _clean_text(text).lower()).strip("_")
+
+
+def _normalize_operation(system: str, raw_op: str, about: str = "", record: str = "") -> str:
+    op_clean = _clean_text(raw_op)
+    op_low = op_clean.lower()
+    op_snake = _to_snake(op_clean)
+    hint = _clean_text(f"{op_clean} {about} {record}").lower()
+
+    if system == "planner":
+        if op_snake in ("create_task", "task_create"):
+            return "create_task"
+        if op_snake in ("update_task", "task_update"):
+            return "update_task"
+        if any(tok in op_low for tok in ("update", "edit", "complete", "close", "move", "reassign", "due", "progress", "check")):
+            return "update_task"
+        if any(tok in op_low for tok in ("create", "add", "new", "schedule", "assign", "log", "make", "task")):
+            return "create_task"
+        if not op_clean:
+            if any(tok in hint for tok in ("update", "complete", "close", "move", "reassign", "due date")):
+                return "update_task"
+            if any(tok in hint for tok in ("task", "planner", "schedule", "assign", "follow up")):
+                return "create_task"
+        return op_snake
+
+    if system == "bc":
+        exact = {
+            "create_purchase_order": "create_purchase_order",
+            "purchase_order_create": "create_purchase_order",
+            "po_create": "create_purchase_order",
+            "update_purchase_order": "update_purchase_order",
+            "purchase_order_update": "update_purchase_order",
+            "po_update": "update_purchase_order",
+            "delete_purchase_order": "delete_purchase_order",
+            "purchase_order_delete": "delete_purchase_order",
+            "add_purchase_order_line": "add_purchase_order_line",
+            "purchase_order_line_create": "add_purchase_order_line",
+            "update_purchase_order_line": "update_purchase_order_line",
+            "purchase_order_line_update": "update_purchase_order_line",
+            "comment_purchase_order": "comment_purchase_order",
+            "purchase_order_comment": "comment_purchase_order",
+            "attach_purchase_order": "attach_purchase_order",
+            "purchase_order_attach": "attach_purchase_order",
+            "create_sales_order": "create_sales_order",
+            "sales_order_create": "create_sales_order",
+            "so_create": "create_sales_order",
+            "update_sales_order": "update_sales_order",
+            "sales_order_update": "update_sales_order",
+            "so_update": "update_sales_order",
+            "delete_sales_order": "delete_sales_order",
+            "sales_order_delete": "delete_sales_order",
+            "add_sales_order_line": "add_sales_order_line",
+            "sales_order_line_create": "add_sales_order_line",
+            "update_sales_order_line": "update_sales_order_line",
+            "sales_order_line_update": "update_sales_order_line",
+            "add_sales_order_charge": "add_sales_order_charge",
+            "sales_order_charge_line": "add_sales_order_charge",
+            "comment_sales_order": "comment_sales_order",
+            "sales_order_comment": "comment_sales_order",
+            "attach_sales_order": "attach_sales_order",
+            "sales_order_attach": "attach_sales_order",
+            "add_sales_invoice_charge": "add_sales_invoice_charge",
+            "sales_invoice_charge_line": "add_sales_invoice_charge",
+            "attach_sales_invoice": "attach_sales_invoice",
+            "sales_invoice_attach": "attach_sales_invoice",
+            "create_quote": "create_quote",
+            "sales_quote_create": "create_quote",
+            "quote_create": "create_quote",
+            "update_quote": "update_quote",
+            "sales_quote_update": "update_quote",
+            "record_receipt": "record_receipt",
+            "purchase_receipt_create": "record_receipt",
+            "warehouse_receipt_create": "record_receipt",
+            "update_inventory": "update_inventory",
+            "inventory_adjustment": "update_inventory",
+            "record_qc": "record_qc",
+        }
+        if op_snake in exact:
+            return exact[op_snake]
+        src = op_low or hint
+        is_po = bool(re.search(r"\b(?:purchase\s*orders?|po\b|po[\s#-]*\d)", src))
+        is_so = bool(re.search(r"\b(?:sales\s*orders?|so\b|so[\s#-]*\d)", src))
+        is_inv = bool(re.search(r"\b(?:sales\s*invoice|invoice)\b", src))
+        is_quote = bool(re.search(r"\b(?:quote|quotation)\b", src))
+        is_receipt = bool(re.search(r"\b(?:receipt|receive|receiving)\b", src))
+        is_qc = bool(re.search(r"\b(?:qc|quality\s*(?:hold|release|check)|lot\s*release)\b", src))
+        is_stock = bool(re.search(r"\b(?:inventory|stock|cycle\s*count|adjustment)\b", src))
+        is_line = bool(re.search(r"\bline\b", src))
+        is_charge = bool(re.search(r"\b(?:charge|freight|fee)\b", src))
+        is_comment = bool(re.search(r"\b(?:comment|note)\b", src))
+        is_attach = bool(re.search(r"\battach", src))
+        is_delete = bool(re.search(r"\b(?:delete|cancel|remove|void)\b", src))
+        is_create = bool(re.search(r"\b(?:create|new|draft|enter|raise|issue|add|open|prepare|generate)\b", src))
+        is_update = bool(re.search(r"\b(?:update|edit|modify|change|revise|adjust|set|move)\b", src))
+
+        if is_quote:
+            return "update_quote" if (is_update and not is_create) else "create_quote"
+        if is_receipt:
+            return "record_receipt"
+        if is_qc:
+            return "record_qc"
+        if is_po:
+            if is_delete:
+                return "delete_purchase_order"
+            if is_attach:
+                return "attach_purchase_order"
+            if is_comment:
+                return "comment_purchase_order"
+            if is_line:
+                return "update_purchase_order_line" if (is_update and not is_create) else "add_purchase_order_line"
+            return "update_purchase_order" if (is_update and not is_create) else "create_purchase_order"
+        if is_so:
+            if is_delete:
+                return "delete_sales_order"
+            if is_attach:
+                return "attach_sales_order"
+            if is_charge:
+                return "add_sales_order_charge"
+            if is_comment:
+                return "comment_sales_order"
+            if is_line:
+                return "update_sales_order_line" if (is_update and not is_create) else "add_sales_order_line"
+            return "update_sales_order" if (is_update and not is_create) else "create_sales_order"
+        if is_inv:
+            if is_attach:
+                return "attach_sales_invoice"
+            if is_charge:
+                return "add_sales_invoice_charge"
+        if is_stock:
+            return "update_inventory"
+        return op_snake
+
+    if system == "portal":
+        exact_portal = {
+            "update_order": "update_order",
+            "sales_order_update": "update_order",
+            "update_sales_order": "update_order",
+            "update_purchase_order": "update_purchase_order",
+            "purchase_order_update": "update_purchase_order",
+            "create_ship_release": "create_ship_release",
+            "ship_release_create": "create_ship_release",
+            "update_ship_release": "update_ship_release",
+            "ship_release_update": "update_ship_release",
+            "add_note": "add_note",
+            "activity_note": "add_note",
+            "create_contact": "create_contact",
+            "customer_contact_create": "create_contact",
+            "update_contact": "update_contact",
+            "customer_contact_update": "update_contact",
+            "create_location": "create_location",
+            "customer_location_create": "create_location",
+            "update_location": "update_location",
+            "customer_location_update": "update_location",
+        }
+        if op_snake in exact_portal:
+            return exact_portal[op_snake]
+        src = op_low or hint
+        if "release" in src or "shipment" in src:
+            return "update_ship_release" if any(w in src for w in ("update", "edit", "change", "reschedule")) else "create_ship_release"
+        if "contact" in src:
+            return "update_contact" if any(w in src for w in ("update", "edit", "change")) else "create_contact"
+        if "location" in src or "address" in src:
+            return "update_location" if any(w in src for w in ("update", "edit", "change")) else "create_location"
+        if "note" in src or "comment" in src or "activity" in src:
+            return "add_note"
+        if re.search(r"\b(?:purchase\s*order|po\b)", src):
+            return "update_purchase_order"
+        if any(w in src for w in ("order", "status", "date", "update", "eta")):
+            return "update_order"
+        return op_snake
+
+    if system == "sharepoint":
+        exact_sp = {
+            "upload_document": "upload_document",
+            "file_upload": "upload_document",
+            "upload_file": "upload_document",
+            "replace_document": "replace_document",
+            "file_replace": "replace_document",
+            "replace_file": "replace_document",
+            "create_list_item": "create_list_item",
+            "list_item_create": "create_list_item",
+            "update_list_item": "update_list_item",
+            "list_item_update": "update_list_item",
+        }
+        if op_snake in exact_sp:
+            return exact_sp[op_snake]
+        src = op_low or hint
+        if "list" in src or "row" in src or "item" in src:
+            return "update_list_item" if any(w in src for w in ("update", "edit", "change")) else "create_list_item"
+        if "replace" in src or "overwrite" in src:
+            return "replace_document"
+        if any(w in src for w in ("upload", "file", "doc", "save", "post", "add", "store")):
+            return "upload_document"
+        return op_snake
+
+    if system == "calendar":
+        exact_cal = {
+            "schedule_meeting": "schedule_meeting",
+            "event_create": "schedule_meeting",
+            "create_event": "schedule_meeting",
+            "create_meeting": "schedule_meeting",
+            "book_meeting": "schedule_meeting",
+            "update_meeting": "update_meeting",
+            "event_update": "update_meeting",
+            "reschedule_meeting": "update_meeting",
+            "respond_meeting": "respond_meeting",
+            "event_respond": "respond_meeting",
+        }
+        if op_snake in exact_cal:
+            return exact_cal[op_snake]
+        src = op_low or hint
+        if any(w in src for w in ("accept", "decline", "tentative", "respond", "rsvp")):
+            return "respond_meeting"
+        if any(w in src for w in ("update", "reschedule", "move", "change", "edit")):
+            return "update_meeting"
+        if any(w in src for w in ("schedule", "book", "create", "new", "invite", "meeting", "event", "call")):
+            return "schedule_meeting"
+        return op_snake
+
+    if system == "mc":
+        exact_mc = {
+            "add_note": "add_note",
+            "task_note": "add_note",
+            "update_task": "update_task",
+            "task_update": "update_task",
+            "decide_approval": "decide_approval",
+            "approval_decide": "decide_approval",
+        }
+        if op_snake in exact_mc:
+            return exact_mc[op_snake]
+        src = op_low or hint
+        if any(w in src for w in ("approve", "reject", "approval", "gate", "decide")):
+            return "decide_approval"
+        if any(w in src for w in ("label", "priority", "title", "update", "edit")):
+            return "update_task"
+        if any(w in src for w in ("note", "comment", "progress")):
+            return "add_note"
+        return op_snake
+
+    if system == "filemaker":
+        if op_snake in ("record_create", "create_record"):
+            return "create_record"
+        if op_snake in ("record_edit", "update_record", "edit_record"):
+            return "update_record"
+        src = op_low or hint
+        if any(w in src for w in ("create", "new", "add")):
+            return "create_record"
+        if any(w in src for w in ("edit", "update", "change", "modify")):
+            return "update_record"
+        return op_snake
+
+    return op_snake
+
+
+def canonicalize_system_write(
+    system_spec: Any,
+    *,
+    operation: str = "",
+    record: str = "",
+    about: str = "",
+) -> dict[str, Any]:
+    """Normalize a messy LLM or free-text system_write descriptor into canonical keys.
+
+    Examples:
+    - ``"Microsoft Planner (QA/QC Task Schedule plan) :: create task"`` ->
+      ``system="planner"``, ``operation="create_task"``, ``canonical_key="planner::create_task"``,
+      ``adapter_operation="task_create"``, ``plan_name="QA/QC Task Schedule"``.
+    - ``{"system": "QA/QC Task Schedule (Planner)", "operation": "add task"}`` ->
+      ``system="planner"``, ``operation="create_task"``, ``plan_name="QA/QC Task Schedule"``.
+    - ``{"system": "Dynamics 365 Business Central", "operation": "Create Purchase Order"}`` ->
+      ``system="bc"``, ``operation="create_purchase_order"``, ``canonical_key="bc::create_purchase_order"``,
+      ``adapter_operation="purchase_order_create"``.
+    """
+    extra: dict[str, str] = {}
+    if isinstance(system_spec, Mapping):
+        raw_sys = _clean_text(system_spec.get("system") or "")
+        raw_op = _clean_text(operation or system_spec.get("operation") or system_spec.get("action") or "")
+        clean_rec = _clean_text(record or system_spec.get("record") or system_spec.get("target_handle") or "")
+        for meta_key in ("plan_name", "folder_name", "company_name"):
+            val = _clean_text(system_spec.get(meta_key) or "")
+            if val:
+                extra[meta_key] = val
+    else:
+        raw_sys = _clean_text(system_spec or "")
+        raw_op = _clean_text(operation or "")
+        clean_rec = _clean_text(record or "")
+
+    orig_sys = raw_sys
+    orig_op = raw_op
+
+    # Split combined "System :: operation" or "System -> operation" strings.
+    if "::" in raw_sys or "->" in raw_sys:
+        parts = _COMBINED_OP_RE.split(raw_sys, maxsplit=1)
+        raw_sys = parts[0].strip()
+        if len(parts) > 1 and parts[1].strip() and not raw_op:
+            raw_op = parts[1].strip()
+
+    canonical_sys = ""
+    context_label = ""
+
+    # Handle parenthetical forms: "Planner (QA/QC Task Schedule)" OR "QA/QC Task Schedule (Planner)".
+    m_paren = _PARENS_RE.match(raw_sys)
+    if m_paren:
+        outer, inner = m_paren.group(1).strip(), m_paren.group(2).strip()
+        outer_sys = _match_canonical_system(outer)
+        inner_sys = _match_canonical_system(inner)
+        if outer_sys and not inner_sys:
+            canonical_sys = outer_sys
+            context_label = inner
+        elif inner_sys and not outer_sys:
+            canonical_sys = inner_sys
+            context_label = outer
+        elif outer_sys:
+            canonical_sys = outer_sys
+            context_label = inner
+
+    # Handle "Planner - QA/QC Task Schedule" or "SharePoint: Quality Docs".
+    if not canonical_sys:
+        m_sep = _SEP_CONTEXT_RE.match(raw_sys)
+        if m_sep:
+            left, right = m_sep.group(1).strip(), m_sep.group(2).strip()
+            left_sys = _match_canonical_system(left)
+            right_sys = _match_canonical_system(right)
+            if left_sys and not right_sys:
+                canonical_sys = left_sys
+                context_label = right
+            elif right_sys and not left_sys:
+                canonical_sys = right_sys
+                context_label = left
+
+    if not canonical_sys:
+        canonical_sys = _match_canonical_system(raw_sys)
+
+    if not canonical_sys:
+        # Try inferring from combined record/about only when raw_sys was empty.
+        if not raw_sys:
+            canonical_sys = _match_canonical_system(f"{raw_op} {about}")
+        if not canonical_sys:
+            canonical_sys = _to_snake(raw_sys) if raw_sys else ""
+
+    # Attach extracted context_label to the right structured metadata key.
+    if context_label and context_label.lower() not in _GENERIC_CONTEXT_TOKENS:
+        if canonical_sys == "planner" and "plan_name" not in extra:
+            cleaned_plan = _PLAN_SUFFIX_RE.sub("", context_label).strip()
+            if cleaned_plan and cleaned_plan.lower() not in _GENERIC_CONTEXT_TOKENS:
+                extra["plan_name"] = cleaned_plan
+        elif canonical_sys == "sharepoint" and "folder_name" not in extra:
+            cleaned_folder = _FOLDER_SUFFIX_RE.sub("", context_label).strip()
+            if cleaned_folder and cleaned_folder.lower() not in _GENERIC_CONTEXT_TOKENS:
+                extra["folder_name"] = cleaned_folder
+        elif canonical_sys == "bc" and "company_name" not in extra:
+            extra["company_name"] = context_label
+        elif not clean_rec:
+            clean_rec = context_label
+
+    if canonical_sys == "planner" and "plan_name" in extra:
+        extra["plan_name"] = _PLAN_SUFFIX_RE.sub("", extra["plan_name"]).strip()
+
+    canonical_op = _normalize_operation(canonical_sys, raw_op, about=about, record=clean_rec)
+    adapter_op = CANONICAL_TO_ADAPTER_OP.get((canonical_sys, canonical_op), "")
+    if not adapter_op and raw_op and raw_op in _ADAPTER_OPS_BY_SYSTEM.get(canonical_sys, frozenset()):
+        adapter_op = raw_op
+
+    out: dict[str, Any] = {
+        "system": canonical_sys,
+        "operation": canonical_op,
+        "record": clean_rec,
+    }
+    if canonical_sys and canonical_op:
+        out["canonical_key"] = f"{canonical_sys}::{canonical_op}"
+    if adapter_op:
+        out["adapter_operation"] = adapter_op
+    for k in ("plan_name", "folder_name", "company_name"):
+        if extra.get(k):
+            out[k] = extra[k]
+    if orig_sys and orig_sys.lower() != canonical_sys:
+        out["raw_system"] = orig_sys
+    if orig_op and orig_op.lower() != canonical_op:
+        out["raw_operation"] = orig_op
+    return out
 
 # Operations and payload fields that always force class_b (confirm-only, auto_allowed=False)
 # on top of write_classes.write_class (money, invoices, payments, PO totals/prices, credit
@@ -120,8 +611,10 @@ def _extract_step(step: Mapping[str, Any]) -> dict[str, Any]:
         raw = dict(step["arguments"])
     else:
         raw = dict(step)
-    system = str(raw.get("system") or "").strip().lower()
-    operation = str(raw.get("operation") or raw.get("action") or "").strip()
+    raw_system = str(raw.get("system") or "").strip()
+    raw_operation = str(raw.get("operation") or raw.get("action") or "").strip()
+    system = raw_system.lower()
+    operation = raw_operation
     target = dict(raw.get("target") or {}) if isinstance(raw.get("target"), Mapping) else {}
     change_raw = raw.get("change") if "change" in raw else raw.get("payload")
     change = dict(change_raw or {}) if isinstance(change_raw, Mapping) else {}
@@ -132,6 +625,21 @@ def _extract_step(step: Mapping[str, Any]) -> dict[str, Any]:
     reason = str(raw.get("reason") or raw.get("about") or "")
     title = str(raw.get("title") or reason)
     target_handle = str(raw.get("target_handle") or raw.get("record") or "").strip()
+
+    if system not in CANONICAL_SYSTEMS or (
+        operation and operation not in _ADAPTER_OPS_BY_SYSTEM.get(system, frozenset())
+    ):
+        canon = canonicalize_system_write(
+            {"system": raw_system, "operation": raw_operation, "record": target_handle},
+            about=reason,
+        )
+        if canon["system"] in CANONICAL_SYSTEMS:
+            system = canon["system"]
+            if operation not in _ADAPTER_OPS_BY_SYSTEM.get(system, frozenset()):
+                if canon.get("adapter_operation"):
+                    operation = canon["adapter_operation"]
+            if not target_handle and canon.get("record"):
+                target_handle = canon["record"]
     out: dict[str, Any] = {
         "system": system,
         "operation": operation,
@@ -571,10 +1079,17 @@ def prepare_session_writes(
     for raw in proposals:
         if not isinstance(raw, Mapping):
             continue
+        if str(raw.get("tool") or "").strip().lower() == "plx.prepare_document":
+            continue
         args = raw.get("arguments") if isinstance(raw.get("arguments"), Mapping) else raw
-        system = str((args or {}).get("system") or "").strip().lower()
+        raw_sys = str((args or {}).get("system") or "").strip()
+        system = raw_sys.lower()
         if system in pw.DRAFT_SYSTEMS:
             continue
+        if system and system not in CANONICAL_SYSTEMS:
+            canon_sys = canonicalize_system_write(raw_sys).get("system") or system
+            if canon_sys in CANONICAL_SYSTEMS:
+                system = canon_sys
         try:
             intents.append(build_write_intent(raw, owner, **kwargs))
         except pw.Refused as exc:

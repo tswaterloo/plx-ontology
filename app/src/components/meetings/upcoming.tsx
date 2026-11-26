@@ -1,6 +1,6 @@
 "use client";
 
-import { Building2, ChevronLeft, ChevronRight, ListChecks, Lock, MapPin, Search, Truck, Users, Video, X } from "lucide-react";
+import { Building2, Calendar, ChevronLeft, ChevronRight, ListChecks, Lock, MapPin, Search, Truck, Users, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRead } from "@/lib/use-read";
@@ -40,7 +40,6 @@ import { MeetingSheet } from "./meeting-sheet";
 type Layout = "agenda" | "week";
 type MeetingFilter = "all" | "external" | "carried";
 
-/** The current minute, ticking once a minute so "in 40 min" and the now line stay true. */
 function useNow(): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -50,8 +49,6 @@ function useNow(): Date {
   return now;
 }
 
-/** Meetings, Upcoming: your calendar for two weeks as an agenda by day or a week grid; a
- * meeting opens its detail (people, agenda, related records, carried action items, prep). */
 export function Upcoming() {
   const { data: list, error, retry, at } = useRead<UpcomingMeetings>("/api/brief/meetings", (s) => getUpcomingMeetings(s));
   const [layout, setLayout] = useState<Layout>("agenda");
@@ -82,18 +79,20 @@ export function Upcoming() {
 
   if (error) return <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />;
   if (!list) return <Pending label="Reading your calendar" />;
-  if (meetings.length === 0)
+  if (meetings.length === 0) {
     return <EmptyState title="No meetings today or in the next two weeks." line="A customer or supplier page has a Prep button for any meeting." />;
+  }
 
   const hasFilter = filter !== "all" || query.trim().length > 0;
   const externalCount = meetings.filter((m) => (m.parties ?? []).length > 0 || outsideDomains(m).length > 0).length;
   const carriedCount = meetings.filter((m) => (m.open_items ?? []).length > 0).length;
 
   return (
-    <div className="space-y-4" data-testid="upcoming-meetings">
+    <div className="space-y-5" data-testid="upcoming-meetings">
       <StoredAge at={at} />
-      <Summary meetings={meetings} now={now} layout={layout} onLayout={setLayout} onOpen={setOpen} />
-      <div className="flex flex-wrap items-center gap-2" data-testid="meetings-filters">
+      <Summary meetings={meetings} now={now} onOpen={setOpen} />
+
+      <div className="flex flex-wrap items-center justify-between gap-2.5" data-testid="meetings-filters">
         <div role="group" aria-label="Filter meetings" className="inline-flex flex-wrap items-center gap-1">
           {(
             [
@@ -101,58 +100,88 @@ export function Upcoming() {
               ...(externalCount > 0 ? [["external", "External", externalCount] as const] : []),
               ...(carriedCount > 0 ? [["carried", "With action items", carriedCount] as const] : []),
             ] as const
-          ).map(([key, label, count]) => (
-            <button
-              key={key}
-              type="button"
-              aria-pressed={filter === key}
-              onClick={() => setFilter(key)}
-              className={cn(
-                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] transition-colors cursor-pointer",
-                filter === key ? "bg-surface-2 font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
-              )}
-            >
-              {label}
-              <span className="num text-[11px] text-faint">{count}</span>
-            </button>
-          ))}
+          ).map(([key, label, count]) => {
+            const active = filter === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setFilter(key)}
+                className={cn(
+                  "inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] transition-colors duration-150 active:scale-[0.98] cursor-pointer",
+                  active ? "bg-surface-2 font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                )}
+              >
+                {label}
+                <span className="num text-[11.5px] text-muted">{count}</span>
+              </button>
+            );
+          })}
         </div>
-        <label className="relative ml-auto inline-flex items-center">
-          <Search className="pointer-events-none absolute left-2.5 size-3.5 text-faint" strokeWidth={2} aria-hidden />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter meetings or people"
-            aria-label="Filter meetings or people"
-            className="h-8 w-56 max-w-full rounded-md border border-border bg-bg pl-8 pr-7 text-[12.5px] text-fg outline-none transition-colors hover:border-border-strong focus:border-accent placeholder:text-faint"
-          />
-          {query && (
+
+        <div className="flex flex-wrap items-center gap-2 max-sm:w-full">
+          <label className="relative inline-flex items-center max-sm:flex-1">
+            <Search className="pointer-events-none absolute left-2.5 size-3.5 text-muted" strokeWidth={2} aria-hidden />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && query) {
+                  e.preventDefault();
+                  setQuery("");
+                }
+              }}
+              placeholder="Filter meetings or people"
+              aria-label="Filter meetings or people"
+              className="h-8 w-56 max-w-full rounded-md border border-border bg-surface pl-8 pr-7 text-[12.5px] text-fg outline-none transition-colors hover:border-border-strong focus:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/40 placeholder:text-muted max-sm:w-full"
+            />
+            {query && (
+              <button
+                type="button"
+                aria-label="Clear meeting filter"
+                onClick={() => setQuery("")}
+                className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg active:scale-[0.95] cursor-pointer"
+              >
+                <X className="size-3" aria-hidden />
+              </button>
+            )}
+          </label>
+          {hasFilter && (
             <button
               type="button"
-              aria-label="Clear meeting filter"
-              onClick={() => setQuery("")}
-              className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg cursor-pointer"
+              onClick={() => {
+                setFilter("all");
+                setQuery("");
+              }}
+              className="h-8 rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg active:scale-[0.98] cursor-pointer"
             >
-              <X className="size-3" aria-hidden />
+              Clear
             </button>
           )}
-        </label>
-        {hasFilter && (
-          <button
-            type="button"
-            onClick={() => {
-              setFilter("all");
-              setQuery("");
-            }}
-            className="h-7 rounded-md px-2 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
-          >
-            Clear
-          </button>
-        )}
+          <div className="inline-flex h-8 items-center rounded-md border border-border bg-surface p-0.5 text-[12.5px]" role="tablist" aria-label="Calendar layout">
+            {(["agenda", "week"] as const).map((l) => (
+              <button
+                key={l}
+                type="button"
+                role="tab"
+                aria-selected={layout === l}
+                onClick={() => setLayout(l)}
+                className={cn(
+                  "h-full cursor-pointer rounded-[4px] px-2.5 capitalize font-medium transition-[background-color,color,transform] duration-150 active:scale-[0.98]",
+                  layout === l ? "bg-fg text-bg" : "text-muted hover:text-fg",
+                )}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
+
       {filtered.length === 0 ? (
-        <div className="py-10 text-center text-[13px] text-muted">
+        <div className="py-10 text-center text-[13.5px] text-muted">
           <p>No meetings match these filters.</p>
           <Button
             size="sm"
@@ -167,7 +196,7 @@ export function Upcoming() {
           </Button>
         </div>
       ) : layout === "agenda" ? (
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
           <Agenda meetings={filtered} now={now} onOpen={setOpen} />
           <Rail meetings={filtered} now={now} onOpen={setOpen} />
         </div>
@@ -182,14 +211,10 @@ export function Upcoming() {
 function Summary({
   meetings,
   now,
-  layout,
-  onLayout,
   onOpen,
 }: {
   meetings: UpcomingMeeting[];
   now: Date;
-  layout: Layout;
-  onLayout: (l: Layout) => void;
   onOpen: (m: UpcomingMeeting) => void;
 }) {
   const today = meetings.filter((m) => startOf(m) && dayKey(startOf(m)!) === dayKey(now));
@@ -198,55 +223,43 @@ function Summary({
   const carried = meetings.reduce((n, m) => n + (m.open_items ?? []).length, 0);
   const next = meetings.find((m) => whenOf(m, now) === "now" || whenOf(m, now) === "soon");
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 border-b border-border pb-3">
-      <dl className="flex flex-wrap gap-x-7 gap-y-2 text-[12px]" data-testid="meetings-summary">
-        {/* only figures with something in them: "0 of 0 still to come" says nothing */}
-        {today.length > 0 && <Fig label="Today" value={`${left.length} of ${today.length}`} sub="still to come" />}
-        <Fig label="Two weeks" value={String(meetings.length)} sub={meetings.length === 1 ? "meeting" : "meetings"} />
-        {outside.length > 0 && <Fig label="With customers or suppliers" value={String(outside.length)} />}
-        {carried > 0 && <Fig label="Open action items carried" value={String(carried)} tone="risk" />}
-        {next && (
-          <div className="min-w-0">
-            <dt className="text-muted">Next</dt>
-            <dd className="max-w-[28ch] truncate text-[13px] font-medium">
-              <button
-                type="button"
-                onClick={() => onOpen(next)}
-                className="max-w-full truncate text-left hover:underline cursor-pointer"
-                title={next.private ? "Private event" : next.object.label}
-              >
-                <span className={cn("num mr-1.5", whenOf(next, now) === "now" ? "text-accent" : "text-live")}>{relative(next, now)}</span>
-                {next.private ? "Private event" : next.object.label}
-              </button>
-            </dd>
-          </div>
-        )}
-      </dl>
-      <div className="flex items-center gap-4 text-[13px]" role="tablist" aria-label="Calendar layout">
-        {(["agenda", "week"] as const).map((l) => (
-          <button
-            key={l}
-            type="button"
-            role="tab"
-            aria-selected={layout === l}
-            onClick={() => onLayout(l)}
-            className={cn("relative h-7 cursor-pointer capitalize", layout === l ? "font-medium text-fg after:absolute after:inset-x-0 after:-bottom-[13px] after:h-[2px] after:bg-accent" : "text-muted hover:text-fg")}
-          >
-            {l}
-          </button>
-        ))}
-      </div>
-    </div>
+    <dl
+      className="grid grid-cols-2 border-y border-border divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0"
+      data-testid="meetings-summary"
+    >
+      {today.length > 0 && <Fig label="Today" value={`${left.length} of ${today.length}`} sub="still to come" />}
+      <Fig label="Two weeks" value={String(meetings.length)} sub={meetings.length === 1 ? "meeting" : "meetings"} />
+      {outside.length > 0 && <Fig label="With customers or suppliers" value={String(outside.length)} />}
+      {carried > 0 && <Fig label="Open action items carried" value={String(carried)} tone="risk" />}
+      {next && (
+        <div className="min-w-0 px-4 py-3 sm:col-span-4 sm:border-t sm:border-border sm:px-4">
+          <dt className="text-[12px] font-medium text-muted">Next up</dt>
+          <dd className="mt-1 truncate text-[13.5px] font-medium">
+            <button
+              type="button"
+              onClick={() => onOpen(next)}
+              className="max-w-full truncate text-left text-fg hover:text-accent hover:underline cursor-pointer"
+              title={next.private ? "Private event" : next.object.label}
+            >
+              <span className={cn("num mr-1.5 font-semibold", whenOf(next, now) === "now" ? "text-accent" : "text-live")}>
+                {relative(next, now)}
+              </span>
+              {next.private ? "Private event" : next.object.label}
+            </button>
+          </dd>
+        </div>
+      )}
+    </dl>
   );
 }
 
 function Fig({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "risk" }) {
   return (
-    <div>
-      <dt className="text-muted">{label}</dt>
-      <dd className="text-[13px]">
-        <span className={cn("num text-[15px] font-semibold", tone === "risk" && "text-risk")}>{value}</span>
-        {sub && <span className="ml-1 text-muted">{sub}</span>}
+    <div className="px-4 py-3 first:pl-0 tabular-nums">
+      <dt className="truncate text-[12px] font-medium text-muted">{label}</dt>
+      <dd className="mt-1 flex items-baseline gap-1.5">
+        <span className={cn("num text-[22px] leading-6 font-semibold tracking-[-0.02em]", tone === "risk" ? "text-risk" : "text-fg")}>{value}</span>
+        {sub && <span className="text-[12.5px] text-muted">{sub}</span>}
       </dd>
     </div>
   );
@@ -255,19 +268,26 @@ function Fig({ label, value, sub, tone }: { label: string; value: string; sub?: 
 function Agenda({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
   const days = byDay(meetings);
   return (
-    <div className="min-w-0 space-y-5" data-testid="meetings-agenda">
+    <div className="min-w-0 space-y-6" data-testid="meetings-agenda">
       {days.map((day) => {
         const isToday = day.key === dayKey(now);
         const total = day.meetings.reduce((n, m) => n + (minutes(m) ?? 0), 0);
         return (
-          <section key={day.key} aria-label={dayTitle(day.date, now)} data-today={isToday || undefined}>
-            <h3 className={cn("sticky top-12 z-10 flex items-baseline justify-between border-b bg-canvas py-1.5 text-[13px] font-semibold", isToday ? "border-accent text-accent" : "border-border")}>
-              <span>{dayTitle(day.date, now)}</span>
-              <span className="num text-[12px] font-normal text-muted">
+          <section
+            key={day.key}
+            aria-label={dayTitle(day.date, now)}
+            data-today={isToday || undefined}
+          >
+            <h3 className="flex items-baseline justify-between border-b border-border pb-2 text-[13.5px] font-semibold text-fg">
+              <span className="inline-flex items-center gap-2">
+                {isToday && <Calendar className="size-3.5 shrink-0 text-accent" strokeWidth={2} aria-hidden />}
+                {dayTitle(day.date, now)}
+              </span>
+              <span className="num text-[12.5px] font-normal text-muted">
                 {day.meetings.length} · {durationText(total) ?? "0 min"}
               </span>
             </h3>
-            <ol>
+            <ol className="divide-y divide-border/70 border-b border-border">
               {day.meetings.map((m) => (
                 <AgendaRow key={m.object.object_id} m={m} now={now} onOpen={onOpen} />
               ))}
@@ -279,7 +299,7 @@ function Agenda({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: D
   );
 }
 
-const EDGE: Record<string, string> = { now: "before:bg-accent", soon: "before:bg-live", later: "before:bg-border-strong", past: "before:bg-border" };
+const EDGE: Record<string, string> = { now: "before:bg-accent", soon: "before:bg-live", later: "before:bg-transparent", past: "before:bg-transparent" };
 
 function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
   const s = startOf(m);
@@ -290,24 +310,36 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
   const domains = outsideDomains(m);
   const items = m.open_items ?? [];
   const agenda = cleanMeetingAgenda(m.agenda);
+  const imminent = when === "now" || when === "soon";
   return (
     <li
       className={cn(
-        "group relative grid cursor-pointer grid-cols-[64px_minmax(0,1fr)] gap-x-3 sm:grid-cols-[92px_minmax(0,1fr)_auto] sm:gap-x-4 border-b border-border py-2.5 pl-3 text-[13px] hover:bg-hover",
-        "before:absolute before:inset-y-2 before:left-0 before:w-[3px]",
+        "group relative grid cursor-pointer grid-cols-[68px_minmax(0,1fr)] gap-x-3 px-4 py-3 text-[13.5px] transition-colors duration-150 hover:bg-row-on sm:grid-cols-[96px_minmax(0,1fr)_auto] sm:gap-x-4",
+        "before:absolute before:inset-y-2.5 before:left-0 before:w-[2px]",
         EDGE[when],
-        when === "past" && "text-muted",
+        when === "past" && "opacity-75",
       )}
       data-testid="meeting-row"
       onClick={() => onOpen(m)}
     >
-      <div className="num text-[12px] leading-5">
+      <div className="num text-[12.5px] leading-5">
         <div className={cn("font-medium", when === "past" ? "text-muted" : "text-fg")}>{s ? clock(s) : "-"}</div>
-        <div className="text-faint">{m.all_day ? "all day" : e ? clock(e) : null}</div>
-        {rel && <div className={cn(when === "now" ? "text-accent" : when === "soon" ? "text-live" : "text-faint")}>{rel}</div>}
+        <div className="text-muted">{m.all_day ? "all day" : e ? clock(e) : null}</div>
+        {rel && (
+          <div className={cn("mt-0.5 text-[11.5px] font-medium", when === "now" ? "text-accent" : when === "soon" ? "text-live" : "text-muted")}>
+            {rel}
+          </div>
+        )}
       </div>
-      <div className="min-w-0 space-y-0.5">
-        <button type="button" className="text-left font-medium group-hover:underline cursor-pointer" onClick={(ev) => { ev.stopPropagation(); onOpen(m); }}>
+      <div className="min-w-0 space-y-1">
+        <button
+          type="button"
+          className="text-left text-[14px] font-medium text-fg group-hover:underline cursor-pointer"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onOpen(m);
+          }}
+        >
           {m.private ? (
             <span className="inline-flex items-center gap-1.5 text-muted">
               <Lock className="size-3.5" strokeWidth={1.8} aria-hidden />
@@ -317,7 +349,7 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
             m.object.label
           )}
         </button>
-        <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px] text-muted">
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12.5px] text-muted">
           {names.length > 0 && (
             <span className="inline-flex min-w-0 items-center gap-1">
               <Users className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
@@ -343,29 +375,41 @@ function AgendaRow({ m, now, onOpen }: { m: UpcomingMeeting; now: Date; onOpen: 
           {m.people_withheld && <span>people not shown: the exclusion list is not loaded</span>}
         </p>
         {((m.parties ?? []).length > 0 || items.length > 0) && (
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[12px]">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px]">
             {(m.parties ?? []).map((p) => (
               <PartyLink key={p.object_id} p={p} />
             ))}
             {items.length > 0 && (
-              <span className="inline-flex items-center gap-1 text-risk">
-                <ListChecks className="size-3.5" strokeWidth={1.8} aria-hidden />
+              <span className="inline-flex items-center gap-1.5 font-medium text-risk">
+                <ListChecks className="size-3.5 shrink-0 text-risk" strokeWidth={2} aria-hidden />
                 <span><span className="num">{items.length}</span> open {plural(items.length, "action item").replace(/^\d+ /, "")} from earlier</span>
               </span>
             )}
           </p>
         )}
-        {agenda.length > 0 && when !== "past" && <p className="line-clamp-1 max-w-[90ch] text-[12px] text-faint">{agenda.join(" · ")}</p>}
+        {agenda.length > 0 && when !== "past" && <p className="line-clamp-1 max-w-[90ch] text-[12.5px] text-muted">{agenda.join(" · ")}</p>}
       </div>
-      <div className="col-start-2 -ml-2 flex items-start gap-1 pt-0.5 sm:col-start-auto sm:ml-0" onClick={(ev) => ev.stopPropagation()}>
+      <div className="col-start-2 flex items-start gap-1 pt-0.5 sm:col-start-auto" onClick={(ev) => ev.stopPropagation()}>
         {m.join_url && when !== "past" && (
-          <a href={safeHref(m.join_url) ?? undefined} target="_blank" rel="noreferrer" className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-accent hover:bg-hover">
+          <a
+            href={safeHref(m.join_url) ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            className={cn(
+              "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[12.5px] font-medium transition-[background-color,opacity,transform] duration-150 active:scale-[0.98]",
+              imminent ? "bg-fg text-bg hover:opacity-90" : "text-accent hover:bg-hover",
+            )}
+          >
             <Video className="size-3.5" strokeWidth={1.8} aria-hidden />
             Join
           </a>
         )}
         {!m.private && (
-          <Link href={safeHref(m.brief_url) ?? "/meetings"} className="inline-flex h-7 items-center rounded-md px-2 text-[12px] font-medium text-fg hover:bg-hover" data-testid="prep-link">
+          <Link
+            href={safeHref(m.brief_url) ?? "/meetings"}
+            className="inline-flex h-7 items-center rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+            data-testid="prep-link"
+          >
             Prep
           </Link>
         )}
@@ -384,8 +428,6 @@ export function PartyLink({ p }: { p: ObjectRef }) {
   );
 }
 
-/** Beside the agenda: what needs you before it starts. Outside meetings in the next two days
- * and every carried action item, each naming its meeting. */
 function Rail({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
   const soon = addDays(now, 2).getTime();
   const prep = meetings.filter((m) => {
@@ -396,19 +438,21 @@ function Rail({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
   const seen = new Set<string>();
   const unique = items.filter(({ i }) => (seen.has(i.label) ? false : (seen.add(i.label), true)));
   return (
-    <aside className="space-y-6 text-[13px] xl:sticky xl:top-[64px] xl:self-start" data-testid="meetings-rail">
+    <aside className="space-y-6 text-[13.5px] xl:sticky xl:top-[64px] xl:self-start xl:border-l xl:border-border xl:pl-6" data-testid="meetings-rail">
       <div>
-        <h3 className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-muted uppercase">Prepare for</h3>
+        <div className="border-b border-border pb-2">
+          <h3 className="text-[12px] font-semibold text-fg">Prepare for</h3>
+        </div>
         {prep.length === 0 ? (
-          <p className="text-[12px] text-muted">No customer or supplier meeting in the next two days.</p>
+          <p className="py-3 text-[12.5px] text-muted">No customer or supplier meeting in the next two days.</p>
         ) : (
-          <ul className="divide-y divide-border">
+          <ul className="divide-y divide-border/70">
             {prep.map((m) => (
-              <li key={m.object.object_id} className="py-1.5">
-                <button type="button" className="text-left font-medium hover:underline cursor-pointer" onClick={() => onOpen(m)}>
+              <li key={m.object.object_id} className="py-2.5 transition-colors duration-150 hover:bg-row-on">
+                <button type="button" className="text-left font-medium text-fg hover:text-accent hover:underline cursor-pointer" onClick={() => onOpen(m)}>
                   {m.object.label}
                 </button>
-                <p className="num text-[12px] text-muted">
+                <p className="num mt-0.5 text-[12.5px] text-muted">
                   {startOf(m) ? `${dayTitle(startOf(m)!, now).split(" · ")[0]} ${clock(startOf(m)!)}` : null}
                 </p>
               </li>
@@ -417,18 +461,20 @@ function Rail({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
         )}
       </div>
       <div>
-        <h3 className="mb-1.5 text-[12px] font-semibold tracking-[0.02em] text-muted uppercase">Still open from earlier meetings</h3>
+        <div className="border-b border-border pb-2">
+          <h3 className="text-[12px] font-semibold text-fg">Still open from earlier meetings</h3>
+        </div>
         {unique.length === 0 ? (
-          <p className="text-[12px] text-muted">Nothing carried over.</p>
+          <p className="py-3 text-[12.5px] text-muted">Nothing carried over.</p>
         ) : (
-          <ul className="divide-y divide-border" data-testid="carried-items">
+          <ul className="divide-y divide-border/70" data-testid="carried-items">
             {unique.map(({ i, m }) => (
-              <li key={i.label} className="py-1.5">
-                <p>{i.label.replace(/^Action item: /, "")}</p>
-                <p className="text-[12px] text-muted">
+              <li key={i.label} className="py-2.5 transition-colors duration-150 hover:bg-row-on">
+                <p className="text-fg">{i.label.replace(/^Action item: /, "")}</p>
+                <p className="mt-0.5 text-[12.5px] text-muted">
                   {i.detail}
                   {" · "}
-                  <button type="button" className="text-left hover:underline cursor-pointer" onClick={() => onOpen(m)}>
+                  <button type="button" className="text-left hover:text-fg hover:underline cursor-pointer" onClick={() => onOpen(m)}>
                     {m.object.label}
                   </button>
                 </p>
@@ -443,9 +489,6 @@ function Rail({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Dat
 
 const HOUR_PX = 48;
 
-/** One week as a grid: a column per day, a block per meeting at its time (side by side when
- * they overlap), all-day events in a row above, the hours widened to fit every meeting,
- * today's column and the current time drawn in blue. */
 export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; now: Date; onOpen: (m: UpcomingMeeting) => void }) {
   const [offset, setOffset] = useState(0);
   const bounds = useMemo(() => weekBounds(meetings, now), [meetings, now]);
@@ -458,46 +501,65 @@ export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; n
   const nowTop = ((now.getHours() - first) * 60 + now.getMinutes()) * (HOUR_PX / 60);
   const anyAllDay = inWeek.some((m) => m.all_day);
   return (
-    <div className="min-w-0 space-y-2" data-testid="meetings-week">
-      <div className="flex items-center gap-1.5 text-[13px]">
-        <button type="button" aria-label="Earlier week" className="flex size-7 items-center justify-center rounded-md border border-border bg-bg transition-colors hover:border-border-strong hover:bg-hover disabled:pointer-events-none disabled:opacity-40 cursor-pointer" disabled={offset <= bounds.min} onClick={() => setOffset((o) => o - 1)}>
+    <div className="min-w-0 space-y-3" data-testid="meetings-week">
+      <div className="flex items-center gap-1.5 text-[13.5px]">
+        <button
+          type="button"
+          aria-label="Earlier week"
+          className="flex size-8 items-center justify-center rounded-md border border-border bg-surface text-fg transition-[background-color,border-color,transform] duration-150 hover:border-border-strong hover:bg-surface-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 cursor-pointer"
+          disabled={offset <= bounds.min}
+          onClick={() => setOffset((o) => o - 1)}
+        >
           <ChevronLeft className="size-4" aria-hidden />
         </button>
-        <span className="min-w-[11rem] text-center font-medium">
+        <span className="min-w-[11rem] text-center font-semibold text-fg tabular-nums">
           Week of {monday.toLocaleDateString("en-GB", { day: "numeric", month: "short" }).replace("Sept", "Sep")}
         </span>
-        <button type="button" aria-label="Later week" className="flex size-7 items-center justify-center rounded-md border border-border bg-bg transition-colors hover:border-border-strong hover:bg-hover disabled:pointer-events-none disabled:opacity-40 cursor-pointer" disabled={offset >= bounds.max} onClick={() => setOffset((o) => o + 1)}>
+        <button
+          type="button"
+          aria-label="Later week"
+          className="flex size-8 items-center justify-center rounded-md border border-border bg-surface text-fg transition-[background-color,border-color,transform] duration-150 hover:border-border-strong hover:bg-surface-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 cursor-pointer"
+          disabled={offset >= bounds.max}
+          onClick={() => setOffset((o) => o + 1)}
+        >
           <ChevronRight className="size-4" aria-hidden />
         </button>
         {offset !== 0 && (
           <button
             type="button"
             onClick={() => setOffset(0)}
-            className="ml-1 inline-flex h-7 items-center rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer"
+            className="ml-1 inline-flex h-8 items-center rounded-md px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg active:scale-[0.98] cursor-pointer"
           >
             This week
           </button>
         )}
       </div>
-      <div className="overflow-x-auto">
-        <div className="grid min-w-[880px] grid-cols-[52px_repeat(7,minmax(0,1fr))] border-t border-l border-border">
+      <div className="overflow-x-auto rounded-xl border border-border bg-surface">
+        <div className="grid min-w-[880px] grid-cols-[56px_repeat(7,minmax(0,1fr))]">
           <div className="border-r border-b border-border" />
           {days.map((d) => {
             const today = dayKey(d) === dayKey(now);
             return (
-              <div key={dayKey(d)} className={cn("border-r border-b border-border px-2 py-1.5 text-[12px]", today && "bg-accent-soft")}>
-                <span className={cn("font-medium", today ? "text-accent" : "text-muted")}>{d.toLocaleDateString("en-CA", { weekday: "short" })}</span>{" "}
+              <div key={dayKey(d)} className={cn("border-r border-b border-border px-2.5 py-2 text-[12.5px] last:border-r-0", today && "bg-surface-2/60")}>
+                <span className={cn("font-medium", today ? "text-fg" : "text-muted")}>{d.toLocaleDateString("en-CA", { weekday: "short" })}</span>{" "}
                 <span className={cn("num", today ? "font-semibold text-accent" : "text-fg")}>{d.getDate()}</span>
               </div>
             );
           })}
           {anyAllDay && (
             <>
-              <div className="border-r border-b border-border px-1 py-1 text-right text-[11px] text-faint">All day</div>
+              <div className="border-r border-b border-border px-1.5 py-1.5 text-right text-[11px] text-muted">All day</div>
               {days.map((d) => (
-                <div key={dayKey(d)} className="space-y-0.5 border-r border-b border-border p-1" data-testid="week-all-day">
+                <div key={dayKey(d)} className="space-y-0.5 border-r border-b border-border p-1 last:border-r-0" data-testid="week-all-day">
                   {(byKey.get(dayKey(d)) ?? []).filter((m) => m.all_day).map((m) => (
-                    <button key={m.object.object_id} type="button" onClick={() => onOpen(m)} className="block w-full truncate rounded-[3px] border-l-[3px] border-accent bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-hover cursor-pointer" title={m.private ? "Private event" : m.object.label} data-testid="week-block">
+                    <button
+                      key={m.object.object_id}
+                      type="button"
+                      onClick={() => onOpen(m)}
+                      className="block w-full truncate rounded-[4px] border-l-[3px] border-accent bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-row-on cursor-pointer"
+                      title={m.private ? "Private event" : m.object.label}
+                      data-testid="week-block"
+                    >
                       {m.private ? "Private event" : m.object.label}
                     </button>
                   ))}
@@ -507,7 +569,7 @@ export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; n
           )}
           <div className="relative border-r border-border" style={{ height: hours.length * HOUR_PX }}>
             {hours.map((h, i) => (
-              <span key={h} className="num absolute right-1.5 text-[11px] text-faint" style={{ top: i * HOUR_PX - 7 }}>
+              <span key={h} className="num absolute right-2 text-[11px] text-muted" style={{ top: i * HOUR_PX - 7 }}>
                 {i === 0 ? "" : clock(new Date(2000, 0, 1, h)).replace(":00", "")}
               </span>
             ))}
@@ -517,7 +579,7 @@ export function Week({ meetings, now, onOpen }: { meetings: UpcomingMeeting[]; n
             const today = key === dayKey(now);
             const placed = layoutDay(byKey.get(key) ?? []);
             return (
-              <div key={key} className={cn("relative border-r border-border", today && "bg-[color-mix(in_srgb,var(--accent-soft)_45%,transparent)]")} style={{ height: hours.length * HOUR_PX }}>
+              <div key={key} className={cn("relative border-r border-border last:border-r-0", today && "bg-surface-2/25")} style={{ height: hours.length * HOUR_PX }}>
                 {hours.map((h, i) => (
                   <div key={h} className="absolute inset-x-0 border-t border-border/70" style={{ top: i * HOUR_PX }} />
                 ))}
@@ -550,7 +612,7 @@ function WeekBlock({ p, first, last, now, onOpen }: { p: Placed; first: number; 
       type="button"
       onClick={() => onOpen(m)}
       className={cn(
-        "absolute overflow-hidden rounded-[3px] border-l-[3px] bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] hover:bg-hover cursor-pointer",
+        "absolute overflow-hidden rounded-[4px] border-l-[3px] bg-raised px-1.5 py-0.5 text-left text-[11px] leading-[15px] shadow-[0_0_0_1px_var(--border)] transition-colors hover:bg-row-on cursor-pointer",
         when === "past" ? "border-border-strong text-muted" : outside ? "border-accent" : "border-live",
         height < 34 && "truncate whitespace-nowrap",
       )}
@@ -558,7 +620,7 @@ function WeekBlock({ p, first, last, now, onOpen }: { p: Placed; first: number; 
       title={m.private ? "Private event" : m.object.label}
       data-testid="week-block"
     >
-      <span className="num text-muted">{clock(s)}</span> <span className="font-medium">{m.private ? "Private event" : m.object.label}</span>
+      <span className="num text-muted">{clock(s)}</span> <span className="font-medium text-fg">{m.private ? "Private event" : m.object.label}</span>
       {height > 34 && m.location && <span className="block truncate text-muted">{m.location}</span>}
     </button>
   );

@@ -57,13 +57,13 @@ function TeamContent() {
   // above the people table (the browser's own jump to #approvals fires before it is drawn)
   const approvalsFirst = team && hash === "#approvals";
   const approvals = (
-    <section id="approvals" aria-labelledby="approvals-title" className="max-w-6xl scroll-mt-16 space-y-3" data-testid="team-approvals">
-      <h2 id="approvals-title" className="text-[15px] font-semibold">Approvals waiting on others</h2>
+    <section id="approvals" aria-labelledby="approvals-title" className="scroll-mt-16 space-y-3" data-testid="team-approvals">
+      <h2 id="approvals-title" className="text-[15px] font-semibold tracking-[-0.015em] text-fg">Approvals waiting on others</h2>
       <TeamApprovals />
     </section>
   );
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar
         heading
         title="Team"
@@ -83,14 +83,19 @@ function TeamContent() {
           ) : undefined
         }
       />
-      <PageIntro path="/team" />
-      <StoredAge at={people.at} className="px-6 pb-1" />
-      <div className="w-full space-y-10 px-4 py-5 lg:px-6">
+      <PageIntro path="/team" className="mx-auto w-full max-w-[1360px] px-4 sm:px-6 lg:px-6" />
+      <StoredAge at={people.at} className="mx-auto w-full max-w-[1360px] px-4 pb-1 sm:px-6" />
+      <div className="mx-auto w-full max-w-[1360px] space-y-8 px-4 py-5 sm:px-6">
         {!me ? <Pending page label="Checking your access" /> : null}
         {approvalsFirst && approvals}
         {me && (
           <section id="people" aria-labelledby="people-title" className="scroll-mt-16 space-y-3">
-            <h2 id="people-title" className="text-[15px] font-semibold">{heading}</h2>
+            <h2
+              id="people-title"
+              className={heading === "People" ? "sr-only" : "text-[15px] font-semibold tracking-[-0.015em] text-fg"}
+            >
+              {heading}
+            </h2>
             {people.error ? (
               <LoadProblem message={plainError(people.error)} busy={noticeKind(people.error) === "busy"} onRetry={people.retry} />
             ) : people.data ? (
@@ -101,21 +106,23 @@ function TeamContent() {
           </section>
         )}
         {me && (
-          <section id="workload" aria-labelledby="workload-title" className="max-w-6xl scroll-mt-16 space-y-3">
-            <h2 id="workload-title" className="text-[15px] font-semibold">Workload</h2>
+          <section id="workload" aria-labelledby="workload-title" className="scroll-mt-16 space-y-3">
+            <h2 id="workload-title" className="text-[15px] font-semibold tracking-[-0.015em] text-fg">Workload</h2>
             <WorkloadSection owner={!!me.owner} />
           </section>
         )}
         {team && !approvalsFirst && approvals}
         {labourOn && labour.data && (
-          <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-3" data-testid="team-labour">
-            <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
-            <LabourView page={labour.data} />
+          <section id="labour" aria-labelledby="labour-title" className="scroll-mt-16 space-y-3" data-testid="team-labour">
+            <h2 id="labour-title" className="text-[15px] font-semibold tracking-[-0.015em] text-fg">Labour hours</h2>
+            <div className="rounded-xl border border-border bg-surface p-4 shadow-[var(--shadow-card-val)]">
+              <LabourView page={labour.data} />
+            </div>
           </section>
         )}
         {labourRefused && (
-          <section id="labour" aria-labelledby="labour-title" className="max-w-3xl scroll-mt-16 space-y-2" data-testid="team-labour-refused">
-            <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
+          <section id="labour" aria-labelledby="labour-title" className="max-w-2xl scroll-mt-16 rounded-xl border border-border bg-surface p-5 space-y-2" data-testid="team-labour-refused">
+            <h2 id="labour-title" className="text-[15px] font-semibold tracking-[-0.015em] text-fg">Labour hours</h2>
             <p className="text-[13px] leading-5 text-muted">
               Labour hours by department are open to readers with the HR or operations-management grant, which you don&apos;t have. Ask the owner if you need them.
             </p>
@@ -123,7 +130,7 @@ function TeamContent() {
         )}
         {labour.error && !(labour.error instanceof ApiError && (labour.error.status === 403 || labour.error.status === 404)) ? (
           <section aria-labelledby="labour-title" className="max-w-3xl space-y-3">
-            <h2 id="labour-title" className="text-[15px] font-semibold">Labour hours</h2>
+            <h2 id="labour-title" className="text-[15px] font-semibold tracking-[-0.015em] text-fg">Labour hours</h2>
             <LoadProblem message={plainError(labour.error)} onRetry={labour.retry} />
           </section>
         ) : null}

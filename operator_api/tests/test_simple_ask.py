@@ -1863,6 +1863,72 @@ class HistoryBudgetTest(unittest.TestCase):
         self.assertIn("Always show USD first.", sessions[0].prompts[1])
         self.assertIn("remember about this person now", sessions[0].prompts[1])
 
+    def test_hard20_guardrails_and_cross_source_sweep_in_prompt(self):
+        prompt = sa.system_prompt()
+        self.assertLessEqual(len(prompt), sa.PROMPT_MOST)
+        for rule in (
+            "MCApproval, MCTask, MCTaskEvent",
+            ">50% of a grouped dimension is blank/NULL or undated",
+            "[estimated]",
+            "Never dismiss an open or overdue ERP record",
+            "emails.received_at (indexed; avoid full scans on sent_at)",
+            "records && ARRAY[...]",
+            "never treat missing transcripts or empty calendar bodies as proof",
+        ):
+            self.assertIn(rule, prompt)
+
+    def test_ask_freshness_populates_sources_from_ops_alarms_and_search_as_of(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            alarm_dir = Path(td) / "ops-alarms"
+            alarm_dir.mkdir(parents=True)
+            (alarm_dir / "status.json").write_text(json.dumps({
+                "checked_at": "2026-11-25T22:40:00Z",
+                "checks": [
+                    {
+                        "name": "capture:mail",
+                        "state": "ok",
+                        "last_success_at": "2026-11-25T22:10:00Z",
+                        "newest_record_at": "2026-11-25T22:05:00Z",
+                    },
+                    {
+                        "name": "capture:teams",
+                        "state": "breach",
+                        "last_success_at": "2026-11-25T21:55:00Z",
+                        "newest_record_at": "2026-11-25T21:50:00Z",
+                    },
+                ],
+            }), encoding="utf-8")
+            sa._FRESHNESS_CACHE.clear()
+            backend = SimpleNamespace(state_dir=Path(td), store=None)
+            ran = sa.SimpleRun(
+                text="All caught up.", agent_text="All caught up.", unverified=[],
+                events=[{
+                    "type": "tool_call",
+                    "name": "plx.search",
+                    "is_error": False,
+                    "result": json.dumps({
+                        "documents": [],
+                        "searched": {
+                            "sources": ["teams"],
+                            "data_as_of": {"read_from": "standby", "as_of": "2026-11-25T22:00:00Z"},
+                        },
+                    }),
+                }],
+                seconds=1.2, stopped=False, failure=None, as_of="2026-11-25T15:30:00Z",
+            )
+            self.assertEqual(sa._as_of(ran.events), "2026-11-25T22:00:00Z")
+            fresh = sa._ask_freshness(backend, ran)
+            by_sys = {s.system: s for s in fresh.sources}
+            self.assertEqual(set(by_sys), {"Email", "Teams"})
+            self.assertEqual(by_sys["Email"].as_of, "2026-11-25T22:05:00Z")
+            self.assertFalse(by_sys["Email"].stale)
+            self.assertEqual(by_sys["Teams"].as_of, "2026-11-25T21:50:00Z")
+            self.assertTrue(by_sys["Teams"].stale)
+            self.assertEqual(fresh.as_of, "2026-11-25T22:05:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

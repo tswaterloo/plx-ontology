@@ -22,23 +22,127 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from . import ask_patch, ask_refs
-from .ask_check import _args, _evidence, _name, model as _model
+from .ask_check import _args, _evidence, _name
 
 LOG = logging.getLogger("operator_api.ask")
 FEATURE = "ask_cover"
+MODEL_ENV = "PLX_ASK_COVER_MODEL"
+MODEL = "haiku"
 KINDS = ("A", "B", "C")
 EFFORT_ENV = "PLX_ASK_COVER_EFFORT"
 EFFORT = "low"
 EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 SECONDS_ENV = "PLX_ASK_COVER_SECONDS"
 SECONDS = 12.0
+MODE_ENV = "PLX_ASK_COVER_MODE"
+MODE = "smart"
+MODES = frozenset({"smart", "always", "background"})
 _SQL_MAX_CHARS = 1200
 _VALUES_MAX_CHARS = 800
+
+# High-risk universal, absence, ranking, or aggregate phrasing that warrants a synchronous
+# covering-read check when paired with filtered, grouped, or truncated reads.
+_RISK_CLAIMS = re.compile(
+    r"\b(?:none|nothing|never|zero|both|every|all\s+(?:\d|of|the|our|open|pending|late|items|orders|months|rows|records|messages|mail)|"
+    r"only\s+(?:\d|one|two|three|four|five|the|a\b)|"
+    r"no\s+(?:matching|open|late|other|further|later|record|records|order|orders|invoice|invoices|mail|email|emails|message|messages|meeting|meetings|transcript|transcripts|price|prices|item|items|result|results|data|mention|mentions|reply|replies)|"
+    r"not\s+(?:in\s+the\s+system|in\s+our\s+system|found|recorded|billed|paid|shipped|received|mentioned)|"
+    r"most\s+(?:overloaded|expensive|active|urgent|recent|late)|"
+    r"highest|lowest|largest|smallest|biggest|top\s+\d|total(?:s|ed|ing)?)\b",
+    re.I,
+)
+_SQL_FILTER_OR_AGG = re.compile(
+    r"\b(?:where|group\s+by|limit|sum\s*\(|count\s*\(|avg\s*\(|min\s*\(|max\s*\(|having|filter\s*\()\b",
+    re.I,
+)
+
+
+def cover_mode(environ: Mapping[str, str] = os.environ) -> str:
+    """Execution mode for ``ask_cover``: ``smart`` (default: sync only on high-risk
+    universal/absence/aggregate/truncated/untraced answers, background otherwise),
+    ``always`` (always sync), or ``background`` (never block the answer)."""
+    raw = str(environ.get(MODE_ENV) or "").strip().lower()
+    return raw if raw in MODES else MODE
+
+
+def needs_sync_check(printed: str, events: Sequence[Mapping[str, Any]],
+                     untraced: Sequence[str] = ()) -> tuple[bool, str]:
+    """Fast deterministic pre-screen deciding whether ``ask_cover`` should run
+    synchronously before streaming finishes or asynchronously in the background.
+
+    Sync runs whenever:
+    - the answer contains any untraced figures;
+    - any SQL or exact search read hit a limit, truncation, or error (excluding fuzzy
+      ``meaning_continue`` / ``attachments_continue`` cursors when exact matches are complete);
+    - the answer makes universal/absence/ranking/aggregate claims backed by filtered,
+      grouped, or aggregated reads.
+    """
+    if untraced:
+        return True, "untraced_figures"
+    ev_list = [e for e in _evidence(events) if not _args(e).get("page")]
+    if not ev_list:
+        return False, "no_reads"
+    has_scoped_or_agg = False
+    for e in ev_list:
+        args = _args(e)
+        got = ask_refs._parsed(e.get("result"))
+        got = got if isinstance(got, Mapping) else {}
+        name = _name(e)
+        if e.get("is_error") or got.get("error"):
+            return True, "read_error"
+        if name == "plx.sql":
+            prof = got.get("profile") if isinstance(got.get("profile"), Mapping) else {}
+            if prof.get("limit_hit") or got.get("truncated"):
+                return True, "sql_limit_or_truncated"
+            sql_text = str(args.get("sql") or "")
+            if (prof.get("grouped_by") or args.get("measure")
+                    or _SQL_FILTER_OR_AGG.search(sql_text)):
+                has_scoped_or_agg = True
+        elif name == "plx.search":
+            comp = got.get("completeness") if isinstance(got.get("completeness"), Mapping) else {}
+            reason = str(comp.get("reason") or "")
+            widened_only = reason in ("meaning_continue", "attachments_continue")
+            if (comp.get("truncated") or comp.get("next_cursor")) and not widened_only:
+                return True, "search_truncated"
+            if args.get("since") or args.get("until") or args.get("participant") or args.get("sources"):
+                has_scoped_or_agg = True
+        else:
+            has_scoped_or_agg = True
+    if has_scoped_or_agg and _RISK_CLAIMS.search(str(printed or "")):
+        return True, "scoped_universal_or_aggregate"
+    return False, "low_risk_reads_complete"
+
+
+def as_claims(flags: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Convert ``ask_cover`` flags into ``ask_check.Verdict`` claim entries so telemetry
+    and answer payloads accurately report flagged claim counts."""
+    out: list[dict[str, Any]] = []
+    for f in flags:
+        if not isinstance(f, Mapping):
+            continue
+        sentence = str(f.get("sentence") or "").strip()
+        if not sentence:
+            continue
+        out.append({
+            "claim": sentence,
+            "verdict": "needs_cover",
+            "cells": str(f.get("why") or "").strip(),
+            "read": None,
+            "would_settle": str(f.get("would_settle") or "").strip(),
+            "kind": str(f.get("kind") or "A"),
+        })
+    return out
+
+
+def model(environ: Mapping[str, str] = os.environ) -> str:
+    """Model for the covering-read check (default ``haiku`` via ``PLX_ASK_COVER_MODEL``)."""
+    return str(environ.get(MODEL_ENV) or "").strip() or MODEL
 
 
 def cover_effort(environ: Mapping[str, str] = os.environ) -> Optional[str]:
@@ -123,18 +227,36 @@ def card(number: int, event: Mapping[str, Any]) -> str:
                 f"error: {got.get('error') or got.get('raw')}\n"
                 f"   value counts: {vals or 'none computed'}")
     docs = got.get("documents") or got.get("opened") or []
+    searched = got.get("searched") if isinstance(got.get("searched"), Mapping) else {}
+    comp = got.get("completeness") if isinstance(got.get("completeness"), Mapping) else {}
+    widened = searched.get("widened")
+    reason = str(comp.get("reason") or "")
+    exact_note = ""
+    if reason in ("meaning_continue", "attachments_continue"):
+        exact_note = f"; exact_matches_complete (exact_returned: {comp.get('returned', 0)}, cursor only continues {reason})"
+    widened_line = f"\n   widened: {_clip(str(widened), 300)}" if widened else ""
     return (f"[read {number}] {name} {_clip(json.dumps(args, default=str), _SQL_MAX_CHARS)}\n"
-            f"   returned: {len(docs)}; coverage: "
+            f"   returned: {len(docs)}{exact_note}; coverage: "
             f"{json.dumps(got.get('coverage') or got.get('completeness'), default=str)}; "
-            f"error: {got.get('error')}")
+            f"error: {got.get('error')}{widened_line}")
 
 
-def task(question: str, answer: str, events: Sequence[Mapping[str, Any]]) -> str:
+def task_body(question: str, answer: str, events: Sequence[Mapping[str, Any]],
+              untraced: Sequence[str] = ()) -> str:
+    """Dynamic per-answer input for the covering-read check (sent on stdin while ``PROMPT``
+    travels in ``--system-prompt`` for prompt-cache reuse)."""
     # a page of a result already listed is that read again (same statement, more rows)
     cards = [card(n, e) for n, e in enumerate(
         (e for e in _evidence(events) if not _args(e).get("page")))]
-    return (PROMPT + f"\n\nQUESTION: {question}\n\nANSWER:\n{answer}\n\nREADS:\n"
+    extra = (f"\n\nUNTRACED FIGURES (check whether backed by the reads): "
+             f"{json.dumps(list(untraced)[:20], default=str)}" if untraced else "")
+    return (f"QUESTION: {question}\n\nANSWER:\n{answer}{extra}\n\nREADS:\n"
             + "\n".join(cards))
+
+
+def task(question: str, answer: str, events: Sequence[Mapping[str, Any]],
+         untraced: Sequence[str] = ()) -> str:
+    return PROMPT + "\n\n" + task_body(question, answer, events, untraced=untraced)
 
 
 class Unreadable(ValueError):
@@ -163,26 +285,30 @@ def parse(reply: str) -> list[dict[str, Any]]:
 
 
 def call_for(asker: Any) -> Callable[[str], Optional[str]]:
-    """The one call, no tools, bounded time and low effort (``ask_check.call_for``'s,
-    under its own ledger name)."""
+    """The one call, no tools, bounded time, low effort, and static ``PROMPT`` in
+    ``--system-prompt`` for prompt-cache reuse."""
     from operating import humanize
     return humanize.rewriter(binary=getattr(asker, "claude_bin", "claude") or "claude",
-                             model=_model(), seconds=cover_seconds(), feature=FEATURE,
-                             effort=cover_effort())
+                             model=model(), seconds=cover_seconds(), feature=FEATURE,
+                             effort=cover_effort(), system_prompt=PROMPT,
+                             caller="operator_api.ask_cover")
 
 
 def check(asker: Any, question: str, answer: str, events: Sequence[Mapping[str, Any]], *,
-          call: Optional[Callable[[str], Optional[str]]] = None) -> Cover:
+          call: Optional[Callable[[str], Optional[str]]] = None,
+          untraced: Sequence[str] = ()) -> Cover:
     """The flags for ``answer`` (as the session wrote it). Any failure is ``not_checked``
     with why, logged, never raised."""
     started = time.monotonic()
-    call = call or getattr(asker, "_cover_call", None)
+    custom = call or getattr(asker, "_cover_call", None)
     why = None
     try:
-        call = call or call_for(asker)
-        prompt = task(question, answer, events)
+        fn = custom or call_for(asker)
+        prompt = (task(question, answer, events, untraced=untraced)
+                  if custom is not None
+                  else task_body(question, answer, events, untraced=untraced))
         for _ in (1, 2):    # one retry of an unreadable reply
-            reply = call(prompt)
+            reply = fn(prompt)
             if reply is None:
                 why = "no reply"
                 break

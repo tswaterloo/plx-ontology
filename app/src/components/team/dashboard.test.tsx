@@ -44,8 +44,9 @@ describe("Team dashboard", () => {
     expect(within(table).queryByTitle("Open tasks")).toBeNull();
     expect(within(table).queryByTitle("Other open alerts")).toBeNull();
     expect(within(table).getByTitle("Threads awaiting their reply")).toBeTruthy();
-    // every row has as many cells as the header has columns
-    const cols = within(table).getAllByRole("columnheader").filter((th) => th.closest("tr") === table.querySelectorAll("thead tr")[1]).length;
+    // single crisp header row: every row has as many cells as the header has columns
+    expect(table.querySelectorAll("thead tr")).toHaveLength(1);
+    const cols = within(table).getAllByRole("columnheader").length;
     for (const r of screen.getAllByTestId("team-row")) expect(r.querySelectorAll("td")).toHaveLength(cols);
     // the page title line says what the table is for: the dashboard does not say it again
     expect(screen.queryByTestId("team-intro")).toBeNull();
@@ -270,8 +271,24 @@ describe("shared mailboxes and accounts are listed apart from the people", () =>
     const table = screen.getByTestId("team-table");
     expect(table).toHaveTextContent("Customer service, Purchasing, Receivables");
     expect(table).not.toHaveTextContent("service,Purchasing");
-    // Single-column numeric group headers align right over their numeric columns
-    const mailGroup = within(table).getByRole("columnheader", { name: "Mail" });
-    expect(mailGroup.className).toContain("text-right");
+    // Single crisp numeric column header aligns right over its numeric column
+    const mailHeader = within(table).getByRole("columnheader", { name: "Mail sent" });
+    expect(mailHeader.className).toContain("text-right");
+  });
+
+  it("renders Top output and Needs attention monitoring panels and opens the person drawer on click", async () => {
+    vi.mocked(getTeamPerson).mockClear();
+    render(<TeamDashboard data={view} />);
+    const panel = screen.getByTestId("team-monitoring-panel");
+    const topOutput = within(panel).getByTestId("team-top-output");
+    expect(topOutput).toHaveTextContent("Bea Okafor");
+    expect(topOutput).toHaveTextContent("Avery Lindqvist");
+
+    const watchlist = within(panel).getByTestId("team-watchlist");
+    expect(watchlist).toHaveTextContent("Avery Lindqvist");
+    expect(watchlist).toHaveTextContent("2 replies");
+
+    fireEvent.click(within(watchlist).getByRole("button", { name: /Avery Lindqvist/ }));
+    await waitFor(() => expect(getTeamPerson).toHaveBeenCalledWith("k1", expect.anything()));
   });
 });

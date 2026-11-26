@@ -393,3 +393,7 @@ def _lots(rd: Reader, as_of: dt.date) -> Iterator[Row]:
             row.values["receipt_number"] = None
 
         yield row
+
+
+from operating.pg import business_views as _bv  # noqa: E402
+_bv._register_submodules()

@@ -8,7 +8,8 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { ItemActions, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
-import { noteParts, saidOnce } from "@/components/autopilot/lines";
+import { StatusIndicator } from "@/components/autopilot/jobs";
+import { cleanHeadline, noteParts, saidOnce } from "@/components/autopilot/lines";
 import { Button } from "@/components/ui/button";
 import { StyledSelect } from "@/components/ui/controls";
 import { useProblem, useProblemSlot } from "@/components/ui/notice";
@@ -49,6 +50,7 @@ export function objectIdFromHref(href: string): string | null {
 export function AlertCard({
   item,
   linked,
+  detail,
   onGone,
   onChanged,
   onOptimistic,
@@ -58,6 +60,7 @@ export function AlertCard({
 }: {
   item: PreparedItem;
   linked?: boolean;
+  detail?: boolean;
   onGone: (id: string) => void;
   onChanged?: () => void;
   feedback?: React.ReactNode;
@@ -67,6 +70,124 @@ export function AlertCard({
   const parsedNote = noteParts(item.note ?? "");
   const [summary, extra, noteText] = saidOnce([countedWords(item.summary ?? ""), item.message ?? "", parsedNote.text]);
   const mc = item.alert_kind === "mc_approval_pending";
+
+  if (detail) {
+    const headline = cleanHeadline(item.subject || summary || "Alert");
+    return (
+      <li
+        id={`prepared-${item.item_id}`}
+        className={cn("w-full space-y-6", linked && "border-l-2 border-l-accent pl-4")}
+        data-testid="prepared-alert"
+      >
+        {card.provide(
+          <>
+            <header className="space-y-3 border-b border-border pb-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <h2 className="min-w-0 flex-1 text-[20px] font-semibold leading-[1.3] tracking-[-0.02em] text-fg">
+                  {headline}
+                </h2>
+                <div className="shrink-0">
+                  {item.pooled ? (
+                    <Take
+                      itemId={item.item_id}
+                      onTaken={() => {
+                        onFeedback?.("Added to your list");
+                        if (onChanged) onChanged();
+                        else onGone(item.item_id);
+                      }}
+                    />
+                  ) : (
+                    <ItemActions
+                      item={item}
+                      onGone={onGone}
+                      onOptimistic={onOptimistic}
+                      onRestore={onRestore}
+                      onFeedback={onFeedback}
+                      menuAlign="right"
+                      setAsideOnly={!!item.handed_from}
+                      entries={item.handed_from ? [] : [{ label: "Pass to a colleague", run: () => setPassing(true) }]}
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted">
+                <StatusIndicator tone="late" label="Alert" />
+                {parsedNote.labels.map((l) => (
+                  <span key={l} className="text-[12px] text-faint" data-testid="prepared-label">
+                    {l}
+                  </span>
+                ))}
+                <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
+              </div>
+            </header>
+
+            <section className="space-y-3">
+              <h3 className="text-[12px] font-medium uppercase tracking-[0.04em] text-faint">What happened</h3>
+              {summary && (
+                <p className="text-[14.5px] leading-[1.65] text-fg" data-testid={mc ? "alert-line" : undefined}>
+                  {summary}
+                </p>
+              )}
+              {extra && (
+                <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3.5 text-[14px] leading-[1.65] text-fg/85">
+                  {extra}
+                </p>
+              )}
+              {item.facts.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-[14px] leading-[1.6] text-fg/90">
+                  {item.facts.map((f, n) => (
+                    <li key={n}>{countedWords(f)}</li>
+                  ))}
+                </ul>
+              )}
+              {noteText && (
+                <p className="text-[13px] text-muted" data-testid="prepared-note">
+                  {countedWords(noteText)}
+                </p>
+              )}
+            </section>
+
+            {(item.links ?? []).length > 0 && (
+              <div className="flex flex-wrap gap-3 border-t border-border pt-4 text-[13px]">
+                {(item.links ?? []).map((l) => {
+                  const href = canonicalObjectHref(l.href);
+                  const followId = objectIdFromHref(href);
+                  return (
+                    <span key={l.href} className="inline-flex items-baseline gap-2">
+                      <a
+                        href={href}
+                        {...(href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}
+                        className="inline-flex h-8 items-center rounded-md border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-fg transition-colors hover:bg-surface-2"
+                      >
+                        {l.label}
+                      </a>
+                      {followId && <Follow objectId={followId} label={l.label} />}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+
+            {item.handed_from && (
+              <p className="text-[12.5px] text-muted" data-testid="alert-handed-from">
+                Passed to you by {item.handed_from}. Setting it aside clears it for them too.
+              </p>
+            )}
+            {!item.pooled && (
+              <PassOn itemId={item.item_id} handedTo={item.handed_to} open={passing} onClose={() => setPassing(false)} onFeedback={onFeedback} />
+            )}
+            {feedback && (
+              <div className="border-t border-border pt-4" data-testid="prepared-feedback-row">
+                {feedback}
+              </div>
+            )}
+          </>,
+        )}
+        {card.banner}
+      </li>
+    );
+  }
+
   return (
     <li
       id={`prepared-${item.item_id}`}
@@ -127,7 +248,7 @@ export function AlertCard({
             const followId = objectIdFromHref(href);
             return (
               <span key={l.href} className="inline-flex items-baseline gap-2">
-                <a href={href} {...(href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="text-accent underline-offset-2 hover:underline">
+                <a href={href} {...(href.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })} className="inline-flex h-7 items-center rounded-md border border-border bg-surface px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2">
                   {l.label}
                 </a>
                 {followId && <Follow objectId={followId} label={l.label} />}

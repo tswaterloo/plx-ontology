@@ -4,10 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 
 const readStatement = vi.fn();
 const exportXlsx = vi.fn();
+const saveInsight = vi.fn();
+const saveMemory = vi.fn();
+const createAssistWorkflow = vi.fn();
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
   readStatement: (...a: unknown[]) => readStatement(...a),
   exportXlsx: (...a: unknown[]) => exportXlsx(...a),
+  saveInsight: (...a: unknown[]) => saveInsight(...a),
+  saveMemory: (...a: unknown[]) => saveMemory(...a),
+  createAssistWorkflow: (...a: unknown[]) => createAssistWorkflow(...a),
 }));
 import { applyEvent } from "@/lib/thread";
 import type { Answer } from "@/lib/types";
@@ -381,5 +387,96 @@ describe("Ask chart placement and streaming", () => {
     await waitFor(() => expect(screen.getByTestId("simple-answer").querySelector("table")).not.toBeNull());
     const table = screen.getByTestId("simple-answer").querySelector("table")!;
     expect(screen.getByTestId("answer-charts").compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders Save answer, Pin to Insights, Schedule update, and Save instruction utility actions under finished answers", async () => {
+    saveInsight.mockReset().mockResolvedValue({ id: "ins-1" });
+    saveMemory.mockReset().mockResolvedValue({ id: 7, kind: "instruction", text: "Show CAD first" });
+    const withSqlChart: Answer = {
+      ...simple,
+      charts: [{ ...monthlyChart, sql: "SELECT month, revenue FROM sales_invoices" }],
+    };
+    render(<AnswerCard turn={{ id: "t-util", question: simple.question, phase: "done", streamed: "", answer: withSqlChart }} showNote />);
+
+    // Save answer bookmark toggles
+    const saveBtn = screen.getByTestId("answer-save-btn");
+    expect(saveBtn).toHaveTextContent("Save");
+    await userEvent.click(saveBtn);
+    expect(saveBtn).toHaveTextContent("Saved");
+
+    // Pin to Insights pins the chart
+    await userEvent.click(screen.getByTestId("answer-pin-insights"));
+    await waitFor(() => expect(saveInsight).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId("answer-pin-insights-done")).toHaveAttribute("href", "/insights");
+
+    // Schedule update trigger is present
+    expect(screen.getByTestId("schedule-update-trigger")).toHaveTextContent("Schedule");
+
+    // Save instruction with Context note vs Instruction toggle
+    await userEvent.click(screen.getByTestId("save-instruction-open"));
+    expect(screen.getByTestId("save-instruction-kind-fact")).toHaveTextContent("Context note");
+    expect(screen.getByTestId("save-instruction-kind-instruction")).toHaveTextContent("Instruction");
+    await userEvent.type(screen.getByLabelText(/Standing instruction/i), "Show CAD first");
+    await userEvent.click(screen.getByTestId("save-instruction-submit"));
+    await waitFor(() => expect(saveMemory).toHaveBeenCalledWith({ kind: "instruction", text: "Show CAD first" }));
+    expect(await screen.findByTestId("save-instruction-status")).toHaveTextContent("Instruction saved");
+  });
+
+  it("offers Inspect SQL in the finished-answer action bar when cited queries exist and renders a collapsible live progress trace while busy", async () => {
+    const withQuery: Answer = {
+      ...simple,
+      cited: [{ ...simple.cited![0], query: "SELECT supplier, owed FROM supplier_balances ORDER BY owed DESC" }],
+    };
+    const { unmount } = render(<AnswerCard turn={{ id: "t-sql", question: simple.question, phase: "done", streamed: "", answer: withQuery }} />);
+    expect(screen.queryByTestId("footer-sql-panel")).toBeNull();
+    await userEvent.click(screen.getByTestId("footer-inspect-sql"));
+    expect(screen.getByTestId("footer-sql-panel")).toHaveTextContent("SELECT supplier, owed FROM supplier_balances ORDER BY owed DESC");
+    unmount();
+
+    render(<AnswerCard turn={{ id: "t-busy", question: "q", phase: "thinking", streamed: "", simple: true, steps: ["Checking open POs", "Reading supplier emails"] }} />);
+    expect(screen.getByTestId("progress-summary")).toHaveTextContent("Reading supplier emails");
+    expect(screen.getByTestId("progress-elapsed")).toHaveTextContent(/\d+s/);
+  });
+
+  it("keeps Thought process collapsible after completion with steps, consulted tables, governed measures, and zero shimmer dots, and renders Artifact Cards for side panel", async () => {
+    const onOpenArtifact = vi.fn();
+    const completed: Answer = {
+      ...simple,
+      charts: [{ ...monthlyChart, sql: "SELECT month, revenue FROM sales_invoices" }],
+      definitions: [{ id: "rev_net", name: "Net invoiced revenue", definition: "Posted sales invoices net of credit memos.", owner: "Finance", version: "v1", defined_on: "2026-11-23" }],
+    };
+    render(
+      <AnswerCard
+        turn={{
+          id: "t-done-trace",
+          question: "Show monthly revenue",
+          phase: "done",
+          streamed: "",
+          simple: true,
+          steps: ["Queried sales_invoices by month", "Applied governed Finance revenue measure"],
+          answer: completed,
+        }}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+
+    const thought = screen.getByTestId("thought-process");
+    expect(thought).not.toHaveAttribute("open");
+    expect(thought.querySelector(".skeleton-shimmer")).toBeNull();
+    expect(screen.getByTestId("thought-process-summary")).toHaveTextContent("Thought process");
+    expect(screen.getByTestId("thought-process-summary")).toHaveTextContent("2 steps");
+    expect(screen.getByTestId("thought-process-summary")).toHaveTextContent("1 measure");
+
+    await userEvent.click(screen.getByTestId("thought-process-summary"));
+    expect(thought).toHaveAttribute("open");
+    expect(screen.getByTestId("thought-process-steps")).toHaveTextContent("Queried sales_invoices by month");
+    expect(screen.getByTestId("thought-process-sources")).toHaveTextContent("supplier balances");
+    expect(screen.getByTestId("thought-process-measures")).toHaveTextContent("Net invoiced revenue");
+
+    const card = screen.getByTestId("artifact-card");
+    expect(card).toHaveTextContent("Monthly revenue for 2026 (CAD)");
+    await userEvent.click(screen.getByTestId("open-side-panel"));
+    expect(onOpenArtifact).toHaveBeenCalledTimes(1);
+    expect(onOpenArtifact.mock.calls[0][0]).toMatchObject({ kind: "chart", title: "Monthly revenue for 2026 (CAD)" });
   });
 });

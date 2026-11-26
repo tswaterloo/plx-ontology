@@ -6,6 +6,8 @@ import { Suspense, useEffect } from "react";
 import { AssistWorkflowsView } from "@/components/autopilot/assist-workflows";
 import { AuditView } from "@/components/autopilot/audit";
 import { AutopilotView } from "@/components/autopilot/area";
+import { AssistMemoryView } from "@/components/autopilot/memory-tab";
+import { AssistSuggestionsView } from "@/components/autopilot/suggestions-tab";
 import { AssistWorkbench } from "@/components/autopilot/workbench";
 import { StoredAge } from "@/components/ui/stored-age";
 import { FeedNote } from "@/components/feed-note";
@@ -21,11 +23,11 @@ import { useStaleRefresh } from "@/lib/stale-refresh";
 import type { AutopilotArea } from "@/lib/types";
 import { useRead } from "@/lib/use-read";
 
-// Assist: where a person sees and controls what the Workbench prepares for them. Prepared work
-// (each item with its plan) and the drafts waiting for their OK, their workflows, their routines,
-// what Assist did for them, and the switches. A send is still confirmed by the named sender in the app.
-type Show = "prepared" | "workflows" | "log" | "switches";
-const SHOWS: Show[] = ["prepared", "workflows", "log", "switches"];
+// Assist: where a person sees and controls what the Workbench prepares for them. Ready-for-you
+// queue (matters and AI-prepared drafts/jobs), proactive suggestions, recurring workflows,
+// persistent memory, what Assist did, and switches. Every send is still confirmed by the person.
+type Show = "prepared" | "suggestions" | "workflows" | "memory" | "log" | "switches";
+const SHOWS: Show[] = ["prepared", "suggestions", "workflows", "memory", "log", "switches"];
 
 export default function AssistPage() {
   return (
@@ -38,7 +40,7 @@ export default function AssistPage() {
 function Assist() {
   const params = useSearchParams();
   const raw = params.get("show");
-  const normalized = raw === "routines" ? "workflows" : raw;
+  const normalized = raw === "routines" ? "workflows" : raw === "queue" ? "prepared" : raw;
   const show: Show = normalized && SHOWS.includes(normalized as Show) ? (normalized as Show) : "prepared";
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-bg" data-own-scroll={show === "prepared" ? "" : undefined}>
@@ -49,15 +51,23 @@ function Assist() {
         className={
           show === "prepared"
             ? "flex min-h-0 w-full flex-1 flex-col overflow-hidden"
-            : "flex min-h-0 w-full flex-1 flex-col px-4 py-4 lg:px-6 lg:py-5"
+            : "flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-4 py-4 lg:px-6 lg:py-5"
         }
         data-testid={`assist-${show}`}
       >
         {show === "prepared" ? (
           <AssistWorkbench linked={params.get("item")} />
+        ) : show === "suggestions" ? (
+          <AssistSuggestionsView />
         ) : show === "workflows" ? (
           <AssistWorkflowsView />
-        ) : show === "log" ? <LogTab /> : <SwitchesTab />}
+        ) : show === "memory" ? (
+          <AssistMemoryView />
+        ) : show === "log" ? (
+          <LogTab />
+        ) : (
+          <SwitchesTab />
+        )}
       </div>
     </div>
   );

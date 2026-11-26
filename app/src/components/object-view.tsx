@@ -2,7 +2,7 @@
 
 import { PartyPulse } from "./record/party-pulse";
 import { DocumentsSection } from "@/components/record/documents";
-import { ArrowLeft, ArrowUpRight, Bookmark, CalendarClock, ChevronDown, FolderOpen, MessageCircle } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bookmark, CalendarClock, ChevronDown, ChevronRight, FolderOpen, Loader2, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -1180,7 +1180,7 @@ function SameName({ obj }: { obj: ObjectPage }) {
 /** A sales order's own figures, read from its facts: total, ordered, requested. */
 function salesFigures(obj: ObjectPage) {
   const f = factMap(obj.facts);
-  const get = (...keys: string[]) => keys.map((k) => f.get(k)?.value).find((v) => v && v.trim());
+  const get = (...keys: string[]) => keys.map((k) => f.get(k)?.value).find((v) => typeof v === "string" && v.trim());
   const currency = get("currency", "currency_code");
   const total = moneyText(get("total_amount_including_tax", "total_amount_excluding_tax", "total_amount", "amount_including_vat", "amount", "total"), currency);
   // a header holding no total (Sage zeroes it once invoiced): the value the API derived
@@ -1342,7 +1342,54 @@ export function withDoor(head: RecordHead, door: BizPage | null | undefined): Re
   return head;
 }
 
-export function ObjectView({ type, id, missing, door: given }: { type: string; id: string; missing?: ReactNode; door?: BizPage | null }) {
+const PRIMARY_SECTIONS = new Set<SectionName>(["late", "trail"]);
+
+function LazySectionGate({
+  name,
+  title,
+  hint,
+  onLoad,
+}: {
+  name: SectionName;
+  title: string;
+  hint: string;
+  onLoad: (name: SectionName) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2" data-testid={`lazy-section-${name}`}>
+      <div>
+        <h2 className="text-[13.5px] font-semibold text-fg">{title}</h2>
+        <p className="text-[12px] text-muted">{hint}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onLoad(name)}
+        className="inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2 cursor-pointer"
+      >
+        <ChevronRight className="size-3.5 text-muted" aria-hidden />
+        <span>Load {title.toLowerCase()}</span>
+      </button>
+    </div>
+  );
+}
+
+export function ObjectView({
+  type,
+  id,
+  missing,
+  door: given,
+  doorError,
+  onRetryDoor,
+  lazySections = false,
+}: {
+  type: string;
+  id: string;
+  missing?: ReactNode;
+  door?: BizPage | null;
+  doorError?: string | null;
+  onRetryDoor?: () => void;
+  lazySections?: boolean;
+}) {
   const params = useSearchParams();
   const routeLabel = params?.get("label");
   const [obj, setObj] = useState<ObjectPage | null>(null);
@@ -1357,6 +1404,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   const [pending, setPending] = useState<ReadonlySet<SectionName>>(new Set());
   const [sectionStale, setSectionStale] = useState<string | null>(null);
   const [failed, setFailed] = useState<ReadonlySet<SectionName>>(new Set());
+  const [openedLazy, setOpenedLazy] = useState<ReadonlySet<SectionName>>(new Set());
   // the proactive engine's card for this record, when it drafted one, and its action's state
   const [card, setCard] = useState<ProactiveSuggestion | null>(null);
   const [cardState, setCardState] = useState<ActionResult | null>(null);
@@ -1366,6 +1414,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   // for a section (W2).
   const landedRef = useRef(new Map<SectionName, ObjectSection>());
   const staleSecRef = useRef(new Set<SectionName>());
+  const requestedSecRef = useRef(new Set<SectionName>());
   const objRef = useRef<ObjectPage | null>(null);
   objRef.current = obj;
   /**
@@ -1384,9 +1433,11 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       setObj(null);
       setPending(new Set());
       setFailed(new Set());
+      setOpenedLazy(new Set());
       setSectionStale(null);
       landedRef.current.clear();
       staleSecRef.current.clear();
+      requestedSecRef.current.clear();
     }
     // the sections landed so far, merged again into the quick read when it replaces the core
     // (a quiet read starts from every section the page already holds)
@@ -1398,7 +1449,8 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       started = true;
       // the margin is a customer's or a sales order's only
       // what a person corresponds about is a person's only; the sheets-and-mail lists a customer's, supplier's or item's; a formula is a product's
-      const names = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
+      const applicable = PAGE_SECTIONS.filter((n) => (n !== "margin" || first.type === "Customer" || first.type === "SalesOrder") && (n !== "knows" || first.type === "Person") && (n !== "documents" || DOCUMENT_LIST_TYPES.includes(first.type)) && (n !== "formula" || FORMULA_TYPES.includes(first.type)));
+      const names = lazySections ? applicable.filter((n) => PRIMARY_SECTIONS.has(n)) : applicable;
       if (!quiet) setPending(new Set(names));
       else setFailed(new Set());
       // a quiet read asks again only for the sections the server last answered stale
@@ -1409,6 +1461,7 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       let oldest: string | null = null;
       if (quiet && waiting === 0) setSectionStale(null);
       for (const name of ask) {
+        requestedSecRef.current.add(name);
         getObjectSection(name, first.type, first.object_id, c.signal)
           .then((sec) => {
             if (c.signal.aborted) return;
@@ -1485,7 +1538,42 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
         setError(/took too long|^Timed out/.test(msg) ? `This ${typeLabel(type).toLowerCase()} timed out. Try again in a minute.` : msg);
       });
     return () => c.abort();
-  }, [type, id]);
+  }, [type, id, lazySections]);
+
+  const loadLazySection = useCallback((name: SectionName) => {
+    const page = objRef.current;
+    if (!page) return;
+    setOpenedLazy((s) => (s.has(name) ? s : new Set(s).add(name)));
+    if (requestedSecRef.current.has(name) || page.complete !== false) return;
+    requestedSecRef.current.add(name);
+    setPending((p) => new Set(p).add(name));
+    setFailed((f) => {
+      if (!f.has(name)) return f;
+      const next = new Set(f);
+      next.delete(name);
+      return next;
+    });
+    getObjectSection(name, page.type, page.object_id)
+      .then((sec) => {
+        landedRef.current.set(name, sec);
+        if (sec.stale_since) {
+          staleSecRef.current.add(name);
+          setSectionStale((t) => (!t || sec.stale_since! < t ? sec.stale_since! : t));
+        }
+        setObj((o) => (o ? mergeSection(o, sec) : o));
+      })
+      .catch(() => {
+        requestedSecRef.current.delete(name);
+        setFailed((f) => new Set(f).add(name));
+      })
+      .finally(() => {
+        setPending((p) => {
+          const next = new Set(p);
+          next.delete(name);
+          return next;
+        });
+      });
+  }, []);
   // Every read, the first, a Retry and the stale follow-up, goes through this one effect, so
   // leaving the record (or asking again) aborts the read it replaces: an old record's answer
   // can never land on the new record's page.
@@ -1594,6 +1682,74 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
   useEffect(() => {
     if (openedLabel) rememberOpened({ type, label: openedLabel, href: objectHref(type, id) });
   }, [openedLabel, type, id]);
+
+  // Render fast business-table door immediately when available instead of blocking behind ObjectSkeleton.
+  if (!obj && door) {
+    const doorAskLabel = door.title || routeLabel || recordLabel(type, id);
+    const doorActions = (
+      <>
+        <ToolbarButton
+          aria-pressed={isSaved}
+          onClick={() => toggleSaved({ key, kind: "object", label: doorAskLabel, href: objectHref(type, id) })}
+          className={cn(isSaved && "text-fg")}
+          title={isSaved ? "Saved" : "Save"}
+        >
+          <Bookmark className={cn(isSaved && "fill-current")} strokeWidth={2} aria-hidden />
+          <span className="max-sm:sr-only">{isSaved ? "Saved" : "Save"}</span>
+        </ToolbarButton>
+        <Link
+          href={`/ask?q=${encodeURIComponent(`What's the latest on ${doorAskLabel}?`)}`}
+          className="ml-1 inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,transform] duration-150 hover:border-border-strong hover:bg-hover active:scale-[0.98] [&_svg]:size-[14px]"
+        >
+          <MessageCircle strokeWidth={2} aria-hidden />
+          <span className="max-sm:sr-only">Ask</span>
+        </Link>
+      </>
+    );
+    return (
+      <Frame
+        crumb={<Crumb type={type} title={door.title} />}
+        actions={doorActions}
+        main={
+          <>
+            <div className="space-y-4 rounded-xl border border-border bg-surface p-5" data-testid="door-instant-view">
+              <div className="space-y-1.5">
+                <span className="inline-flex items-center rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-medium text-muted" data-testid="record-kind-badge">
+                  {typeLabel(type)}
+                </span>
+                <h1 className="text-[24px] leading-[30px] font-semibold tracking-[-0.025em] text-fg" data-testid="object-title">
+                  {door.title}
+                </h1>
+                {door.subtitle && <p className="text-[13px] text-muted">{door.subtitle}</p>}
+                {error ? (
+                  <p className="mt-2 text-[12px] text-muted" role="status" data-testid="door-ontology-error">
+                    Showing live ERP tables. Ontology links could not load right now.{" "}
+                    <button type="button" onClick={retry} className="font-medium text-fg underline decoration-border-strong underline-offset-2 cursor-pointer">
+                      Try again
+                    </button>
+                  </p>
+                ) : (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-muted" role="status" data-testid="door-enriching">
+                    <Loader2 className="size-3 shrink-0 animate-spin text-muted" aria-hidden />
+                    Loading linked messages, timeline, and status checks...
+                  </p>
+                )}
+              </div>
+              <BizArticle page={door} />
+            </div>
+          </>
+        }
+        inspector={
+          <section className="rounded-xl border border-border bg-surface p-4">
+            <SectionTitle>Ontology links</SectionTitle>
+            <p className="text-[12.5px] text-muted">
+              {error ? "Additional ontology links are unavailable right now." : "Loading linked records, people, and activity..."}
+            </p>
+          </section>
+        }
+      />
+    );
+  }
 
   if (error && !obj && notFound)
     return (
@@ -1809,8 +1965,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
         {isCustomer && <SameName obj={obj} />}
         {(pending.size > 0 || walking) && (
           <p className="mt-2 inline-flex items-center gap-1.5 text-[12px] leading-4 text-muted" role="status" data-testid="checking" data-pending="">
-            <span className="size-1.5 rounded-full bg-[var(--dot-neutral)]" aria-hidden />
-            Loading {walking ? `its status, history and links${pending.size > 0 ? `; ${sectionWords(pending)}` : ""}` : sectionWords(pending)}…
+            <Loader2 className="size-3 shrink-0 animate-spin text-muted" aria-hidden />
+            Loading {walking ? `its status, history and links${pending.size > 0 ? `; ${sectionWords(pending)}` : ""}` : sectionWords(pending)}...
+          </p>
+        )}
+        {doorError && !door && (
+          <p className="mt-2 text-[12px] leading-4 text-muted" role="status" data-testid="door-load-error">
+            Business table details could not be loaded ({doorError}).{" "}
+            {onRetryDoor && (
+              <button type="button" onClick={onRetryDoor} className="font-medium text-fg underline decoration-border-strong underline-offset-2 cursor-pointer">
+                Retry
+              </button>
+            )}
           </p>
         )}
         {pending.size === 0 && failed.size > 0 && (
@@ -2025,7 +2191,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       )}
       {(isCustomer || isSalesOrder) && (
         <div className={mainCard}>
-          {pending.has("margin") ? <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} /> : <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />}
+          {lazySections && obj.complete === false && !openedLazy.has("margin") && !obj.profitability ? (
+            <LazySectionGate
+              name="margin"
+              title={isCustomer ? "Profitability" : "Margin"}
+              hint="Calculate gross margin and cost breakdown on demand."
+              onLoad={loadLazySection}
+            />
+          ) : pending.has("margin") ? (
+            <SectionSkeleton name="margin" title={isCustomer ? "Profitability" : "Margin"} lines={3} />
+          ) : (
+            <MarginCard p={obj.profitability} order={isSalesOrder} objectId={obj.object_id} revenue={obj.customer?.revenue ?? []} choices={obj.profitability_choices ?? []} />
+          )}
         </div>
       )}
       {!orderLines && (
@@ -2047,7 +2224,16 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
           <CustodyRail custody={custody} />
         </div>
       )}
-      {pending.has("landed_cost") ? (
+      {lazySections && isPo && obj.complete === false && !openedLazy.has("landed_cost") && !obj.landed_cost ? (
+        <div className={mainCard}>
+          <LazySectionGate
+            name="landed_cost"
+            title="Landed cost"
+            hint="Load freight, duty, and landed unit cost calculations."
+            onLoad={loadLazySection}
+          />
+        </div>
+      ) : pending.has("landed_cost") ? (
         isPo && <SectionSkeleton name="landed_cost" title="Landed cost" lines={0} />
       ) : (
         obj.landed_cost && obj.landed_cost.status !== "not_established" && (
@@ -2058,7 +2244,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       )}
       {FORMULA_TYPES.includes(obj.type) && (
         <div className={mainCard}>
-          {pending.has("formula") ? <SectionSkeleton name="formula" title="Formula" lines={3} /> : <FormulaCard f={obj.formula ?? null} />}
+          {lazySections && obj.complete === false && !openedLazy.has("formula") && !obj.formula ? (
+            <LazySectionGate
+              name="formula"
+              title="Formula"
+              hint="Read formula sheets, ingredient shares, and raw-material costs."
+              onLoad={loadLazySection}
+            />
+          ) : pending.has("formula") ? (
+            <SectionSkeleton name="formula" title="Formula" lines={3} />
+          ) : (
+            <FormulaCard f={obj.formula ?? null} />
+          )}
         </div>
       )}
       {!walking && (
@@ -2074,7 +2271,18 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
       {!walking && <ImpactCard type={obj.type} id={obj.object_id} />}
       {DOCUMENT_LIST_TYPES.includes(obj.type) && (
         <div className={mainCard}>
-          {pending.has("documents") ? <SectionSkeleton name="documents" title="Sheets and mail" lines={3} /> : <DocumentLists docs={obj.documents} />}
+          {lazySections && obj.complete === false && !openedLazy.has("documents") && !obj.documents ? (
+            <LazySectionGate
+              name="documents"
+              title="Sheets and mail"
+              hint="Load linked spreadsheets, PDFs, and email attachments."
+              onLoad={loadLazySection}
+            />
+          ) : pending.has("documents") ? (
+            <SectionSkeleton name="documents" title="Sheets and mail" lines={3} />
+          ) : (
+            <DocumentLists docs={obj.documents} />
+          )}
         </div>
       )}
       {PACK_TYPES.includes(obj.type) && (
@@ -2171,15 +2379,35 @@ export function ObjectView({ type, id, missing, door: given }: { type: string; i
           </dl>}
       </section>
       )}
-      {(pending.has("people") || (obj.people ?? []).length > 0) && (
+      {lazySections && obj.complete === false && !openedLazy.has("people") && (obj.people ?? []).length === 0 ? (
+        <div className={railCard}>
+          <LazySectionGate
+            name="people"
+            title="People"
+            hint="Load contacts and owners."
+            onLoad={loadLazySection}
+          />
+        </div>
+      ) : (pending.has("people") || (obj.people ?? []).length > 0) && (
         <div className={railCard}>
           {pending.has("people") ? <SectionSkeleton name="people" title="People" lines={2} /> : <People people={obj.people ?? []} />}
         </div>
       )}
-      {obj.type === "Person" && (pending.has("knows") || obj.knows) && (
-        <div className={railCard}>
-          {pending.has("knows") ? <SectionSkeleton name="knows" title="Works on" lines={3} /> : <KnowsCard k={obj.knows ?? null} />}
-        </div>
+      {obj.type === "Person" && (
+        lazySections && obj.complete === false && !openedLazy.has("knows") && !obj.knows ? (
+          <div className={railCard}>
+            <LazySectionGate
+              name="knows"
+              title="Works on"
+              hint="Load top accounts and items."
+              onLoad={loadLazySection}
+            />
+          </div>
+        ) : (pending.has("knows") || obj.knows) && (
+          <div className={railCard}>
+            {pending.has("knows") ? <SectionSkeleton name="knows" title="Works on" lines={3} /> : <KnowsCard k={obj.knows ?? null} />}
+          </div>
+        )
       )}
       {(walking || byLink || otherRelated.length > 0) && (
         <div className={cn(railCard, "space-y-4 empty:hidden")}>

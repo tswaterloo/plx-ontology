@@ -10,6 +10,15 @@ const saveInsight = vi.fn();
 const setInsightSchedule = vi.fn();
 const readInsightFiltered = vi.fn();
 const proposeMeasureCandidate = vi.fn();
+const getObserved = vi.fn();
+const getGaps = vi.fn();
+const sendNoteFeedback = vi.fn();
+const getMeasureCandidates = vi.fn().mockResolvedValue({ candidates: [], counts: { pending: 0, approved: 0, dismissed: 0 }, total: 0, can_review: true });
+const approveMeasureCandidate = vi.fn();
+const dismissMeasureCandidate = vi.fn();
+const getFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
+const getAllFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
+const setFeedbackStatus = vi.fn();
 vi.mock("@/lib/api", () => ({
   readInsightFiltered: (...a: unknown[]) => readInsightFiltered(...a),
   setInsightSchedule: (...a: unknown[]) => setInsightSchedule(...a),
@@ -17,6 +26,15 @@ vi.mock("@/lib/api", () => ({
   deleteInsight: (...a: unknown[]) => deleteInsight(...a),
   saveInsight: (...a: unknown[]) => saveInsight(...a),
   proposeMeasureCandidate: (...a: unknown[]) => proposeMeasureCandidate(...a),
+  getObserved: (...a: unknown[]) => getObserved(...a),
+  getGaps: (...a: unknown[]) => getGaps(...a),
+  sendNoteFeedback: (...a: unknown[]) => sendNoteFeedback(...a),
+  getMeasureCandidates: (...a: unknown[]) => getMeasureCandidates(...a),
+  approveMeasureCandidate: (...a: unknown[]) => approveMeasureCandidate(...a),
+  dismissMeasureCandidate: (...a: unknown[]) => dismissMeasureCandidate(...a),
+  getFeedback: (...a: unknown[]) => getFeedback(...a),
+  getAllFeedback: (...a: unknown[]) => getAllFeedback(...a),
+  setFeedbackStatus: (...a: unknown[]) => setFeedbackStatus(...a),
 }));
 
 vi.mock("@/components/insights/ask-here", () => ({ InsightsAsk: () => <div data-testid="insights-ask" /> }));
@@ -50,10 +68,14 @@ const result = (id: string): InsightResult => ({
 });
 
 beforeEach(() => {
+  window.localStorage.clear();
   getInsight.mockReset().mockImplementation((id: string) => Promise.resolve(result(id)));
   deleteInsight.mockReset().mockResolvedValue(undefined);
   saveInsight.mockReset().mockResolvedValue({});
   proposeMeasureCandidate.mockReset().mockResolvedValue({ id: "mc-1", status: "pending" });
+  getObserved.mockReset().mockResolvedValue({ available: true, days: [], failures: [] });
+  getGaps.mockReset().mockResolvedValue({ on: true, gaps: [] });
+  sendNoteFeedback.mockReset().mockResolvedValue({ id: "fb-1", status: "open" });
 });
 
 describe("insights dashboard in one request", () => {
@@ -69,15 +91,34 @@ describe("insights dashboard in one request", () => {
     fireEvent.click(screen.getAllByText("Refresh")[0]);
     await waitFor(() => expect(getInsight).toHaveBeenCalledWith("team_output", expect.anything(), true, expect.anything()));
   });
+
+  it("shows a clean Preparing chart state while warming after a cold start (waiting / 425) and draws once ready", async () => {
+    let finish: (r: InsightResult) => void = () => undefined;
+    getInsight.mockImplementation((_id: string, _sig?: AbortSignal, _again?: boolean, onStored?: { onFilling?: () => void }) => {
+      onStored?.onFilling?.();
+      return new Promise<InsightResult>((res) => { finish = res; });
+    });
+    const feed = { team_output: { later: true, waiting: true }, s7: { result: result("s7") } };
+    render(<InsightsDashboard list={list} onChanged={vi.fn()} feed={feed} streaming={false} />);
+    await waitFor(() => expect(screen.getByText("Preparing chart...")).toBeTruthy());
+    expect(screen.queryByRole("alert")).toBeNull();
+    finish(result("team_output"));
+    await waitFor(() => expect(screen.getByRole("img", { name: "Work sent per person" })).toBeTruthy());
+    expect(screen.queryByText("Preparing chart...")).toBeNull();
+  });
 });
 
 describe("a measure's tile", () => {
-  it("states the agreed definition its figures are, with owner, version and the day it was set, without opening Details", async () => {
+  it("shows compact owner/version in the header and full agreed definition inside Details", async () => {
     const measure = { id: "revenue", name: "Revenue invoiced", definition: "Net line revenue on posted sales invoices.", owner: "Finance", version: "v78103d58", defined_on: "2026-11-23" };
     const tile = { ...base, id: "measure_revenue", title: "Revenue invoiced", group: "Measures: Finance", chart: null, measure };
     const one: InsightList = { ...list, items: [tile] };
     getInsight.mockImplementation(() => Promise.resolve({ ...result("team_output"), ...tile, drawn: null }));
     render(<InsightsDashboard list={one} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("verified-pill-measure_revenue")).toBeTruthy());
+    expect(screen.getByTestId("verified-pill-measure_revenue")).toHaveTextContent("Finance");
+    expect(screen.getByTestId("verified-pill-measure_revenue")).toHaveTextContent("v78103d58");
+    fireEvent.click(screen.getByText("Details"));
     await waitFor(() => expect(screen.getByTestId("measure-definition-measure_revenue")).toBeTruthy());
     expect(screen.getByTestId("measure-definition-measure_revenue")).toHaveTextContent(
       "Revenue invoiced (agreed definition): Net line revenue on posted sales invoices. Owner Finance, definition v78103d58, set 23 Nov 2026.");
@@ -215,8 +256,9 @@ describe("insights dashboard", () => {
     expect(screen.queryByText("SELECT person, mail_sent FROM x")).toBeNull();
     // each tile asks about itself in Ask
     expect(screen.getAllByRole("link", { name: "Ask about this" })[0].getAttribute("href")).toBe(`/ask?q=${encodeURIComponent(askAbout("Work sent per person"))}`);
-    // a saved one without a chart shows its rows; only a saved one can be removed
+    // a saved one without a chart shows its rows; only a saved one can be removed via its overflow menu
     await waitFor(() => expect(screen.getAllByText("A. Person").length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByTestId("tile-menu-s7"));
     expect(screen.getAllByText("Remove")).toHaveLength(1);
     fireEvent.click(screen.getByText("Remove"));
     await waitFor(() => expect(deleteInsight).toHaveBeenCalledWith("s7"));
@@ -272,14 +314,16 @@ describe("insights dashboard", () => {
     expect(screen.queryByText(/Pin all/)).toBeNull();
   });
 
-  it("lists the agreed measures with their definitions and a question to try each in Ask", () => {
+  it("lists the agreed measures in Ontology & Measures with their definitions and a question to try each in Ask", () => {
     const measures = [{ id: "revenue", name: "Revenue invoiced", definition: "Net line revenue on posted sales invoices.", owner: "Finance", unit: "money", source: "sales_invoice_lines",
       dimensions: ["customer", "month"], period: "last 30 days by invoice_date", ask: "Why did revenue change last month?" }];
     render(<InsightsDashboard list={{ ...list, measures }} onChanged={() => {}} />);
-    fireEvent.click(screen.getByText("Show all 1"));
-    expect(screen.getByText("Net line revenue on posted sales invoices.")).toBeTruthy();
-    const link = screen.getByText("Why did revenue change last month?").closest("a");
-    expect(link?.getAttribute("href")).toBe(`/ask?q=${encodeURIComponent("Why did revenue change last month?")}`);
+    // No redundant Measures accordion dumped at the bottom of the Dashboard tab
+    expect(screen.queryByText("Show all 1")).toBeNull();
+    fireEvent.click(screen.getByTestId("tab-ontology"));
+    expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Net line revenue on posted sales invoices.");
+    const askLink = screen.getByTestId("inspector-ask-btn");
+    expect(askLink.getAttribute("href")).toBe(`/ask?q=${encodeURIComponent("Why did revenue change last month?")}`);
   });
 
   it("a tile that cannot be read says what is missing, never asks the reader to rephrase it", async () => {
@@ -312,9 +356,9 @@ describe("insights dashboard", () => {
     const watched = { ...list.items[1], schedule: "daily" as const, notify: "crosses" as const, watch: { column: "late_orders", op: "above" as const, value: 5, row: "any" as const } };
     render(<InsightsDashboard list={{ ...list, items: [list.items[0], watched] }} onChanged={vi.fn()} />);
     expect(screen.getByTestId("monitors")).toHaveTextContent("Open orders by month");
-    expect(screen.getByTestId("monitors")).toHaveTextContent("Every morning, tells you when late orders goes above 5");
+    expect(screen.getByTestId("monitors")).toHaveTextContent("Daily schedule, alerts when late orders goes above 5");
     expect(screen.getByTestId("monitors")).not.toHaveTextContent("Work sent per person");   // a built-in runs no schedule
-    expect(monitorLine({ ...watched, notify: "new_rows", watch: null })).toBe("Every morning, tells you when a new row appears");
+    expect(monitorLine({ ...watched, notify: "new_rows", watch: null })).toBe("Daily schedule, alerts on new rows");
   });
 
   it("with no monitor there is no empty Monitors section, and the page says how to make one", () => {
@@ -352,7 +396,7 @@ describe("insights dashboard", () => {
     await waitFor(() => expect(setInsightSchedule).toHaveBeenCalledWith("s7", { schedule: "daily", notify: "crosses", watch: { column: "revenue", op: "below", value: 400000, row: "latest", order: "month" } }));
     await waitFor(() => expect(screen.getByText("Watching the latest revenue below 400000")).toBeTruthy());
     expect(monitorLine({ ...saved, watch: { column: "revenue", op: "below", value: 400000, row: "latest", where: { column: "currency", value: "USD" } } }))
-      .toBe("Every morning, tells you when the latest revenue in USD goes below 400000");
+      .toBe("Daily schedule, alerts when the latest revenue in USD goes below 400000");
   });
 
   it("'Tell me when' sends the words to the Ask with the chart it is on; nothing is set here", () => {
@@ -529,6 +573,8 @@ describe("proposing a saved tile as a shared definition", () => {
   it("submits the saved tile's SQL to /api/measures/candidates and confirms submission", async () => {
     const savedOnly = { ...list, items: [list.items[1]] };
     render(<InsightsDashboard list={savedOnly} onChanged={vi.fn()} feed={{ s7: { result: result("s7") } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("tile-menu-s7")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("tile-menu-s7"));
     await waitFor(() => expect(screen.getByTestId("propose-s7")).toBeTruthy());
     fireEvent.click(screen.getByTestId("propose-s7"));
     await waitFor(() => expect(proposeMeasureCandidate).toHaveBeenCalledWith({
@@ -592,7 +638,146 @@ describe("multi-panel chart counts and category breakdown", () => {
     render(<InsightsDashboard list={combined} onChanged={vi.fn()} />);
     fireEvent.click(screen.getByRole("tab", { name: /Finance/ }));
     const breakdown = screen.getByTestId("category-breakdown");
-    expect(breakdown).toHaveTextContent("2 charts · 3 measures");
+    expect(breakdown).toHaveTextContent("2 charts");
+    expect(breakdown).toHaveTextContent("3 measures");
     expect(breakdown).toHaveTextContent("Jump to measures (3)");
+  });
+});
+
+describe("Bento grid resize, KPI cards, SQL inspector, and Benchmarks tab", () => {
+  it("resizes tiles via S/M/L/Full controls in Customize mode and persists in localStorage", async () => {
+    const one: InsightList = { ...list, items: [list.items[0]] };
+    render(<InsightsDashboard list={one} onChanged={vi.fn()} feed={{ team_output: { result: result("team_output") } }} streaming={false} />);
+    const tile = screen.getByTestId("insight-team_output");
+    expect(tile.getAttribute("data-bento-size")).toBe("m");
+
+    fireEvent.click(screen.getByRole("button", { name: "Customize" }));
+    const resizeGroup = screen.getByTestId("tile-resize-team_output");
+    fireEvent.click(resizeGroup.querySelectorAll("button")[3]); // Full (12-col)
+    expect(tile.getAttribute("data-bento-size")).toBe("full");
+    expect(window.localStorage.getItem("plx.insights.bento.v1")).toContain('"team_output":"full"');
+
+    fireEvent.click(screen.getByTestId("reset-bento-layout"));
+    expect(tile.getAttribute("data-bento-size")).toBe("m");
+  });
+
+  it("renders Executive KPI summary for KPI tiles and opens SQL inspector from the header SQL button", async () => {
+    const kpiTile = {
+      ...base,
+      id: "kpi_rev",
+      title: "Monthly Revenue",
+      measure: { id: "revenue", name: "Revenue invoiced", definition: "Net revenue.", owner: "Finance", version: "v1", defined_on: "2026-11-23" },
+      chart: null,
+    };
+    const kpiResult: InsightResult = {
+      ...result("team_output"),
+      ...kpiTile,
+      sql: "SELECT month, revenue FROM monthly_rev",
+      drawn: {
+        kind: "kpi",
+        title: "Monthly Revenue",
+        x: "month",
+        labels: ["Oct", "Nov"],
+        series: [{ name: "revenue", values: [100000, 120000] }],
+        currency: "USD",
+        as_of: "2026-11-25",
+        sql: "SELECT month, revenue FROM monthly_rev",
+      },
+    };
+    render(<InsightsDashboard list={{ ...list, items: [kpiTile] }} onChanged={vi.fn()} feed={{ kpi_rev: { result: kpiResult } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("kpi-bento-summary")).toBeTruthy());
+    expect(screen.getByTestId("insight-kpi_rev").getAttribute("data-bento-size")).toBe("s");
+    expect(screen.getByTestId("verified-pill-kpi_rev")).toHaveTextContent("Finance");
+    expect(screen.getByTestId("verified-pill-kpi_rev")).toHaveTextContent("v1");
+    expect(screen.getByTestId("resize-handle-kpi_rev")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("sql-trigger-kpi_rev"));
+    expect(screen.getByText("SELECT month, revenue FROM monthly_rev")).toBeTruthy();
+  });
+
+  it("resizes tiles via the 1-click Layout popover and keeps corner drag free of conflicting click jumps", async () => {
+    const one: InsightList = { ...list, items: [list.items[0]] };
+    render(<InsightsDashboard list={one} onChanged={vi.fn()} feed={{ team_output: { result: result("team_output") } }} streaming={false} />);
+    const tile = screen.getByTestId("insight-team_output");
+    expect(tile.getAttribute("data-bento-size")).toBe("m");
+
+    // Clean overflow menu resizes width & height cleanly
+    fireEvent.click(screen.getByTestId("tile-menu-team_output"));
+    const menu = screen.getByTestId("tile-menu-popover-team_output");
+    const wideBtn = Array.from(menu.querySelectorAll("button")).find((b) => b.textContent?.trim() === "L");
+    expect(wideBtn).toBeTruthy();
+    fireEvent.click(wideBtn!);
+    expect(tile.getAttribute("data-bento-size")).toBe("l");
+
+    // Clicking the corner resize handle without dragging must NOT unexpectedly snap/cycle to another size
+    const corner = screen.getByTestId("resize-handle-team_output");
+    fireEvent.click(corner);
+    expect(tile.getAttribute("data-bento-size")).toBe("l");
+
+    // Dragging the corner handle smoothly previews and snaps on pointer release
+    fireEvent.pointerDown(corner, { button: 0, clientX: 400, clientY: 200 });
+    expect(screen.getByTestId("resize-preview-team_output")).toBeTruthy();
+    fireEvent.pointerMove(window, { clientX: 900, clientY: 280 });
+    fireEvent.pointerUp(window);
+    expect(screen.queryByTestId("resize-preview-team_output")).toBeNull();
+    expect(tile.getAttribute("data-bento-size")).toBe("full");
+    expect(tile.getAttribute("data-bento-height")).toBe("tall");
+  });
+
+  it("switches smoothly between the Liquid Glass tabs (My canvas, All views, Ontology, Monitors) with zero AI brochure cards", async () => {
+    const measures = [{
+      id: "revenue",
+      name: "Revenue invoiced",
+      definition: "Net line revenue on posted sales invoices.",
+      owner: "Finance",
+      unit: "money",
+      source: "sales_invoice_lines",
+      dimensions: ["customer", "month"],
+      period: "last 30 days by invoice_date",
+      ask: "Why did revenue change last month?",
+    }];
+    render(<InsightsDashboard list={{ ...list, measures }} onChanged={vi.fn()} />);
+
+    expect(screen.getByTestId("tab-all-views")).toBeTruthy();
+    expect(screen.getByTestId("new-chart-link").getAttribute("href")).toBe("/ask");
+
+    fireEvent.click(screen.getByTestId("tab-ontology"));
+    expect(screen.getByTestId("ontology-tab-panel")).toBeTruthy();
+    expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
+    expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Revenue invoiced");
+
+    fireEvent.click(screen.getByTestId("subtab-measures-catalog"));
+    expect(screen.getByTestId("measures-catalog-table")).toHaveTextContent("Revenue invoiced");
+
+    fireEvent.click(screen.getByTestId("tab-monitors"));
+    expect(screen.getByTestId("monitors-tab-panel")).toHaveTextContent("Scheduled alerts");
+    await waitFor(() => expect(screen.getByTestId("benchmarks-panel")).toBeTruthy());
+    expect(screen.queryByTestId("genie-15-capabilities")).toBeNull();
+    fireEvent.click(screen.getByTestId("subtab-accuracy"));
+    expect(screen.getByText("Why did revenue change last month?")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("tab-dashboard"));
+    expect(screen.getAllByTestId("bento-grid").length).toBeGreaterThan(0);
+  });
+
+  it("starts with a curated 6-tile executive canvas for large libraries and toggles widgets via the library drawer without a Show all dump", () => {
+    const bigItems = Array.from({ length: 12 }, (_, idx) => ({
+      ...base,
+      id: `tile_${idx + 1}`,
+      title: `Chart ${idx + 1}`,
+      group: ["Finance", "Sales", "Purchasing", "Operations", "Quality", "Customers"][idx % 6],
+      chart: { kind: "bar" as const, x: "name", y: ["val"] },
+    }));
+    render(<InsightsDashboard list={{ ...list, items: bigItems }} onChanged={vi.fn()} />);
+    expect(screen.getByTestId("curated-canvas")).toBeTruthy();
+    expect(screen.getAllByRole("region").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll('section[id^="insight-"]').length).toBe(6);
+
+    fireEvent.click(screen.getByTestId("open-widget-library"));
+    const drawer = screen.getByTestId("widget-library-drawer");
+    expect(drawer).toBeTruthy();
+    expect(drawer).not.toHaveTextContent("Show all (12)");
+    fireEvent.click(screen.getByTestId("library-toggle-tile_7"));
+    expect(document.querySelectorAll('section[id^="insight-"]').length).toBe(7);
   });
 });

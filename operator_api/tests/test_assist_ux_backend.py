@@ -433,6 +433,50 @@ class PlannerOpenAndSlowEndpointsTests(unittest.TestCase):
         self.assertEqual(res_slow.status_code, 425, res_slow.text)
         self.assertEqual(res_slow.json()["error"]["code"], "insight_filling")
 
+
+class AssistMonitoringFilterAndDedupeTests(unittest.TestCase):
+    def test_automated_it_alerts_filtered_and_vince_promise_conversation_deduped_in_assist(self) -> None:
+        from operating import assist_readings as ar
+        from operator_api import home_needs as hn
+
+        for sender, subject, summary in (
+            ("cos@petrasoap.com", "Automated alert: the email-relay job failed on staging", ""),
+            ("", "Automated alert: the UAT Business Central sync has not run", ""),
+            ("", "UAT BC sync has not run for two days", ""),
+            ("", "Portal-to-BC sync has not run for two days", ""),
+            ("cos@petrasoap.com", "Automated daily health alert: eight Workbench API staging relations", ""),
+            ("", "Daily health check flags eight unavailable Workbench API relations", ""),
+            ("", "Daily Workbench API health alert reporting degraded views", ""),
+            ("cos@petrasoap.com", "Mission Control PR merge-class gate failed", ""),
+        ):
+            self.assertTrue(
+                ar.is_automated_system_alert(sender=sender, subject=subject, summary=summary),
+                f"Expected automated system alert to be filtered: {subject!r}",
+            )
+
+        # Vince's same-second promise + conversation raw matters collapse in favor of planned conversation
+        t = dt.datetime(2026, 11, 25, 15, 18, 33, tzinfo=dt.timezone.utc)
+        promise = {
+            "owner": "vince-oid",
+            "kind_of_matter": "promise",
+            "basis_at": t,
+            "subject": "You said: send the 8oz template to Greg",
+            "summary": "You said: send the 8oz template to Greg",
+            "plan_status": "none",
+            "body": "",
+        }
+        conv = {
+            "owner": "vince-oid",
+            "kind_of_matter": "conversation",
+            "basis_at": t,
+            "subject": "Vince has the 8oz template and will send it to Greg.",
+            "summary": "Vince has the 8oz template and will send it to Greg.",
+            "plan_status": "planned",
+            "body": "Sending the 8oz template now.",
+        }
+        self.assertTrue(hn.are_same_event_raw_matters(promise, conv))
+        self.assertGreater(hn.raw_matter_richness(conv), hn.raw_matter_richness(promise))
+
     def test_priority_pool_runs_urgent_tile_before_queued_measure_tiles(self) -> None:
         gate = threading.Event()
         order: list[str] = []
@@ -455,6 +499,31 @@ class PlannerOpenAndSlowEndpointsTests(unittest.TestCase):
         gate.set()
         pool.shutdown(wait=True)
         self.assertEqual(order[1], "builtin:planner_open")
+
+    def test_priority_pool_promotes_already_queued_tile_once_on_urgent_request(self) -> None:
+        gate = threading.Event()
+        order: list[str] = []
+
+        def fake_read(_r, sql):
+            if sql == "blocker":
+                gate.wait(2.0)
+            order.append(sql)
+            return {"got": {"columns": ["x"], "rows": []}, "read_at": "2026-11-25T00:00:00+00:00"}
+
+        pool = ic._PriorityPool(max_workers=1)
+        self.addCleanup(lambda: pool.shutdown(wait=True))
+        keeper = ic.Keeper(ic.Kept(lambda: 7, fresh=300.0), fake_read, pool=pool)
+        reader = ti.person("employee:owner")
+        keeper.ahead(reader, ["blocker"])
+        time.sleep(0.05)
+        # All three queued at background priority first (as insights_list does)
+        keeper.ahead(reader, ["builtin:a", "builtin:b", "builtin:measure_target"])
+        # User opens or stream requests measure_target urgently while it is still queued
+        keeper.ahead(reader, ["builtin:measure_target"], urgent=True)
+        gate.set()
+        pool.shutdown(wait=True)
+        # measure_target jumped ahead of builtin:a and builtin:b and ran exactly once
+        self.assertEqual(order, ["blocker", "builtin:measure_target", "builtin:a", "builtin:b"])
 
     def test_weekly_review_route_runs_under_first_partial(self) -> None:
         seen_partial: list[bool] = []

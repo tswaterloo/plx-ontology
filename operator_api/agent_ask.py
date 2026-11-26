@@ -107,9 +107,15 @@ def ticket_claims(session: Any) -> dict[str, str]:
 LIMIT_TEXT = re.compile(r"hit your (?:\w+[ -])?limit|usage limit|limit reached|rate[ -]limit"
                         r"|out of (?:extra )?usage|quota (?:exceeded|reached)|overloaded",
                         re.I)
-AUTH_TEXT = re.compile(r"invalid api key|run /login|please log ?in|not logged in"
-                       r"|oauth token (?:has )?expired|authentication[_ ](?:error|failed)"
-                       r"|unauthori[sz]ed|credit balance is too low", re.I)
+AUTH_TEXT = re.compile(
+    r"invalid api key|run /login|please log ?in|not logged in"
+    r"|(?:oauth\s+)?(?:access\s+)?token\s+(?:has\s+)?expired"
+    r"|re-?authenticate|authentication[_ ](?:error|failed)"
+    r"|unauthori[sz]ed|credit balance is too low"
+    r"|(?:api\s+error|status|http)\s*:?\s*401\b"
+    r"|\b401\b[^\n]{0,80}(?:auth|token|oauth|expired|unauthori[sz]ed|credential)",
+    re.I,
+)
 # the CLI's own words when the conversation no longer fits the model's context window
 # (a session that ended in an error with no answer: ``session_failure``): the CLI's one message
 # for it, read from its result text. Live-unverified: no run of this server has hit it yet.

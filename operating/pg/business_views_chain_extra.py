@@ -442,3 +442,7 @@ def _freight_bills(rd: Reader, as_of: dt.date) -> Iterator[Row]:
                     if fill(row, so_thing, "po_reference", "sage_order_number") is None:
                         fill(row, so_thing, "po_reference", "bc_number")
         yield row
+
+
+from operating.pg import business_views as _bv  # noqa: E402
+_bv._register_submodules()

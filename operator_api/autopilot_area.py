@@ -493,9 +493,42 @@ class AutopilotAreaMixin(AssistSwitchMixin):
             return {}
         last: dict[str, dict[str, Any]] = {}
         for row in Journal(state / DECISIONS_FILE).rows():
-            last[str(row.get("item_id"))] = row
+            iid = str(row.get("item_id"))
+            if row.get("decision") == "open":
+                last.pop(iid, None)
+            else:
+                last[iid] = row
         return carried(last, self._apa_replaced() if replaced is None else replaced,
                        lambda r: r.get("decision") == "snooze")
+
+    def autopilot_reopen(self, reader: Reader, item_id: str, *,
+                         reason: Optional[str] = None) -> bool:
+        """Undo a prior decision on a reader's Autopilot queue item in the decisions journal."""
+        state = self._apa_state()
+        if state is None:
+            return False
+        me = set(self._apa_me(reader))
+        is_owner = self._apa_is_owner(reader)
+        decisions_path = state / DECISIONS_FILE
+        if not decisions_path.exists():
+            return False
+        prior = None
+        for row in Journal(decisions_path).rows():
+            if str(row.get("item_id") or "") == item_id:
+                prior = row
+        if prior is None or prior.get("decision") == "open":
+            return False
+        if not (is_owner or prior.get("by") in me):
+            return False
+        now = datetime.now(timezone.utc)
+        state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with Journal(decisions_path).locked() as held:
+            held.append({"event": "item_decision", "item_id": item_id, "decision": "open",
+                         "at": _iso(now), "by": sorted(me)[0],
+                         "note": (reason or "").strip() or None})
+        from .assist_routes import _bump_assist_drafts
+        _bump_assist_drafts(self)
+        return True
 
     @staticmethod
     def _apa_never(state: Optional[Path], me: set[str]) -> list[str]:
@@ -1266,14 +1299,115 @@ class AutopilotAreaMixin(AssistSwitchMixin):
                     replaced = {}
             hands, mine_ids = self._apa_handed(state, replaced=replaced), self._apa_me(reader)
             from operating.assist_matters import mc_approval_workflows
+            from operating.assist_readings import is_automated_system_alert
             no_mc = mc_approval_workflows()    # decided in Mission Control, never listed here
             # every queue trigger's own cards stay here until L1 deletes the triggers (ASSIST specs 5;
             # open-assist3-l1-draft-executor): a draft already prepared is never taken off the list.
             # A matter made from a queue item is listed as that item (``assist_routes``)
+            def _is_auto_it_queue_item(qitem: Mapping[str, Any]) -> bool:
+                body = qitem.get("body") if isinstance(qitem.get("body"), Mapping) else {}
+                happened = body.get("happened") if isinstance(body.get("happened"), Mapping) else {}
+                prepared = body.get("prepared") if isinstance(body.get("prepared"), Mapping) else {}
+                return is_automated_system_alert(
+                    sender=happened.get("sender") or "",
+                    subject=happened.get("subject") or qitem.get("title") or "",
+                    summary=prepared.get("summary") or "",
+                    note=prepared.get("note") or prepared.get("warning") or "",
+                    message=happened.get("snippet") or "",
+                )
+            _qc_autopilots = frozenset({"qc_hold", "lot_on_hold", "quality_hold", "batch_hold"})
+            _qc_role_re = re.compile(r"\b(?:qa\s*/\s*qc|qa|qc|quality|lab(?:oratory)?|regulatory)\b", re.I)  # guard-ok: org-chart QA/QC/lab/regulatory role check for QC hold routing
+
+            def _load_qc_staff_sets() -> tuple[set[str], set[str], set[str], set[str]]:
+                from operating import autopilot_roster as roster
+                rows: list[dict[str, Any]] = []
+                if getattr(self, "pg_dsn", None) and callable(getattr(self, "pg", None)):
+                    try:
+                        with self.pg().connection() as conn:
+                            if conn.execute("SELECT to_regclass('biz.staff') IS NOT NULL").fetchone()[0]:
+                                for pid, email, dept, title, reports in conn.execute(
+                                    "SELECT person_id, email, to_jsonb(s)->>'department', "
+                                    "to_jsonb(s)->>'title', "
+                                    "COALESCE((to_jsonb(s)->>'reports_count')::int, 0) "
+                                    "FROM biz.staff s WHERE person_id IS NOT NULL"
+                                ).fetchall():
+                                    rows.append({
+                                        "person_id": str(pid or "").strip().lower(),
+                                        "email": str(email or "").strip().lower(),
+                                        "department": str(dept or "").strip(),
+                                        "title": str(title or "").strip(),
+                                        "reports_count": int(reports or 0),
+                                    })
+                    except Exception:  # guard-ok: best-effort staff lookup falls back to org capture
+                        rows = []
+                if not rows:
+                    rows = roster._load_staff_rows()
+                known_ids: set[str] = set()
+                qa_ids: set[str] = set()
+                exec_ids: set[str] = set()
+                non_op_ids: set[str] = set()
+                for row in rows:
+                    idents = [
+                        str(row.get("person_id") or "").strip().lower(),
+                        str(row.get("email") or "").strip().lower(),
+                    ]
+                    idents = [x for x in idents if x]
+                    if not idents:
+                        continue
+                    known_ids.update(idents)
+                    dept = str(row.get("department") or "").strip()
+                    title = str(row.get("title") or "").strip()
+                    reports_count = int(row.get("reports_count") or 0)
+                    if dept.lower() in ("exec", "executive") or reports_count >= 5:
+                        exec_ids.update(idents)
+                    elif roster.is_non_operational_staff(department=dept, title=title):
+                        non_op_ids.update(idents)
+                    elif roster.staff_matches_role("quality", department=dept, title=title) or bool(
+                        _qc_role_re.search(f"{dept} {title}")
+                    ):
+                        qa_ids.update(idents)
+                return known_ids, qa_ids, exec_ids, non_op_ids
+
+            qc_staff_loaded: list[Optional[tuple[set[str], set[str], set[str], set[str]]]] = [None]
+            is_owner_reader = self._apa_is_owner(reader)
+
+            def _is_misrouted_qc_hold(qitem: Mapping[str, Any]) -> bool:
+                body = qitem.get("body") if isinstance(qitem.get("body"), Mapping) else {}
+                is_qc = (
+                    qitem.get("autopilot") in _qc_autopilots
+                    or body.get("done_when") == "batch_released"
+                )
+                if not is_qc or qitem.get("handed"):
+                    return False
+                if is_owner_reader:
+                    return False
+                if qc_staff_loaded[0] is None:
+                    qc_staff_loaded[0] = _load_qc_staff_sets()
+                known_ids, qa_ids, exec_ids, non_op_ids = qc_staff_loaded[0]
+                if not known_ids:
+                    return False
+                owner = str(qitem.get("owner") or "").strip().lower()
+                reader_ids = {str(x).strip().lower() for x in mine_ids if x and x != "unknown"}
+                email = str(getattr(reader, "email", "") or "").strip().lower()
+                if email:
+                    reader_ids.add(email)
+                check_ids = set(reader_ids)
+                if owner and not owner.startswith(autopilot_queue.POOL_PREFIX):
+                    check_ids.add(owner)
+                if check_ids & exec_ids:
+                    return False
+                if check_ids & non_op_ids:
+                    return True
+                if check_ids & known_ids:
+                    return not bool(check_ids & qa_ids)
+                return False
+
             items = [i for i in self._ap_visible(  # type: ignore[attr-defined]
                 reader, also=self._apa_to_me(hands, mine_ids), pools=self._apa_pools(reader)) or ()
                 if (i["mine"] or i.get("handed") or i.get("pooled"))
-                and i["autopilot"] not in no_mc]
+                and i["autopilot"] not in no_mc
+                and not _is_auto_it_queue_item(i)
+                and not _is_misrouted_qc_hold(i)]
             decisions = self._apa_decisions(state, replaced=replaced)
             never = self._apa_never(state, mine_ids)
             now = datetime.now(timezone.utc)

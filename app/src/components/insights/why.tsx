@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { streamWhy, type WhyRank, type WhyStep } from "@/lib/api";
 import { plainError } from "@/lib/errors";
 
@@ -11,11 +11,12 @@ const link = "text-[12px] text-accent underline-offset-2 hover:underline cursor-
  * that dimension's parts), each with the best answer so far. "Answer now" stops reading and keeps that answer: it is
  * true after every step, so stopping early never leaves a guess.
  */
-export function WhyDidItChange({ id, testId }: { id: string; testId: string }) {
+export function WhyDidItChange({ id, testId, autoStart = false }: { id: string; testId: string; autoStart?: boolean }) {
   const [steps, setSteps] = useState<WhyStep[]>([]);
   const [state, setState] = useState<"idle" | "reading" | "stopped" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
   const ctl = useRef<AbortController | null>(null);
+  const startedAuto = useRef(false);
   const start = () => {
     const c = new AbortController();
     ctl.current = c;
@@ -31,6 +32,16 @@ export function WhyDidItChange({ id, testId }: { id: string; testId: string }) {
       },
     );
   };
+  useEffect(() => {
+    if (autoStart && !startedAuto.current) {
+      startedAuto.current = true;
+      start();
+    }
+    return () => {
+      ctl.current?.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, id]);
   const stop = () => {
     ctl.current?.abort();
     setState("stopped");

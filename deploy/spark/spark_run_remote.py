@@ -314,37 +314,75 @@ def build_preload() -> Path:
     return so
 
 
+_EPHEMERAL_RUN_NAMES = frozenset({"utmp", "nologin"})
+_EPHEMERAL_RUN_SUFFIXES = (".new", ".tmp", ".lock", ".pid")
+
+
+def _ephemeral_run_entry(name: str) -> bool:
+    """True for transient host files under /run (such as pam_motd's motd.dynamic.new or
+    daemon pid/lock files) that can appear and vanish between listing /run and execing
+    bwrap."""
+    return (name.startswith("motd")
+            or name in _EPHEMERAL_RUN_NAMES
+            or name.endswith(_EPHEMERAL_RUN_SUFFIXES))
+
+
+def _needs_mountpoint(src: str, dst: Path) -> bool:
+    """True when ``dst`` cannot be bound directly over the host entry (missing, a symlink,
+    or a file/directory kind mismatch): its ancestor directories must be rebuilt with
+    ``--dir`` so bwrap can create a clean mountpoint at ``dst``."""
+    try:
+        if dst.is_symlink() or not dst.exists():
+            return True
+        return Path(src).is_dir() != dst.is_dir()
+    except OSError:
+        return True
+
+
 def bwrap_args(binds: list[tuple[str, str, bool]], root: str = "/") -> list[str]:
     """The bwrap arguments: a fresh root whose entries are the Spark's own, except that every
-    folder on the way to a bind target that does not exist here is rebuilt from its entries
-    (so a target like /data/plx-state or /usr/local/bin/claude can be created), then the binds,
-    shortest target first."""
+    folder on the way to a bind target that does not exist here (or is a symlink or kind
+    mismatch) is rebuilt from its entries (so a target like /data/plx-state or
+    /usr/local/bin/claude can be created cleanly), then the binds, shortest target first.
+    Under /run, ephemeral host files (motd.dynamic*, *.new, *.tmp, *.lock, *.pid) are
+    skipped and remaining entries use --ro-bind-try so a vanishing transient file never
+    kills bwrap."""
     targets = [Path(d) for _, d, _ in binds]
+    expand_targets = [Path(d) for s, d, _ in binds if _needs_mountpoint(s, Path(d))]
+    root_path = Path(root)
+    run_dir = root_path / "run"
     args: list[str] = []
 
     def needs_expand(path: Path) -> bool:
-        return any(t != path and path in t.parents and not t.exists() for t in targets)
+        return any(t != path and path in t.parents for t in expand_targets)
 
     def walk(dirpath: Path) -> None:
         try:
             entries = sorted(os.listdir(dirpath))
         except OSError:
             return
+        in_run = dirpath == run_dir or run_dir in dirpath.parents
+        bind_flag = "--ro-bind-try" if in_run else "--ro-bind"
         for e in entries:
+            if in_run and _ephemeral_run_entry(e):
+                continue
             p = dirpath / e
             if str(p) in ("/proc", "/dev"):
                 continue
             if p in targets and not needs_expand(p):
                 continue                       # bound below
-            if p.is_symlink():
-                args.extend(["--symlink", os.readlink(p), str(p)])
-            elif p.is_dir() and needs_expand(p):
-                args.extend(["--dir", str(p)])
-                walk(p)
-            elif p.exists():
-                args.extend(["--ro-bind", str(p), str(p)])
+            try:
+                if p.is_symlink():
+                    args.extend(["--symlink", os.readlink(p), str(p)])
+                elif p.is_dir() and needs_expand(p):
+                    args.extend(["--dir", str(p)])
+                    walk(p)
+                elif p.exists():
+                    args.extend([bind_flag, str(p), str(p)])
+            except OSError:
+                continue
 
-    walk(Path(root))
+    walk(root_path)
     for t in sorted(targets, key=lambda x: len(x.parts)):
         for parent in reversed(t.parents):
             if str(parent) != "/" and not parent.exists() and not any(

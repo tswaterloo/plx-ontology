@@ -970,6 +970,7 @@ class Routing:
     role: str = ""
     basis: str = "employee"
     everything: bool = False
+    is_owner: bool = False
 
     @classmethod
     def of(cls, entitlement: Any) -> "Routing":
@@ -978,13 +979,19 @@ class Routing:
             return cls(basis="not_an_employee")
         departments = frozenset(getattr(entitlement, "routing_departments", ()) or ())
         role = str(getattr(entitlement, "portal_role", "") or "")
-        return cls(departments, role, "employee" if departments or _admin(role)
-                   else "no_department_on_record")
+        owner_fn = getattr(entitlement, "owner", None)
+        code_fn = getattr(entitlement, "full_read_code", None)
+        code = code_fn() if callable(code_fn) else None
+        is_owner = bool(callable(owner_fn) and owner_fn()) or (
+            isinstance(code, str) and code.endswith(":mail_all") and not code.endswith(":listed")
+        )
+        return cls(departments, role, "employee" if departments or _admin(role) or is_owner
+                   else "no_department_on_record", is_owner=is_owner)
 
     @property
     def all_types(self) -> bool:
-        """Routed every event type: told so, an Executive member or a Portal admin."""
-        return self.everything or _admin(self.role) or bool(self.departments & EVERYTHING)
+        """Routed every event type: told so, the owner, an Executive member or a Portal admin."""
+        return self.everything or self.is_owner or _admin(self.role) or bool(self.departments & EVERYTHING)
 
     def routes(self, departments: Iterable[str]) -> bool:
         return self.all_types or bool(self.departments & set(departments))
@@ -1364,6 +1371,8 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
                 "involvement": None, "carried": 0, "data_notes": [],
                 "today": today_line({"status": "unavailable"})}
     run_at = inbox.get("run_at") if isinstance(inbox.get("run_at"), str) else None
+    from operating.pg.alerts import is_filtered_reply_alert
+    as_of_ref = inbox.get("as_of") or run_at
     visible: list[Item] = []
     for n, gap in enumerate(inbox.get("gaps") or ()):
         if gap.get("state", "open") not in ("open", "acknowledged"):
@@ -1374,6 +1383,19 @@ def build(inbox: Mapping[str, Any], *, routing: Routing, hidden: Mapping[str, in
             continue
         item = _item(gap, n, last_visit, run_at)
         if item is not None:
+            if item.event_type in OWN_MAIL:
+                ev = gap.get("event") if isinstance(gap.get("event"), Mapping) else {}
+                if is_filtered_reply_alert(
+                    rule=item.event_type,
+                    kind=gap.get("kind"),
+                    since=gap.get("first_seen") or gap.get("detected_at"),
+                    days=item.days,
+                    text=gap.get("summary") or "",
+                    sender=ev.get("sender") or "",
+                    subject=ev.get("subject") or gap.get("subject") or "",
+                    now=as_of_ref if as_of_ref else None,
+                ):
+                    continue
             visible.append(item)
     involvement = None
     if involved is not None and visible:

@@ -1,7 +1,7 @@
 "use client";
 
-import { RecordsView } from "@/components/records-view";
+import { RecordsWorkspace } from "@/components/records/records-workspace";
 
 export default function DataPage() {
-  return <RecordsView />;
+  return <RecordsWorkspace />;
 }

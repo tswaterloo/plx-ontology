@@ -530,6 +530,7 @@ export function LateView() {
     <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar
         heading
+        parent={{ label: "Home", href: "/" }}
         title="Late POs"
         testId="late-header"
         actions={

@@ -74,7 +74,10 @@ list: the finished reply, or the one question only {person} can answer, with its
 4. Nothing to prepare only when a record you read shows the item is already done: name that record by its
    handle and say what it says. Never nothing because a record was not found.
 5. Say what you looked for and did not find, and which source could not be read. Do not decide what only
-   {person} can decide; propose changes in a system with the write tool and the person confirms.
+   {person} can decide; propose changes in a system (Business Central POs/SOs/quotes, Portal, Planner,
+   SharePoint, Calendar, Mission Control) with the write tool and the person confirms. When the item asks
+   for a spreadsheet, count sheet, presentation, memo, quote, or draft purchase order, pull the grounded
+   record facts and flag missing figures clearly rather than inventing numbers.
 6. Write like a human colleague, never like a bot: no em dashes, no filler openers ("I have reviewed...",
    "Based on the data...", "I hope this email finds you well..."), and use plain names, order numbers,
    dollar amounts, and dates.
@@ -683,12 +686,14 @@ def serve(pg: Any, people: Sequence[str], session: Callable[..., Sequence[Mappin
         # (F8: BC, calendar, Planner, SharePoint, Mission Control; strictly dry-run, 0 auto on class B).
         proposals = [p for r in rows if isinstance(r, Mapping)
                      for p in (r.get("proposals") or ()) if isinstance(p, Mapping)]
-        if proposals:
+        write_proposals = [p for p in proposals
+                           if str(p.get("tool") or "").strip().lower() != "plx.prepare_document"]
+        if write_proposals:
             from operating import assist_writes as asw
             wctx = dict(write_context or {})
             owner_obj = wctx.get("owner_of")(matter["owner_person"]) if callable(wctx.get("owner_of")) else matter["owner_person"]
             intents, refusals = asw.prepare_session_writes(
-                proposals,
+                write_proposals,
                 owner_obj,
                 read_current=wctx.get("read_current"),
                 may=wctx.get("may"),
@@ -707,6 +712,17 @@ def serve(pg: Any, people: Sequence[str], session: Callable[..., Sequence[Mappin
                 meta["write_intents"] = intents
             if refusals:
                 meta["write_refusals"] = refusals
+        # Proactively prepare any requested spreadsheet, presentation, memo, PO draft, or quote artifact.
+        from operating import assist_doc_prep as doc_prep
+        prepared_docs = doc_prep.prepare_documents_for_matter(
+            matter,
+            matter_in.get("text", ""),
+            rows=rows,
+            state_dir=state,
+            screen=screen,
+        )
+        if prepared_docs:
+            meta["prepared_documents"] = prepared_docs
         all_reads = list(dict.fromkeys([*input_opened, *reads]))
         structured_unread = collect_unread_sources(
             view_unread=unread,

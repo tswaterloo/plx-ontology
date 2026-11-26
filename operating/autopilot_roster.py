@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -71,6 +72,55 @@ ACTIVITY_RULES = {
     "production_planning": ("production_materials_internal",),
     "rnd": ("rnd_sample_project",),
 }
+# Org-chart department and job-title routing rules (``biz.staff`` / org capture): ensures
+# operational roles reach the actual department staff (such as QA/QC technicians who work
+# on the floor rather than sending high-volume email) while keeping IT/software engineers and
+# executives out of operational pools unless explicitly opted in.
+_NON_OPERATIONAL_TITLE_RE = re.compile(
+    r"\b(?:software(?:\s+engineer|\s+developer)?|developer|programmer|devops|"
+    r"systems?\s+engineer|site\s+reliability|sre|data\s+engineer|ml\s+engineer|"
+    r"ai\s+engineer|it\s+(?:manager|director|specialist|support|admin(?:istrator)?|engineer|lead)|"
+    r"information\s+technology|chief\s+executive|ceo|president|founder|co-founder)\b",
+    re.IGNORECASE,
+)
+_NON_OPERATIONAL_DEPT_RE = re.compile(
+    r"^(?:it|information\s+technology|software|engineering|executive|exec)$",
+    re.IGNORECASE,
+)
+DEPARTMENT_RULES: dict[str, tuple[re.Pattern[str], re.Pattern[str]]] = {
+    "quality": (
+        re.compile(r"\b(?:qa\s*/\s*qc|qa|qc|quality(?:\s+(?:assurance|control))?|regulatory)\b", re.I),
+        re.compile(r"\b(?:qa\s*/\s*qc|qa|qc|quality(?:\s+(?:assurance|control|manager|tech(?:nician)?|inspector|specialist|coordinator|analyst))?|regulatory)\b", re.I),
+    ),
+    "purchasing": (
+        re.compile(r"\b(?:purchasing|procurement|supply\s+chain|sourcing)\b", re.I),
+        re.compile(r"\b(?:buyer|purchas(?:er|ing)|procurement|supply\s+chain|sourcing|materials?\s+buyer)\b", re.I),
+    ),
+    "finance": (
+        re.compile(r"\b(?:finance|accounting|accounts?\s+(?:payable|receivable)|controller)\b", re.I),
+        re.compile(r"\b(?:accountant|accounting|finance|financial|controller|bookkeeper|billing|accounts?\s+(?:payable|receivable)|\bap\b|\bar\b)\b", re.I),
+    ),
+    "receivables": (
+        re.compile(r"\b(?:accounts?\s+receivable|\bar\b|billing|collections?|finance|accounting)\b", re.I),
+        re.compile(r"\b(?:accounts?\s+receivable|\bar\b|billing|collections?|credit\s+(?:analyst|controller|specialist))\b", re.I),
+    ),
+    "payables": (
+        re.compile(r"\b(?:accounts?\s+payable|\bap\b|finance|accounting)\b", re.I),
+        re.compile(r"\b(?:accounts?\s+payable|\bap\b|payables?)\b", re.I),
+    ),
+    "customer_service": (
+        re.compile(r"\b(?:sales|customer\s+service|account\s+management|client\s+services?|order\s+entry)\b", re.I),
+        re.compile(r"\b(?:account\s+manager|sales|customer\s+service|client\s+service|csr|order\s+entry)\b", re.I),
+    ),
+    "production_planning": (
+        re.compile(r"\b(?:production\s+planning|planning|scheduling|operations|manufacturing|production)\b", re.I),
+        re.compile(r"\b(?:production\s+(?:planner|manager|coordinator|supervisor|lead|scheduler)|planner|scheduler|operations\s+manager|manufacturing)\b", re.I),
+    ),
+    "rnd": (
+        re.compile(r"\b(?:r\s*&\s*d|rnd|research|formulation|product\s+development|lab(?:oratory)?)\b", re.I),
+        re.compile(r"\b(?:chemist|formulator|r\s*&\s*d|rnd|research|product\s+development|npd)\b", re.I),
+    ),
+}
 # Measured over the 90 days before 2026-10-06: 0.3 keeps each role to the few people whose
 # work it is (label artwork, touched by many, is no role's evidence; the owner's share of any
 # one role stays under it).
@@ -78,6 +128,114 @@ ACTIVITY_FOCUS = 0.3
 ROLE_NAMES = frozenset(RULES) | frozenset(ACTIVITY_RULES)
 CHUNK = 2000
 MAX_MEMBERS = 30
+
+
+def is_non_operational_staff(department: str = "", title: str = "") -> bool:
+    """True for IT, software engineering, or executive roles that should not be auto-routed
+    operational department queues (such as QA/QC holds or production planning) unless
+    explicitly opted in."""
+    dept = str(department or "").strip()
+    job = str(title or "").strip()
+    if job and _NON_OPERATIONAL_TITLE_RE.search(job):
+        return True
+    if dept and _NON_OPERATIONAL_DEPT_RE.match(dept):
+        return True
+    return False
+
+
+def staff_matches_role(role: str, department: str = "", title: str = "") -> bool:
+    """True when a staff member's org-chart department or job title belongs to ``role``
+    (always False for IT/software engineers and executives so e.g. a software engineer listed
+    under Production never receives operational QA/QC or planning queues)."""
+    rule = DEPARTMENT_RULES.get(role)
+    if rule is None:
+        return False
+    if is_non_operational_staff(department=department, title=title):
+        return False
+    dept_re, title_re = rule
+    dept = str(department or "").strip()
+    job = str(title or "").strip()
+    if role == "production_planning":
+        if job and title_re.search(job):
+            return True
+        if dept and re.search(r"\b(?:planning|scheduling|operations|manufacturing)\b", dept, re.I):
+            return True
+        return False
+    if role in ("receivables", "payables"):
+        if job and title_re.search(job):
+            return True
+        specific = (
+            r"\b(?:accounts?\s+receivable|\bar\b|billing|collections?)\b"
+            if role == "receivables"
+            else r"\b(?:accounts?\s+payable|\bap\b|payables?)\b"
+        )
+        return bool(dept and re.search(specific, dept, re.I))
+    return bool((dept and dept_re.search(dept)) or (job and title_re.search(job)))
+
+
+def derive_from_staff(
+    staff_rows: Sequence[Mapping[str, Any]],
+    role: str,
+    people: Any = None,
+) -> list[str]:
+    """Cleared staff ``person_id`` values whose org-chart department or title matches ``role``."""
+    if role not in ROLE_NAMES:
+        raise KeyError(role)
+    if people is not None and getattr(people, "unavailable", None):
+        return []
+    matched: list[str] = []
+    for row in staff_rows:
+        pid = str(row.get("person_id") or "").strip().lower()
+        if not pid:
+            continue
+        if people is not None and not people.identity_clear(pid):
+            continue
+        if staff_matches_role(
+            role,
+            department=str(row.get("department") or ""),
+            title=str(row.get("title") or ""),
+        ):
+            matched.append(pid)
+    return sorted(set(matched))[:MAX_MEMBERS]
+
+
+def _non_operational_ids(staff_rows: Sequence[Mapping[str, Any]] | None) -> set[str]:
+    if not staff_rows:
+        return set()
+    out: set[str] = set()
+    for row in staff_rows:
+        pid = str(row.get("person_id") or "").strip().lower()
+        if pid and is_non_operational_staff(
+            department=str(row.get("department") or ""),
+            title=str(row.get("title") or ""),
+        ):
+            out.add(pid)
+    return out
+
+
+def _load_staff_rows() -> list[dict[str, str]]:
+    """Best-effort org-chart staff rows from the local org-capture SQLite DB; empty list
+    when unavailable."""
+    try:
+        from integrations.capture_org import current_rows
+        from operating.pg.business_staff import org_db
+        path = org_db()
+        if path.exists():
+            org = current_rows(path)
+            if org:
+                return [
+                    {
+                        "person_id": str(oid).strip().lower(),
+                        "email": str(rec.get("upn") or "").strip().lower(),
+                        "name": str(rec.get("display_name") or "").strip(),
+                        "department": str(rec.get("department") or "").strip(),
+                        "title": str(rec.get("job_title") or "").strip(),
+                    }
+                    for oid, rec in org.items()
+                ]
+    except Exception:  # noqa: BLE001 - org capture optional in isolated fixtures
+        pass
+    return []
 
 
 def _window_mail(st: Any, since: str, until: str) -> list[str]:
@@ -118,14 +276,19 @@ def activity(st: Any, people: Any, since: str, until: str) -> dict[str, dict[str
 
 def derive_activity(people: Any, role: str, found: Mapping[str, Mapping[str, set[str]]],
                     since: str, until: str, *, min_records: int = 3,
-                    min_share: float = 0.1) -> dict[str, Any]:
-    """A role of ``ACTIVITY_RULES`` from ``activity``'s conversations (module doc)."""
+                    min_share: float = 0.1,
+                    staff_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """A role of ``ACTIVITY_RULES`` from ``activity``'s conversations combined with org-chart
+    department/title matching when ``staff_rows`` is supplied (module doc)."""
     from . import workflows as wf
     flows = set(ACTIVITY_RULES[role])
     fallback = set(wf.load()["fallback"].values()) | {"unclassified"}
+    blocked = _non_operational_ids(staff_rows)
     scores: dict[str, int] = {}
     focus: dict[str, float] = {}
     for who, by_flow in found.items():
+        if str(who).strip().lower() in blocked:
+            continue
         mine = set().union(*(c for f, c in by_flow.items() if f in flows)) if any(
             f in flows for f in by_flow) else set()
         named = set().union(*(c for f, c in by_flow.items() if f not in fallback)) if any(
@@ -136,25 +299,38 @@ def derive_activity(people: Any, role: str, found: Mapping[str, Mapping[str, set
     excluded = sum(1 for who in scores if not people.identity_clear(who))
     scores = {w: s for w, s in scores.items() if people.identity_clear(w)}
     top = max(scores.values(), default=0)
-    members = sorted((w for w, s in scores.items() if s >= min_records and top
-                      and s / top >= min_share and focus[w] >= ACTIVITY_FOCUS),
-                     key=lambda w: (-scores[w], w))[:MAX_MEMBERS]
+    by_activity = sorted((w for w, s in scores.items() if s >= min_records and top
+                          and s / top >= min_share and focus[w] >= ACTIVITY_FOCUS),
+                         key=lambda w: (-scores[w], w))
+    by_org = derive_from_staff(staff_rows, role, people) if staff_rows else []
+    members = list(dict.fromkeys([*by_org, *by_activity]))[:MAX_MEMBERS]
+    evidence: dict[str, dict[str, Any]] = {}
+    org_set = set(by_org)
+    for w in members:
+        ev: dict[str, Any] = {}
+        if w in scores:
+            ev["score"] = scores[w]
+            ev["focus"] = round(focus[w], 3)
+        if w in org_set:
+            ev["org_department"] = True
+        evidence[w] = ev
     return {"status": "complete", "role": role, "window": [since, until], "members": members,
-            "evidence": {w: {"score": scores[w], "focus": round(focus[w], 3)}
-                         for w in members},
-            "candidates": len(scores), "excluded_dropped": excluded,
+            "evidence": evidence,
+            "candidates": len(scores) + len(org_set - set(scores)), "excluded_dropped": excluded,
             "portal_flags_unresolved": 0}
 
 
 def derive(st: Any, people: Any, role: str, since: str, until: str, *,
-           min_records: int = 3, min_share: float = 0.1) -> dict[str, Any]:
+           min_records: int = 3, min_share: float = 0.1,
+           staff_rows: Sequence[Mapping[str, Any]] | None = None) -> dict[str, Any]:
     if role not in ROLE_NAMES:
         raise KeyError(role)
     if people is None or getattr(people, "unavailable", None):
         return {"status": "blocked", "reason": "people_exclusion_unavailable", "members": []}
     if role in ACTIVITY_RULES:
         return derive_activity(people, role, activity(st, people, since, until), since, until,
-                               min_records=min_records, min_share=min_share)
+                               min_records=min_records, min_share=min_share,
+                               staff_rows=staff_rows)
     rule = RULES[role]
     from . import workflows as wf
     kinds = (rule["record"],) if isinstance(rule["record"], str) else tuple(rule["record"])
@@ -162,6 +338,7 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
     wanted = set(rule.get("workflows") or ())
     unwanted = set(rule.get("not_workflows") or ())
     directory, addresses_of, domains = ap._people_maps(people)
+    blocked = _non_operational_ids(staff_rows)
     sent: dict[str, set[str]] = defaultdict(set)
     addressed: dict[str, set[str]] = defaultdict(set)
     systems: dict[str, Counter] = defaultdict(Counter)
@@ -214,14 +391,19 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
             actors[who] |= recs
     scores: dict[str, float] = {}
     for who in set(sent) | set(addressed) | set(actors):
+        if str(who).strip().lower() in blocked:
+            continue
         own = sent.get(who, set()) | actors.get(who, set())
         scores[who] = len(own) + 0.5 * len(addressed.get(who, set()) - own)
     excluded = sum(1 for who in scores if not people.identity_clear(who))
     scores = {w: s for w, s in scores.items() if people.identity_clear(w)}
     top = max(scores.values(), default=0.0)
-    members = sorted((w for w, s in scores.items()
-                      if s >= min_records and top and s / top >= min_share),
-                     key=lambda w: (-scores[w], w))[:MAX_MEMBERS]
+    by_activity = sorted((w for w, s in scores.items()
+                          if s >= min_records and top and s / top >= min_share),
+                         key=lambda w: (-scores[w], w))
+    by_org = derive_from_staff(staff_rows, role, people) if staff_rows else []
+    members = list(dict.fromkeys([*by_activity, *by_org]))[:MAX_MEMBERS]
+    org_set = set(by_org)
     flags = 0
     if rule.get("portal_flag"):
         otype, prop = rule["portal_flag"]
@@ -229,13 +411,20 @@ def derive(st: Any, people: Any, role: str, since: str, until: str, *,
             "SELECT object_id FROM objects WHERE object_type = ?", (otype,))]
         for row in autopilot_records._read(st, ids, (prop,)).values():
             flags += autopilot_records._v(row, prop).lower() in ("true", "1")
+    evidence: dict[str, dict[str, Any]] = {}
+    for w in members:
+        ev = {"score": scores.get(w, 0.0), "sent": len(sent.get(w, ())),
+              "addressed": len(addressed.get(w, ())),
+              "system": len(actors.get(w, ())),
+              "systems": dict(systems.get(w, {}))}
+        if w in org_set:
+            ev["org_department"] = True
+        evidence[w] = ev
     return {"status": "complete", "role": role, "window": [since, until],
             "members": members,
-            "evidence": {w: {"score": scores[w], "sent": len(sent.get(w, ())),
-                             "addressed": len(addressed.get(w, ())),
-                             "system": len(actors.get(w, ())),
-                             "systems": dict(systems.get(w, {}))} for w in members},
-            "candidates": len(scores), "excluded_dropped": excluded,
+            "evidence": evidence,
+            "candidates": len(scores) + len(org_set - set(scores)),
+            "excluded_dropped": excluded,
             "portal_flags_unresolved": flags}
 
 
@@ -271,15 +460,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     people = pe._people(Path(a.store))
     st = ap._store(a.store, a.source)
     results = {}
+    staff_rows = _load_staff_rows()
     try:
         acts = None
         for role in wanted:
             if role in ACTIVITY_RULES and not (people is None or getattr(
                     people, "unavailable", None)):
                 acts = activity(st, people, since, until) if acts is None else acts
-                results[role] = derive_activity(people, role, acts, since, until)
+                results[role] = derive_activity(people, role, acts, since, until,
+                                                staff_rows=staff_rows)
             else:
-                results[role] = derive(st, people, role, since, until)
+                results[role] = derive(st, people, role, since, until,
+                                       staff_rows=staff_rows)
     finally:
         st.close()
     out = Path(a.out)

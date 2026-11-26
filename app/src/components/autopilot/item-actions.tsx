@@ -5,10 +5,12 @@
 // always do this) sit behind More. A card adds its own entries to More (copy, rewrite...).
 // Nothing here sends or writes to a business system.
 
+import { MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useProblem } from "@/components/ui/notice";
 import { alwaysDoThis, decideAutopilotItem, saveMemory, setNeverSender, type PreparedItem } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 
 /** 8 AM tomorrow, the person's own time: when a "Later" item comes back. */
@@ -33,7 +35,15 @@ export function taskText(item: Pick<PreparedItem, "subject" | "summary" | "sende
 export type MenuEntry = { label: string; run: () => void | Promise<void>; danger?: boolean };
 
 /** A "More" button opening a short list of actions; Escape or a click elsewhere closes it. */
-export function MoreMenu({ entries, disabled }: { entries: MenuEntry[]; disabled?: boolean }) {
+export function MoreMenu({
+  entries,
+  disabled,
+  align = "left",
+}: {
+  entries: MenuEntry[];
+  disabled?: boolean;
+  align?: "left" | "right";
+}) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -50,17 +60,35 @@ export function MoreMenu({ entries, disabled }: { entries: MenuEntry[]; disabled
   if (!entries.length) return null;
   return (
     <div ref={box} className="relative">
-      <Button size="sm" variant="outline" disabled={disabled} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-        More
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+      >
+        <MoreHorizontal className="size-3.5" aria-hidden />
+        <span>More</span>
       </Button>
       {open && (
-        <div role="menu" className="absolute left-0 top-full z-50 mt-1 min-w-[15rem] rounded-lg border border-border-strong bg-bg py-1 shadow-lift">
+        <div
+          role="menu"
+          className={cn(
+            "absolute top-full z-50 mt-1.5 min-w-[15rem] rounded-xl border border-border-strong bg-raised p-1 shadow-pop",
+            align === "right" ? "right-0" : "left-0",
+          )}
+        >
           {entries.map((e) => (
             <button
               key={e.label}
               type="button"
               role="menuitem"
-              className={`block w-full px-3 py-1.5 text-left text-[13px] hover:bg-hover cursor-pointer ${e.danger ? "text-late" : "text-fg"}`}
+              className={cn(
+                "block w-full rounded-lg px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-hover cursor-pointer",
+                e.danger ? "text-late" : "text-fg",
+              )}
               onClick={() => {
                 setOpen(false);
                 void e.run();
@@ -85,9 +113,9 @@ export type OptimisticCallbacks = {
 };
 
 /**
- * Later (back tomorrow 8 AM) as a button, then More: the card's own entries, Make it a task,
- * Not needed, Never from this sender, Always do this. ``primary`` goes first (the card's
- * main action). Always do this is offered only where the person's replay score earned Auto.
+ * Later (back tomorrow 8 AM) as a quiet ghost button, then More: the card's own entries,
+ * Make it a task, Not needed, Never from this sender, Always do this. ``primary`` goes first
+ * (the card's single main action). Always do this is offered only where replay score earned Auto.
  */
 export function ItemActions({
   item,
@@ -100,6 +128,7 @@ export function ItemActions({
   entries = [],
   busy,
   setAsideOnly,
+  menuAlign = "left",
 }: {
   item: PreparedItem;
   onGone: (id: string) => void;
@@ -108,6 +137,7 @@ export function ItemActions({
   entries?: MenuEntry[];
   busy?: boolean;
   setAsideOnly?: boolean;
+  menuAlign?: "left" | "right";
 } & OptimisticCallbacks) {
   const [working, setWorking] = useState(false);
   const [, setError, problem] = useProblem();
@@ -202,14 +232,20 @@ export function ItemActions({
   }
   return (
     <>
-      <div className="flex flex-wrap items-start gap-2" data-testid="item-actions">
+      <div className="flex flex-wrap items-center gap-1.5" data-testid="item-actions">
         {primary}
-        <Button size="sm" variant="outline" disabled={busy || working} onClick={() => later()}>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+          disabled={busy || working}
+          onClick={() => later()}
+        >
           {working ? "Saving..." : "Later"}
         </Button>
-        <MoreMenu entries={more} disabled={busy || working} />
+        <MoreMenu entries={more} disabled={busy || working} align={menuAlign} />
       </div>
-      {note && <p className="text-[12px] text-muted">{note}</p>}
+      {note && <p className="mt-2 text-[13px] leading-relaxed text-muted">{note}</p>}
       {problem}
     </>
   );

@@ -994,6 +994,12 @@ def canary_check(state: Path, now: datetime, t: Mapping[str, float], installed: 
     last = runs[:3]
     failed = sum(1 for r in last if not r.get("ok"))
     newest = last[0] if last else {}
+    if newest.get("skipped") or str(newest.get("verdict") or "").startswith("skipped:"):
+        check = _check("ask_canary", 0, 2, False, "runs",
+                       f"skipped in Entra SSO mode ({newest.get('verdict', 'skipped')}; "
+                       "dev-login disabled)")
+        check["level"] = "high"
+        return check
     cost = (f"{newest.get('seconds')} s"
             + (", model answered" if newest.get("model") else ", no model step"))
     breach = len(last) >= 2 and not last[0].get("ok") and not last[1].get("ok")

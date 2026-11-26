@@ -197,7 +197,8 @@ describe("Data health page", () => {
     expect(held).toHaveTextContent("90.0%");
     expect(held).toHaveTextContent("9 of 10 right");   // the count leads, the percent follows it
     expect(held).toHaveTextContent("answered 10 of 12");
-    expect(held).toHaveTextContent("12 questions, 12 runs · 10 Nov");
+    expect(held).toHaveTextContent("12 questions, 12 runs");
+    expect(held).toHaveTextContent("10 Nov");
   });
 
   it("a reader the server refuses is told they have no access, nothing of the page", async () => {

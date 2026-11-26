@@ -74,3 +74,49 @@ class QcSettle(Fixture):
         self.cycle([lot])
         (held,) = [i for i in self.queue().items() if i["autopilot"] == "qc_hold"]
         self.assertEqual(len(held["body"]["prepared"]["affected"]), 12)
+
+    def test_misrouted_non_qa_per_person_qc_hold_rerouted_to_quality_pool(self):
+        w = self.w
+        live = w.obj("SalesOrder", {"order_number": "SO-7301", "status": "Open",
+                                    "required_date": "2026-10-30"})
+        lot = w.obj("Batch", {"lot_number": "BC-26313C", "quality_status": "On-Hold",
+                              "order_list": "SO-7301", "tested_by": "QA"})
+        self.env[autopilot_queue.ROLES_ENV] = str(self.dir / "roles.json")
+        (self.dir / "roles.json").write_text(json.dumps({"roles": {"quality": [OURS_OID]}}))
+        self.cycle([lot])
+        q = self.queue()
+        # Simulate legacy misrouted per-person rows owned by IT/executive staff (no pool row)
+        (pool_item,) = [i for i in q.items() if i["autopilot"] == "qc_hold"]
+        with q.conn:
+            q.settle_item(pool_item["item_id"], "done", "test_cleanup", "2026-10-20T00:00:00Z")
+            q.add_item({
+                **pool_item, "item_id": "ap_it_qc", "owner": "it-user-1",
+                "body": {**pool_item["body"], "prepared": {
+                    **pool_item["body"]["prepared"], "subject": "lot:BC26313C",
+                    "affected": [{"object_id": live}],
+                }},
+            })
+            q.add_item({
+                **pool_item, "item_id": "ap_exec_qc", "owner": "exec-user-1",
+                "body": {**pool_item["body"], "prepared": {
+                    **pool_item["body"]["prepared"], "subject": "lot:BC26313C",
+                    "affected": [{"object_id": live}],
+                }},
+            })
+        st = pe._Store(self.dir / "s.sqlite", threads=1)
+        self.addCleanup(st.close)
+        staff_rows = [
+            {"person_id": "it-user-1", "department": "IT", "title": "Software Engineer"},
+            {"person_id": "exec-user-1", "department": "Executive", "title": "CEO"},
+            {"person_id": OURS_OID, "department": "Quality Assurance", "title": "QA Manager"},
+        ]
+        done = ae.settle(st, q, ap.load_registry(), people(), now=NOW, staff_rows=staff_rows)
+        self.assertEqual(done["rerouted_to_role_pool"], 2)
+        all_qc = {i["item_id"]: (i["state"], i["done_reason"], i["owner"])
+                  for i in q.items(states=("open", "done", "superseded"))
+                  if i["autopilot"] == "qc_hold"}
+        self.assertEqual(all_qc["ap_it_qc"][:2], ("superseded", "rerouted_to_role_pool"))
+        self.assertEqual(all_qc["ap_exec_qc"][:2], ("superseded", "rerouted_to_role_pool"))
+        open_qc = [i for i in q.items() if i["autopilot"] == "qc_hold"]
+        self.assertEqual(len(open_qc), 1)
+        self.assertEqual(open_qc[0]["owner"], autopilot_queue.POOL_PREFIX + "quality")

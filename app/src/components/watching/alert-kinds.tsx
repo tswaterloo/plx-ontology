@@ -22,11 +22,12 @@ export function standing(t: Pick<AlertType, "default" | "precision" | "home">): 
 
 /** Whether a kind is on (any of its types on by default) and, for a kind that shows on a
  * page of its own, that page (not repeated when the kind's own name is that page). */
-export function surfaceWord(k: { label: string; surface: string; types: Pick<AlertType, "default">[] }): string {
-  const on = k.types.some((t) => t.default === "on") ? "On" : "Off";
+export function surfaceWord(k: { label?: string; title?: string; kind?: string; surface: string; types: Pick<AlertType, "default">[] }): string {
+  const on = (k.types ?? []).some((t) => t.default === "on") ? "On" : "Off";
   if (k.surface === "alert") return on;
   const where = k.surface === "weekly" ? "Weekly review" : "Data health";
-  return where.toLowerCase() === k.label.trim().toLowerCase() ? on : `${on} · ${where}`;
+  const label = (k?.label ?? k?.title ?? k?.kind ?? "").trim().toLowerCase();
+  return where.toLowerCase() === label ? on : `${on} · ${where}`;
 }
 
 /** Where a kind with a page of its own is shown (null: an alert, shown here). */
@@ -77,33 +78,36 @@ export function DataHealthSection({ titled = true }: { titled?: boolean }) {
         <p className="mt-2 text-[13px] text-muted">No data-health check is on.</p>
       ) : (
         <ul className="mt-2 divide-y divide-border border-y border-border" data-testid="data-health-checks">
-          {on.map((c) => (
-            <li key={c.type} className="py-2 text-[13px]" data-testid={`data-health-${c.type}`}>
-              <div className="flex items-baseline gap-3">
-                <span className="min-w-0 flex-1 font-medium">{c.label}</span>
-                <span className="shrink-0 tabular-nums text-muted" data-testid={`data-health-count-${c.type}`}>
-                  {c.read === false ? (c.open === null || c.open === undefined ? "Not checked" : c.open ? c.open.toLocaleString("en-US") : "None") : c.count > 0 ? `${c.count.toLocaleString("en-US")}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
-                </span>
-              </div>
-              {c.read === false && (c.open === null || c.open === undefined) && (
-                <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-unchecked-${c.type}`}>This check has not run yet, so there is no count.</p>
-              )}
-              {c.read === false && isBeforeToday(c.checked_at) && (
-                <p className="mt-0.5 text-[12px] text-muted">Last checked {eastern(c.checked_at)}.</p>
-              )}
-              {c.hidden > 0 && (
-                <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-hidden-${c.type}`}>
-                  {c.count > 0 ? "Also " : ""}{c.hidden} on records your access doesn&rsquo;t open.
-                </p>
-              )}
-              {(c.read !== false ? (c.items ?? []).length > 0 : (c.open ?? 0) > 0) && <CheckItems check={c} />}
-            </li>
-          ))}
+          {on.map((c) => {
+            const checkLabel = c?.label ?? (c as { title?: string })?.title ?? c?.type ?? "";
+            return (
+              <li key={c.type} className="py-2 text-[13px]" data-testid={`data-health-${c.type}`}>
+                <div className="flex items-baseline gap-3">
+                  <span className="min-w-0 flex-1 font-medium">{checkLabel}</span>
+                  <span className="shrink-0 tabular-nums text-muted" data-testid={`data-health-count-${c.type}`}>
+                    {c.read === false ? (c.open === null || c.open === undefined ? "Not checked" : c.open ? c.open.toLocaleString("en-US") : "None") : c.count > 0 ? `${c.count.toLocaleString("en-US")}${data.partial ? "+" : ""}` : c.hidden > 0 ? "Hidden from you" : "None"}
+                  </span>
+                </div>
+                {c.read === false && (c.open === null || c.open === undefined) && (
+                  <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-unchecked-${c.type}`}>This check has not run yet, so there is no count.</p>
+                )}
+                {c.read === false && isBeforeToday(c.checked_at) && (
+                  <p className="mt-0.5 text-[12px] text-muted">Last checked {eastern(c.checked_at)}.</p>
+                )}
+                {c.hidden > 0 && (
+                  <p className="mt-0.5 text-[12px] text-muted" data-testid={`data-health-hidden-${c.type}`}>
+                    {c.count > 0 ? "Also " : ""}{c.hidden} on records your access doesn&rsquo;t open.
+                  </p>
+                )}
+                {(c.read !== false ? (c.items ?? []).length > 0 : (c.open ?? 0) > 0) && <CheckItems check={c} />}
+              </li>
+            );
+          })}
         </ul>
       )}
       {off.length > 0 && (
         <p className="mt-2 text-[12px] text-faint" data-testid="data-health-off">
-          Not shown until they are checked: {off.map((c) => c.label.toLowerCase()).join("; ")}.
+          Not shown until they are checked: {off.map((c) => (c?.label ?? (c as { title?: string })?.title ?? c?.type ?? "").toLowerCase()).filter(Boolean).join("; ")}.
         </p>
       )}
     </section>
@@ -194,6 +198,7 @@ function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => vo
   }, [check.type, appliedQuery, objectType]);
 
   const hasFilter = Boolean(appliedQuery.trim() || objectType.trim() || assigneeFilter !== "all");
+  const checkLabel = check?.label ?? (check as { title?: string })?.title ?? check?.type ?? "data health";
   const exactTotal = total ?? items.length;
   const seen = check.read !== false ? check.count : null;
   return (
@@ -214,7 +219,7 @@ function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => vo
               value={queryInput}
               onChange={(e) => setQueryInput(e.target.value)}
               placeholder="Filter findings"
-              aria-label={`Filter ${check.label} findings`}
+              aria-label={`Filter ${checkLabel} findings`}
               className="h-7 w-44 rounded-md border border-border bg-bg px-2 text-[12px] text-fg placeholder:text-faint focus:border-border-strong focus:outline-none"
               data-testid={`data-health-search-${check.type}`}
             />
@@ -229,7 +234,7 @@ function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => vo
           {(knownTypes.length > 1 || objectType) && (
             <select
               value={objectType}
-              aria-label={`Filter ${check.label} by record type`}
+              aria-label={`Filter ${checkLabel} by record type`}
               onChange={(e) => applyFilters(queryInput, e.target.value)}
               className="h-7 cursor-pointer rounded-md border border-border bg-bg px-2 text-[12px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
               data-testid={`data-health-type-${check.type}`}
@@ -242,7 +247,7 @@ function CheckItems({ check, onRead }: { check: Check; onRead?: (c: Check) => vo
           )}
           <select
             value={assigneeFilter}
-            aria-label={`Filter ${check.label} by assignment`}
+            aria-label={`Filter ${checkLabel} by assignment`}
             onChange={(e) => setAssigneeFilter(e.target.value as "all" | "unassigned" | "assigned")}
             className="h-7 cursor-pointer rounded-md border border-border bg-bg px-2 text-[12px] text-fg outline-none transition-colors hover:border-border-strong focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-ring/40"
             data-testid={`data-health-assignee-${check.type}`}

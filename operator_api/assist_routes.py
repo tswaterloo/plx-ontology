@@ -163,15 +163,22 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
     never = backend._apa_never(state, ids)
     # a matter made from one of the remaining queue triggers' items is listed as that item's
     # own card (its prepared changes, holds and links), read as the queue lists it; automated
-    # internal system monitoring alerts (such as cos@petrasoap.com health alerts) are excluded
-    # from the employee's Mine queue
-    from operating.assist_readings import is_system_alert_mail
+    # internal system monitoring alerts (staging/UAT health checks, BC sync, email-relay,
+    # cos@petrasoap.com PR merge-class gates) are excluded from the employee's queue
+    from operating.assist_readings import is_automated_system_alert
+    from .home_needs import are_same_event_raw_matters, raw_matter_richness
     seen_sigs: set[tuple[str, str, str, str]] = set()
-    kept_raw = []
+    kept_raw: list[Mapping[str, Any]] = []
     for i in got["items"]:
         if i["queue_card"] or i["kind_of_matter"] == am.MC_APPROVAL_KIND:
             continue
-        if i.get("channel") == "mail" and is_system_alert_mail(i.get("sender"), i.get("subject"), i.get("summary")):
+        if is_automated_system_alert(
+            sender=i.get("sender"),
+            subject=i.get("subject"),
+            summary=i.get("summary"),
+            note=i.get("note"),
+            message=i.get("message"),
+        ):
             continue
         sig = (
             str(i.get("owner") or "").lower(),
@@ -183,6 +190,15 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
             continue
         if sig[2]:
             seen_sigs.add(sig)
+        if matter_id is None:
+            dup_idx = next(
+                (idx for idx, existing in enumerate(kept_raw) if are_same_event_raw_matters(existing, i)),
+                None,
+            )
+            if dup_idx is not None:
+                if raw_matter_richness(i) > raw_matter_richness(kept_raw[dup_idx]):
+                    kept_raw[dup_idx] = i
+                continue
         kept_raw.append(i)
     items = _put_off(backend, state, [_prepared(i) for i in kept_raw])
     if include_queue:
@@ -249,6 +265,80 @@ def _log(backend: Any, item_id: str, what: str, detail: Mapping[str, Any]) -> No
         pg.commit()           # the pool's hand-back rolls an open transaction back
 
 
+def decide_matter(backend: Any, reader: Reader, item_id: str,
+                  body: m.AutopilotDecisionRequest, *, notes: Any = None) -> m.AutopilotItem:
+    """Done, not needed (reject) or snooze on an Assist matter of the reader's own.
+    Nothing is sent."""
+    found = _matter(backend, reader, item_id)
+    if found["legacy"]:
+        item = backend.autopilot_decide(reader, found["legacy"], body)
+        if notes is not None:
+            notes.autopilot_decided(reader, item)
+        _bump_assist_drafts(backend)
+        return item
+    if body.decision not in ("accept", "reject", "snooze"):
+        raise UserFacing("action_refused", "This item can be marked done, not needed or "
+                         "put off until later.", 409)
+    _journal_decision(backend, reader, item_id, body)
+    if body.decision != "snooze":
+        _log(backend, item_id, "closed", {"by": sorted(_ids(backend, reader))[:1],
+                                          "decision": body.decision, "note": body.note or ""})
+    _bump_assist_drafts(backend)
+    return _decided(item_id, found["owner"], body.decision)
+
+
+def reopen_matter(backend: Any, reader: Reader, item_id: str, *,
+                  reason: Optional[str] = None) -> bool:
+    """Undo a closed/snoozed decision on an Assist matter in the decisions journal so it
+    returns to the reader's Assist and Home lists immediately."""
+    from datetime import datetime, timezone
+    from .autopilot_area import DECISIONS_FILE, _iso
+    from operating.card_actions import Journal
+    state = backend._apa_state()
+    if state is None:
+        return False
+    me = set(backend._apa_me(reader))
+    is_owner = bool(backend._apa_is_owner(reader))
+    legacy_id: Optional[str] = None
+    pool = _pool(backend)
+    if pool is not None:
+        try:
+            with pool.connection() as pg:
+                row = pg.execute(
+                    "SELECT legacy_item_id, owner_person FROM assist.matter_items WHERE matter_id = %s",
+                    (item_id,),
+                ).fetchone()
+            if row is not None:
+                owner_person = str(row[1] or "").strip().lower()
+                ids = _ids(backend, reader) | set(backend._apa_pools(reader))
+                if not (is_owner or owner_person in ids):
+                    return False
+                legacy_id = row[0]
+        except Exception:  # noqa: BLE001 - fall back to journal check below
+            legacy_id = None
+    had_decision = False
+    decisions_path = state / DECISIONS_FILE
+    if decisions_path.exists():
+        for entry in Journal(decisions_path).rows():
+            eid = str(entry.get("item_id") or "")
+            if eid in (item_id, legacy_id) and (is_owner or entry.get("by") in me):
+                had_decision = True
+    if not had_decision and legacy_id is None:
+        return False
+    now = datetime.now(timezone.utc)
+    by = sorted(me)[0]
+    note = (reason or "").strip() or None
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with Journal(decisions_path).locked() as held:
+        held.append({"event": "item_decision", "item_id": item_id, "decision": "open",
+                     "at": _iso(now), "by": by, "note": note, "matter": True})
+        if legacy_id:
+            held.append({"event": "item_decision", "item_id": legacy_id, "decision": "open",
+                         "at": _iso(now), "by": by, "note": note})
+    _bump_assist_drafts(backend)
+    return True
+
+
 def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -> None:
     """Register the routes (before the queue's item routes: see the module text)."""
 
@@ -276,21 +366,7 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
     def assist_decide(item_id: str, body: m.AutopilotDecisionRequest,
                       who: Reader = Depends(reader)) -> m.AutopilotItem:
         """Done, not needed (reject) or snooze on an item of yours. Nothing is sent."""
-        found = _matter(backend, who, item_id)
-        if found["legacy"]:
-            item = backend.autopilot_decide(who, found["legacy"], body)
-            notes.autopilot_decided(who, item)
-            _bump_assist_drafts(backend)
-            return item
-        if body.decision not in ("accept", "reject", "snooze"):
-            raise UserFacing("action_refused", "This item can be marked done, not needed or "
-                             "put off until later.", 409)
-        _journal_decision(backend, who, item_id, body)
-        if body.decision != "snooze":
-            _log(backend, item_id, "closed", {"by": sorted(_ids(backend, who))[:1],
-                                              "decision": body.decision, "note": body.note or ""})
-        _bump_assist_drafts(backend)
-        return _decided(item_id, found["owner"], body.decision)
+        return decide_matter(backend, who, item_id, body, notes=notes)
 
     @app.post("/api/autopilot/items/{item_id:matter}/reply-from-line",
               response_model=m.AutopilotItem, tags=["actions"], responses=_ERR)
@@ -369,7 +445,11 @@ def _put_off(backend: Any, state: Any, items: Sequence[Mapping[str, Any]]) -> li
     said: dict[str, dict[str, Any]] = {}
     for row in Journal(state / DECISIONS_FILE).rows():
         if row.get("matter"):
-            said[str(row.get("item_id"))] = row
+            iid = str(row.get("item_id"))
+            if row.get("decision") == "open":
+                said.pop(iid, None)
+            else:
+                said[iid] = row
     if not said:
         return list(items)
     now = datetime.now(timezone.utc)

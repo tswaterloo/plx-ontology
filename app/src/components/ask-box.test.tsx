@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AskBox, mentionAt, SUGGEST_DEBOUNCE_MS } from "./ask-box";
+import { ASK_SKILLS, AskBox, mentionAt, slashAt, SUGGEST_DEBOUNCE_MS } from "./ask-box";
 import { resetWarmAsk } from "@/lib/api";
 
 const push = vi.fn();
@@ -323,10 +323,93 @@ describe("AskBox autocomplete", () => {
     expect(warmCalls).toHaveLength(1);
   });
 
+  it("shows Queue and Steer now controls while busy, dispatches onQueue on Enter and onSteer on Cmd+Enter or click", () => {
+    const onSubmit = vi.fn();
+    const onQueue = vi.fn();
+    const onSteer = vi.fn();
+    const onStop = vi.fn();
+    render(<AskBox onSubmit={onSubmit} onQueue={onQueue} onSteer={onSteer} onStop={onStop} busy attachable />);
+
+    const box = screen.getByRole("combobox") as HTMLTextAreaElement;
+    // Composer and attach stay enabled while busy
+    expect(box).not.toBeDisabled();
+    expect(screen.getByLabelText("Attach files or images")).not.toBeDisabled();
+
+    type(box, "break that down by vendor");
+    expect(screen.getByTestId("ask-queue-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("ask-steer-btn")).toBeInTheDocument();
+
+    // Default Enter queues
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onQueue).toHaveBeenCalledWith("break that down by vendor", [], []);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(box.value).toBe("");
+
+    // Cmd+Enter steers immediately
+    type(box, "actually check CAD only");
+    fireEvent.keyDown(box, { key: "Enter", metaKey: true });
+    expect(onSteer).toHaveBeenCalledWith("actually check CAD only", [], []);
+    expect(box.value).toBe("");
+
+    // Clicking Steer now button also steers immediately
+    type(box, "focus on late POs");
+    fireEvent.click(screen.getByTestId("ask-steer-btn"));
+    expect(onSteer).toHaveBeenLastCalledWith("focus on late POs", [], []);
+  });
+
   it("phrases alert-condition starters naturally in ask-start", async () => {
     const { riskStarter } = await import("./ask-start");
     expect(riskStarter({ label: "Batch on quality hold", kind: "batch_qc_hold" })).toBe("Which open orders are affected by a batch on quality hold?");
     expect(riskStarter({ label: "Price below cost", kind: "customer_price_below_cost" })).toBe("What needs attention for price below cost?");
     expect(riskStarter({ label: "SO 10433", kind: "order" })).toBe("What is putting SO 10433 at risk?");
+  });
+
+  it("renders an Apple Liquid Glass floating composer without the old read-only dot badge and with shortcut hints", () => {
+    const { rerender } = render(<AskBox onSubmit={vi.fn()} attachable deepable spaceLabel="Finance" />);
+    const form = screen.getByTestId("ask-composer-form");
+    expect(form.className).toContain("rounded-2xl");
+    expect(form.className).toContain("liquid-glass-surface");
+    expect(form.className).toContain("focus-within:border-fg/30");
+    expect(form.className).not.toContain("border-accent");
+    expect(screen.queryByTestId("composer-space-badge")).toBeNull();
+    expect(screen.getByRole("combobox")).toHaveAttribute("placeholder", "Ask a question, @ for objects, / for skills...");
+    expect(screen.getByTestId("composer-shortcut-hint")).toHaveTextContent("Enter to send");
+
+    rerender(<AskBox onSubmit={vi.fn()} attachable deepable spaceLabel="Finance" busy onStop={vi.fn()} />);
+    expect(screen.getByTestId("composer-shortcut-hint")).toHaveTextContent("Cmd+Enter to steer");
+  });
+
+  it("opens the interactive / skills menu, filters by query, supports keyboard navigation, and inserts clean prompt text", () => {
+    expect(slashAt("/qc", 3)).toEqual({ start: 0, end: 3, query: "qc" });
+    expect(slashAt("check /late-pos", 15)).toEqual({ start: 6, end: 15, query: "late-pos" });
+    expect(slashAt("https://example.com/a", 21)).toBeNull();
+
+    render(<AskBox onSubmit={vi.fn()} attachable deepable />);
+    const box = screen.getByRole("combobox") as HTMLTextAreaElement;
+
+    // Typing "/" shows all 8 curated Petra operational skills
+    type(box, "/");
+    const menu = screen.getByTestId("skills-menu");
+    expect(menu).not.toHaveAttribute("hidden");
+    expect(box).toHaveAttribute("aria-expanded", "true");
+    for (const skill of ASK_SKILLS) {
+      expect(screen.getByTestId(`skill-option-${skill.id}`)).toHaveTextContent(skill.command);
+    }
+
+    // Filtering narrows the list and Enter inserts the selected skill prompt
+    type(box, "/qc");
+    expect(screen.getByTestId("skill-option-qc-holds")).toBeInTheDocument();
+    expect(screen.queryByTestId("skill-option-late-pos")).toBeNull();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box.value).toBe("Show all open quality holds, affected batches, and impacted customer orders.");
+    expect(menu).toHaveAttribute("hidden");
+
+    // Clicking the toolbar Skills button opens the menu and ArrowDown + click selects
+    type(box, "");
+    fireEvent.mouseDown(screen.getByTestId("skills-menu-btn"));
+    expect(menu).not.toHaveAttribute("hidden");
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.mouseDown(screen.getByTestId("skill-option-margin-check"));
+    expect(box.value).toContain("low or negative gross margin");
   });
 });

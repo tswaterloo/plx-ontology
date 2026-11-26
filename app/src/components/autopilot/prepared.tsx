@@ -1,13 +1,15 @@
 "use client";
 
+import { Copy, Mail, MessageSquare, Pencil } from "lucide-react";
 import { Fragment, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useProblemSlot } from "@/components/ui/notice";
 import { decideAutopilotItem, replyFromLine, saveMemory, type PreparedItem } from "@/lib/api";
 import { DraftUse, draftUseOf } from "@/components/autopilot/draft-use";
 import { JobCard } from "@/components/autopilot/job";
+import { StatusIndicator } from "@/components/autopilot/jobs";
 import { PreparedFeedback } from "@/components/autopilot/prepared-feedback";
-import { noteParts, saidOnce } from "@/components/autopilot/lines";
+import { cleanHeadline, formatSender, noteParts, saidOnce } from "@/components/autopilot/lines";
 import { ItemActions, type MenuEntry, type OptimisticCallbacks } from "@/components/autopilot/item-actions";
 
 export { tomorrowMorning } from "@/components/autopilot/item-actions";
@@ -63,6 +65,7 @@ export function senderLabel(raw: string): string {
 export function PreparedCard({
   item,
   linked,
+  detail,
   onGone,
   onChanged,
   onOptimistic,
@@ -72,6 +75,7 @@ export function PreparedCard({
 }: {
   item: PreparedItem;
   linked?: boolean;
+  detail?: boolean;
   onGone: (id: string) => void;
   onChanged: () => void;
   feedback?: React.ReactNode;
@@ -182,6 +186,12 @@ export function PreparedCard({
         onFeedback?.("Confirmed");
       }
     });
+  const copyReply = () =>
+    run(async () => {
+      await navigator.clipboard.writeText(text);
+      setNote("Copied to clipboard.");
+      onFeedback?.("Copied reply to clipboard");
+    });
   const keep = () =>
     run(async () => {
       await saveMemory({ kind: "preference", text: pref.trim() });
@@ -194,16 +204,8 @@ export function PreparedCard({
   const versions = (item.options ?? []).filter((o) => o.reply.trim() && o.reply !== text);
   const entries: MenuEntry[] = [];
   if (haveReply && item.redo) entries.push({ label: "Rewrite from a line", run: () => setOpen("rewrite") });
-  if (haveReply) {
-    entries.push({
-      label: "Copy",
-      run: () =>
-        run(async () => {
-          await navigator.clipboard.writeText(text);
-          setNote("Copied to clipboard.");
-          onFeedback?.("Copied reply to clipboard");
-        }),
-    });
+  if (haveReply && !detail) {
+    entries.push({ label: "Copy", run: () => copyReply() });
   }
   if (haveReply && item.channel === "mail" && item.to.length > 0) entries.push({ label: "Open in Outlook", run: () => void (window.location.href = mailtoOf(item, text)) });
   entries.push({ label: "Save a preference for my drafts", run: () => setOpen("pref") });
@@ -217,6 +219,302 @@ export function PreparedCard({
     Boolean(item.subject) &&
     !sameWords(item.subject, dedupedMessage) &&
     !sameWords(item.subject, dedupedAsk);
+
+  if (detail) {
+    const senderInfo = formatSender(item.sender);
+    const headline = cleanHeadline(item.subject || item.summary || item.ask || senderInfo.name || "Prepared reply");
+    const statusTone = waiting || item.plan_status === "working" ? "new" : haveReply ? "ok" : "risk";
+    const statusText = waiting || item.plan_status === "working" ? "Drafting" : haveReply ? "Ready" : "Needs input";
+    const ChannelIcon = item.channel === "teams" ? MessageSquare : Mail;
+    const deliverableLabel = item.channel === "teams" ? "Teams reply draft" : "Email reply draft";
+
+    return (
+      <li
+        id={`prepared-${item.item_id}`}
+        className={cn("w-full space-y-6", linked && "border-l-2 border-l-accent pl-4")}
+        data-testid="prepared-item"
+      >
+        {card.provide(
+          <>
+            <header className="space-y-3 border-b border-border pb-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <h2 className="min-w-0 flex-1 text-[20px] font-semibold leading-[1.3] tracking-[-0.02em] text-fg">
+                  {countedWords(headline)}
+                </h2>
+                <div className="shrink-0">
+                  <ItemActions
+                    item={item}
+                    onGone={onGone}
+                    onChanged={onChanged}
+                    onOptimistic={onOptimistic}
+                    onRestore={onRestore}
+                    onFeedback={onFeedback}
+                    busy={busy}
+                    entries={entries}
+                    menuAlign="right"
+                    primary={
+                      haveReply ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void confirm()}
+                            className="inline-flex h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                          >
+                            {busy ? "Sending..." : token ? "Confirm again to send" : "Approve & Send"}
+                          </button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 rounded-md px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+                            disabled={busy}
+                            onClick={() => setEditing((v) => !v)}
+                          >
+                            <Pencil className="size-3.5" aria-hidden />
+                            <span>{editing ? "Done editing" : "Edit"}</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 rounded-md px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+                            disabled={busy}
+                            onClick={() => void copyReply()}
+                          >
+                            <Copy className="size-3.5" aria-hidden />
+                            <span>Copy</span>
+                          </Button>
+                        </>
+                      ) : null
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px] text-muted">
+                <StatusIndicator tone={statusTone} label={statusText} />
+                {senderInfo.name && (
+                  <>
+                    <span className="font-medium text-fg" title={senderInfo.email || item.sender || undefined}>
+                      {senderInfo.name}
+                    </span>
+                    {senderInfo.email && senderInfo.email !== senderInfo.name && (
+                      <span className="text-[12px] text-faint">{senderInfo.email}</span>
+                    )}
+                  </>
+                )}
+                {parsedNote.labels.map((l) => (
+                  <span key={l} className="text-[12px] text-faint" data-testid="prepared-label">
+                    {l}
+                  </span>
+                ))}
+                <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
+              </div>
+            </header>
+
+            {(dedupedMessage || (!haveReply && item.facts.length > 0)) && (
+              <section className="space-y-2.5">
+                <h3 className="text-[12px] font-medium uppercase tracking-[0.04em] text-faint">What happened</h3>
+                {dedupedMessage && (
+                  <p className="whitespace-pre-wrap text-[14.5px] leading-[1.65] text-fg/90">
+                    {countedWords(dedupedMessage)}
+                  </p>
+                )}
+                {!haveReply && item.facts.length > 0 && (
+                  <ul className="list-disc space-y-1 pl-5 text-[14px] leading-[1.6] text-fg/85">
+                    {item.facts.map((f) => (
+                      <li key={f}>{countedWords(f)}</li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+
+            {!haveReply && (
+              <section className="space-y-4 border-t border-border pt-5">
+                {dedupedAsk && (
+                  <p className="text-[15px] font-medium leading-[1.55] text-fg">{countedWords(dedupedAsk)}</p>
+                )}
+                {(item.options ?? []).length > 0 && (
+                  <div className="flex flex-wrap gap-2" aria-label="Answers">
+                    {(item.options ?? []).map((o) => (
+                      <Button
+                        key={o.reply}
+                        size="sm"
+                        variant="outline"
+                        className="rounded-md"
+                        disabled={busy}
+                        onClick={() => setText(o.reply)}
+                      >
+                        {o.label || "This one"}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+                <div className="space-y-2.5">
+                  <label className="block text-[12.5px] font-medium text-muted">
+                    {(item.options ?? []).length > 0 ? "Or say it in a few words" : "What do you want to say?"}
+                    <input
+                      value={line}
+                      maxLength={1000}
+                      onChange={(e) => setLine(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && line.trim() && !busy && !waiting) {
+                          e.preventDefault();
+                          void write();
+                        }
+                      }}
+                      className="mt-2 h-9 w-full rounded-md border border-border-strong bg-surface px-3 text-[14px] text-fg focus:border-accent/60 focus:outline-none"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={busy || waiting || !line.trim()}
+                    onClick={() => void write()}
+                    className="inline-flex h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-40 cursor-pointer"
+                  >
+                    {waiting ? "Still writing..." : "Write the reply"}
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {haveReply && (
+              <section className="space-y-3 border-t border-border pt-5">
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="inline-flex items-center gap-2 text-[12px] font-medium uppercase tracking-[0.04em] text-faint">
+                    <ChannelIcon className="size-3.5" aria-hidden />
+                    <span>{deliverableLabel}</span>
+                  </h3>
+                  {versions.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1" aria-label="Other versions">
+                      <span className="mr-1 text-[12px] text-muted">Other versions:</span>
+                      {versions.map((o) => (
+                        <Button
+                          key={o.reply}
+                          size="xs"
+                          variant="ghost"
+                          className="rounded-md text-muted hover:bg-surface-2 hover:text-fg"
+                          disabled={busy}
+                          onClick={() => setText(o.reply)}
+                        >
+                          {o.label || "Another version"}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3 border-l-2 border-border-strong pl-4 py-1">
+                  {(item.to.length > 0 || item.cc.length > 0 || showSubject) && (
+                    <div className="space-y-1 border-b border-border pb-2.5 text-[13px]">
+                      {item.to.length > 0 && (
+                        <div className="flex items-baseline gap-3">
+                          <span className="w-14 shrink-0 text-[12px] font-medium text-faint">To</span>
+                          <span className="min-w-0 flex-1 break-words text-fg">{item.to.join(", ")}</span>
+                        </div>
+                      )}
+                      {item.cc.length > 0 && (
+                        <div className="flex items-baseline gap-3">
+                          <span className="w-14 shrink-0 text-[12px] font-medium text-faint">CC</span>
+                          <span className="min-w-0 flex-1 break-words text-muted">{item.cc.join(", ")}</span>
+                        </div>
+                      )}
+                      {showSubject && (
+                        <div className="flex items-baseline gap-3">
+                          <span className="w-14 shrink-0 text-[12px] font-medium text-faint">Subject</span>
+                          <span className="min-w-0 flex-1 font-medium text-fg">{item.subject}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {editing ? (
+                    <textarea
+                      aria-label="Reply"
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      rows={8}
+                      className="w-full resize-none rounded-md border border-border-strong bg-surface p-3 text-[14.5px] leading-[1.65] text-fg focus:border-accent/60 focus:outline-none"
+                    />
+                  ) : (
+                    <p className="whitespace-pre-wrap text-[14.5px] leading-[1.65] text-fg">{text}</p>
+                  )}
+                </div>
+
+                {open === "rewrite" && (
+                  <div className="flex flex-wrap items-end gap-2 border-t border-border pt-3.5">
+                    <label className="block min-w-[16rem] flex-1 text-[12.5px] font-medium text-muted">
+                      Rewrite it: what do you want to say?
+                      <input
+                        autoFocus
+                        value={line}
+                        maxLength={1000}
+                        onChange={(e) => setLine(e.target.value)}
+                        className="mt-1.5 h-9 w-full rounded-md border border-border-strong bg-surface px-3 text-[13.5px] text-fg focus:border-accent/60 focus:outline-none"
+                      />
+                    </label>
+                    <Button size="sm" variant="outline" className="h-9 rounded-md" disabled={busy || waiting || !line.trim()} onClick={() => void write()}>
+                      {waiting ? "Still writing..." : "Rewrite"}
+                    </Button>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {open === "pref" && (
+              <div className="flex flex-wrap items-end gap-2 border-t border-border pt-3.5">
+                <label className="min-w-[16rem] flex-1 text-[12.5px] font-medium text-muted">
+                  Save as a preference (for example: never mention prices to Kim)
+                  <input
+                    autoFocus
+                    value={pref}
+                    maxLength={1000}
+                    onChange={(e) => setPref(e.target.value)}
+                    className="mt-1.5 h-9 w-full rounded-md border border-border-strong bg-surface px-3 text-[13.5px] text-fg focus:border-accent/60 focus:outline-none"
+                  />
+                </label>
+                <Button size="sm" variant="outline" className="h-9 rounded-md" disabled={busy || !pref.trim()} onClick={() => void keep()}>
+                  Save
+                </Button>
+              </div>
+            )}
+
+            <TodoSteps todos={item.todos ?? []} />
+            <DraftUse use={draftUseOf(item)} />
+
+            {item.auto_would && (
+              <p className="text-[12.5px] text-muted" data-testid="auto-would">
+                {item.auto_would === "send" ? "With Auto on, this would go by itself." : "With Auto on, this would still wait for you."}
+              </p>
+            )}
+            {(item.learned ?? []).length > 0 && (
+              <p className="text-[12.5px] text-muted" data-testid="draft-learned">
+                Learned from your edit: {(item.learned ?? []).join("; ")}
+              </p>
+            )}
+            {waiting && (
+              <p className="text-[13px] text-muted" role="status" data-testid="reply-writing-status">
+                Writing the reply from your line. Still writing ({formatElapsed(elapsedSec)}). It shows here when it is ready.
+              </p>
+            )}
+            {!waiting && note && <p className="text-[13px] text-muted">{note}</p>}
+            {dedupedNoteText && (
+              <p className="text-[13px] text-muted" data-testid="prepared-note">
+                {dedupedNoteText}
+              </p>
+            )}
+            {feedback && (
+              <div className="border-t border-border pt-4" data-testid="prepared-feedback-row">
+                {feedback}
+              </div>
+            )}
+          </>,
+        )}
+        {card.banner}
+      </li>
+    );
+  }
+
   return (
     <li
       id={`prepared-${item.item_id}`}
@@ -232,7 +530,7 @@ export function PreparedCard({
         </span>
         {showSubject && (
           <>
-            <span className="text-faint" aria-hidden>·</span>
+            <span className="text-muted/60" aria-hidden>·</span>
             <span className="max-w-full truncate text-[13px] text-muted">
               {item.subject}
             </span>
@@ -240,24 +538,24 @@ export function PreparedCard({
         )}
         {parsedNote.labels.map((l) => (
           <Fragment key={l}>
-            <span className="text-faint" aria-hidden>·</span>
-            <p className="text-[11.5px] leading-4 text-faint" data-testid="prepared-label">
+            <span className="text-muted/60" aria-hidden>·</span>
+            <p className="text-[12px] leading-4 text-muted" data-testid="prepared-label">
               {l}
             </p>
           </Fragment>
         ))}
-        <span className="num ml-auto text-[12px] text-faint">{formatDateTime(item.created_at)}</span>
+        <span className="num ml-auto text-[12px] text-muted">{formatDateTime(item.created_at)}</span>
       </div>
       {dedupedMessage && (
-        <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">
+        <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13.5px] leading-relaxed text-muted">
           {countedWords(dedupedMessage)}
         </p>
       )}
       {!haveReply && (
         <div className="space-y-2.5 border-t border-border/70 pt-3.5">
-          {dedupedAsk && <p className="text-[14px] font-medium leading-relaxed text-fg">{countedWords(dedupedAsk)}</p>}
+          {dedupedAsk && <p className="text-[14.5px] font-medium leading-[1.6] text-fg">{countedWords(dedupedAsk)}</p>}
           {item.facts.length > 0 && (
-            <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted">
+            <ul className="list-disc space-y-0.5 pl-4 text-[13.5px] leading-relaxed text-muted">
               {item.facts.map((f) => (
                 <li key={f}>{countedWords(f)}</li>
               ))}
@@ -272,9 +570,9 @@ export function PreparedCard({
               ))}
             </div>
           )}
-          <label className="block text-[12px] text-muted">
+          <label className="block text-[12.5px] text-muted">
             {(item.options ?? []).length > 0 ? "Or say it in a few words" : "What do you want to say?"}
-            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
+            <input value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13.5px] text-fg" />
           </label>
           <Button size="sm" disabled={busy || waiting || !line.trim()} onClick={() => void write()}>
             {waiting ? "Still writing..." : "Write the reply"}
@@ -284,9 +582,9 @@ export function PreparedCard({
       {haveReply && (
         <>
           {editing ? (
-            <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full resize-none rounded-md border border-border-strong bg-bg p-3 text-[14px] leading-relaxed text-fg focus:border-accent focus:outline-none" />
+            <textarea aria-label="Reply" value={text} onChange={(e) => setText(e.target.value)} rows={8} className="w-full resize-none rounded-lg border border-border-strong bg-bg p-3 text-[14.5px] leading-[1.65] text-fg focus:border-fg/35 focus:outline-none" />
           ) : (
-            <p className="whitespace-pre-wrap border-t border-border/70 pt-3.5 text-[14px] leading-relaxed text-fg">{text}</p>
+            <p className="whitespace-pre-wrap border-t border-border/70 pt-3.5 text-[14.5px] leading-[1.65] text-fg">{text}</p>
           )}
           {versions.length > 0 && (
             <div className="flex flex-wrap items-center gap-2" aria-label="Other versions">
@@ -300,9 +598,9 @@ export function PreparedCard({
           )}
           {open === "rewrite" && (
             <div className="flex flex-wrap items-end gap-2">
-              <label className="block min-w-[16rem] flex-1 text-[12px] text-muted">
+              <label className="block min-w-[16rem] flex-1 text-[12.5px] text-muted">
                 Rewrite it: what do you want to say?
-                <input autoFocus value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
+                <input autoFocus value={line} maxLength={1000} onChange={(e) => setLine(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13.5px] text-fg" />
               </label>
               <Button size="sm" variant="outline" disabled={busy || waiting || !line.trim()} onClick={() => void write()}>
                 {waiting ? "Still writing..." : "Rewrite"}
@@ -313,9 +611,9 @@ export function PreparedCard({
       )}
       {open === "pref" && (
         <div className="flex flex-wrap items-end gap-2">
-          <label className="min-w-[16rem] flex-1 text-[12px] text-muted">
+          <label className="min-w-[16rem] flex-1 text-[12.5px] text-muted">
             Save as a preference (for example: never mention prices to Kim)
-            <input autoFocus value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13px] text-fg" />
+            <input autoFocus value={pref} maxLength={1000} onChange={(e) => setPref(e.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2.5 text-[13.5px] text-fg" />
           </label>
           <Button size="sm" variant="outline" disabled={busy || !pref.trim()} onClick={() => void keep()}>
             Save
@@ -325,12 +623,12 @@ export function PreparedCard({
       <TodoSteps todos={item.todos ?? []} />
       <DraftUse use={draftUseOf(item)} />
       {item.auto_would && (
-        <p className="text-[12px] text-muted" data-testid="auto-would">
+        <p className="text-[12.5px] text-muted" data-testid="auto-would">
           {item.auto_would === "send" ? "With Auto on, this would go by itself." : "With Auto on, this would still wait for you."}
         </p>
       )}
       {(item.learned ?? []).length > 0 && (
-        <p className="text-[12px] text-muted" data-testid="draft-learned">
+        <p className="text-[12.5px] text-muted" data-testid="draft-learned">
           Learned from your edit: {(item.learned ?? []).join("; ")}
         </p>
       )}
@@ -351,7 +649,7 @@ export function PreparedCard({
                   <Button size="sm" disabled={busy} onClick={() => void confirm()}>
                     {busy ? "Confirming..." : token ? "Confirm again to send" : "Confirm"}
                   </Button>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing((v) => !v)}>
+                  <Button size="sm" variant="ghost" className="text-muted hover:bg-surface-2 hover:text-fg" disabled={busy} onClick={() => setEditing((v) => !v)}>
                     {editing ? "Done editing" : "Edit"}
                   </Button>
                 </>
@@ -362,12 +660,12 @@ export function PreparedCard({
         {feedback && <div className="shrink-0" data-testid="prepared-feedback-row">{feedback}</div>}
       </div>
       {waiting && (
-        <p className="text-[12px] text-muted" role="status" data-testid="reply-writing-status">
+        <p className="text-[12.5px] text-muted" role="status" data-testid="reply-writing-status">
           Writing the reply from your line. Still writing ({formatElapsed(elapsedSec)}). It shows here when it is ready.
         </p>
       )}
-      {!waiting && note && <p className="text-[12px] text-muted">{note}</p>}
-      {dedupedNoteText && <p className="text-[12px] text-muted" data-testid="prepared-note">{dedupedNoteText}</p>}
+      {!waiting && note && <p className="text-[12.5px] text-muted">{note}</p>}
+      {dedupedNoteText && <p className="text-[12.5px] text-muted" data-testid="prepared-note">{dedupedNoteText}</p>}
       {card.banner}
     </li>
   );
@@ -379,7 +677,7 @@ export const FIRST_CARDS = 40;
 
 export function PreparedView({ items, empty, linked, onGone, onChanged }: { items: PreparedItem[]; empty: string; linked?: string | null; onGone: (id: string) => void; onChanged: () => void }) {
   const [shown, setShown] = useState(FIRST_CARDS);
-  if (items.length === 0) return <p className="py-6 text-[13px] text-muted" data-testid="prepared-empty">{empty}</p>;
+  if (items.length === 0) return <p className="py-6 text-[13.5px] text-muted" data-testid="prepared-empty">{empty}</p>;
   // a linked item (a deep link, a notification) is always drawn, wherever it sits in the list
   const at = linked ? items.findIndex((i) => i.item_id === linked) : -1;
   const count = Math.max(shown, at + 1);
@@ -405,7 +703,7 @@ export function PreparedView({ items, empty, linked, onGone, onChanged }: { item
         })}
       </ul>
       {drawn.length < items.length && (
-        <p className="flex items-center gap-2 py-2 text-[12px] text-muted" data-testid="more-cards">
+        <p className="flex items-center gap-2 py-2 text-[12.5px] text-muted" data-testid="more-cards">
           {items.length - drawn.length} more
           <Button size="sm" variant="ghost" onClick={() => setShown(drawn.length + 100)}>
             Show 100 more
@@ -429,16 +727,16 @@ export function EveryoneView({ area }: { area: Area }) {
   return (
     <div className="space-y-6">
       <section aria-labelledby="ap-waiting" className="space-y-2">
-        <h2 id="ap-waiting" className="text-[13px] font-semibold">
+        <h2 id="ap-waiting" className="text-[13.5px] font-semibold text-fg">
           Waiting now, per person
         </h2>
         {queue.length === 0 ? (
-          <p className="text-[13px] text-muted">Nothing is waiting on anyone.</p>
+          <p className="text-[13.5px] text-muted">Nothing is waiting on anyone.</p>
         ) : (
           <ul className="divide-y divide-border" data-testid="ap-waiting">
             {queue.map(([p, n]) => (
-              <li key={p} className="flex gap-3 py-1.5 text-[13px]">
-                <span>{personName(area, p)}</span>
+              <li key={p} className="flex gap-3 py-2 text-[13.5px]">
+                <span className="text-fg">{personName(area, p)}</span>
                 <span className="text-muted">{n} waiting</span>
               </li>
             ))}
@@ -446,11 +744,11 @@ export function EveryoneView({ area }: { area: Area }) {
         )}
       </section>
       <section aria-labelledby="ap-who" className="space-y-2">
-        <h2 id="ap-who" className="text-[13px] font-semibold">
+        <h2 id="ap-who" className="text-[13.5px] font-semibold text-fg">
           Who switched what on
         </h2>
         {who.length === 0 ? (
-          <p className="text-[13px] text-muted">Nobody has switched anything on.</p>
+          <p className="text-[13.5px] text-muted">Nobody has switched anything on.</p>
         ) : (
           // one line per person (their workflows in it), never the same name once per workflow
           <ul className="divide-y divide-border" data-testid="ap-who">
@@ -459,8 +757,8 @@ export function EveryoneView({ area }: { area: Area }) {
               // "set by the owner" once when it holds for every one of them
               const allOwner = theirs.every((w) => w.by_owner);
               return (
-                <li key={person} className="flex gap-3 py-1.5 text-[13px]">
-                  <span className="shrink-0">{personName(area, person)}</span>
+                <li key={person} className="flex gap-3 py-2 text-[13.5px]">
+                  <span className="shrink-0 text-fg">{personName(area, person)}</span>
                   <span className="text-muted">
                     {theirs.map((w) => `${w.label}${w.partly ? " (partly)" : ""}${w.by_owner && !allOwner ? " (set by the owner)" : ""}`).join(", ")}
                     {allOwner ? "; all set by the owner" : ""}
@@ -474,15 +772,15 @@ export function EveryoneView({ area }: { area: Area }) {
       {/* only once something was accepted, edited or rejected: an empty score section says nothing */}
       {by.length > 0 && (
         <section aria-labelledby="ap-score" className="space-y-2">
-          <h2 id="ap-score" className="text-[13px] font-semibold">
+          <h2 id="ap-score" className="text-[13.5px] font-semibold text-fg">
             How each one is doing
           </h2>
           <ul className="divide-y divide-border">
             {by.map(([name, c]) => {
               const s = scoreOf(c);
               return (
-                <li key={name} className="flex flex-wrap gap-x-4 py-1.5 text-[13px]">
-                  <span className="min-w-[14rem]">{workflowLabel(name)}</span>
+                <li key={name} className="flex flex-wrap gap-x-4 py-2 text-[13.5px]">
+                  <span className="min-w-[14rem] text-fg">{workflowLabel(name)}</span>
                   <span className="num text-muted">
                     {c.accepted} accepted, {c.edited} edited, {c.rejected} rejected
                   </span>

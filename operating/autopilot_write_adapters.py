@@ -1610,7 +1610,7 @@ class CalendarAdapter(Adapter):
 # ------------------------------------------------------------------ SharePoint
 
 class SharePointAdapter(Adapter):
-    """A SharePoint list item or a new file through Microsoft Graph:
+    """A SharePoint list item, nested folder path, or file through Microsoft Graph:
 
     * ``list_item_create``: ``POST /sites/{site}/lists/{list}/items {"fields": {...}}``;
       undo ``DELETE .../items/{id}`` (the id Graph answered).
@@ -1622,26 +1622,48 @@ class SharePointAdapter(Adapter):
       name is a 409); undo ``DELETE /drives/{drive}/items/{id}`` with ``If-Match`` the eTag
       Graph answered (refused once someone changed the file). Up to 4 MiB (Graph's simple
       upload); the bytes travel base64 in the payload and the journal keeps their digest.
+    * ``file_replace``: a document's new content with ``If-Match`` its eTag as read; undo
+      ``PUT`` the prior bytes back with the eTag Graph answered.
+    * ``create_folder``: create a nested folder path (for example
+      ``Customers/Soapbox/2026/Q4 Reviews``) under a drive root or parent folder
+      (idempotent when a folder already exists, returning 409 on existing segments); undo
+      ``DELETE /drives/{drive}/items/{id}`` for the created leaf folder.
+    * ``upload_document`` / ``put_file``: upload a generated or updated document into a
+      specific SharePoint folder path, optionally creating missing parent folders first
+      (``create_folders=True``), with ``conflict_behavior`` defaulting to ``rename`` for
+      safety (``replace`` requires explicit ``confirmed_replace=True``); undo ``DELETE``
+      with the eTag Graph answered.
 
     Only a list's own columns (no system fields such as ``Author``, ``Editor``,
     ``ContentType``, ``Attachments`` or ``_``-prefixed ones), text, number or yes/no values."""
 
     system, kind = "sharepoint", "sharepoint_write"
     documented = ("Microsoft Graph v1.0 POST /sites/{site}/lists/{list}/items | PATCH "
-                  ".../items/{id}/fields | PUT /drives/{drive}/items/{parent}:/{name}:/content")
+                  ".../items/{id}/fields | POST /drives/{drive}/.../children | "
+                  "PUT /drives/{drive}/items/{parent}:/{name}:/content")
     operations = {"list_item_create": "new list item; undo: DELETE the item",
                   "list_item_update": "edit list columns with etag; undo: PATCH back",
                   "file_upload": "new file, never a replace; undo: DELETE with eTag",
                   "file_replace": "a document's new content with If-Match its eTag as read; "
-                                  "undo: PUT the prior bytes back with the eTag answered"}
+                                  "undo: PUT the prior bytes back with the eTag answered",
+                  "create_folder": "create nested folder path (idempotent if it exists); "
+                                   "undo: DELETE the created folder",
+                  "upload_document": "upload document to a folder path (auto-create folders "
+                                     "when requested, rename on conflict unless replace is "
+                                     "explicitly confirmed); undo: DELETE with eTag",
+                  "put_file": "upload file to a folder path (alias of upload_document); "
+                              "undo: DELETE with eTag"}
     structural = ("SharePoint is not opened to approved writes (PLX_WRITES_LIVE_SYSTEMS), "
                   "and no app holds a SharePoint write grant")
     needs = ("Sites.Selected with the write role granted per target site (or "
              "Sites.ReadWrite.All) on the AZURE_* app, admin-consented: Vince's OK",
              "SharePoint opened to approved writes (PLX_WRITES_LIVE_SYSTEMS=sharepoint)")
     MAX_BYTES = 4 * 1024 * 1024
+    MAX_FOLDER_DEPTH = 12
+    CONFLICT_BEHAVIORS = frozenset({"rename", "fail", "replace"})
     # a file's name is the record as read (the card's ``record``), never a target key
-    TARGET_KEYS = frozenset({"site_id", "list_id", "item_id", "drive_id", "parent_id"})
+    TARGET_KEYS = frozenset({"site_id", "list_id", "item_id", "drive_id", "parent_id",
+                             "folder_path"})
     _COLUMN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
     _SYSTEM_COLUMNS = frozenset(c.lower() for c in (
         "Author", "Editor", "Created", "Modified", "ContentType", "ContentTypeId",
@@ -1663,6 +1685,38 @@ class SharePointAdapter(Adapter):
                 or name.endswith(".") or name in (".", ".."):
             return ("sharepoint: the file name may hold only letters, digits, spaces and "
                     ". _ ( ) - (no apostrophe, &, comma or accented letter)")
+        return None
+
+    @classmethod
+    def normalize_folder_path(cls, raw: Any) -> list[str]:
+        """Validate and split a nested SharePoint folder path into clean segments."""
+        if not isinstance(raw, str):
+            raise AdapterRefused(["sharepoint: folder_path must be a non-empty path string"])
+        cleaned = raw.replace("\\", "/").strip().strip("/")
+        if not cleaned:
+            raise AdapterRefused(["sharepoint: folder_path is empty"])
+        raw_parts = cleaned.split("/")
+        if any(not p.strip() for p in raw_parts):
+            raise AdapterRefused(["sharepoint: folder_path contains an empty segment"])
+        segments = [p.strip() for p in raw_parts]
+        if len(segments) > cls.MAX_FOLDER_DEPTH:
+            raise AdapterRefused([f"sharepoint: folder_path exceeds {cls.MAX_FOLDER_DEPTH} nested folders"])
+        for seg in segments:
+            if seg in (".", "..") or ".." in seg:
+                raise AdapterRefused(["sharepoint: folder_path may not contain path traversal segments"])
+            refused = cls.file_name_refused(seg)
+            if refused:
+                raise AdapterRefused([f"sharepoint: folder segment {seg!r} is not allowed "
+                                      "(letters, digits, spaces and . _ ( ) - only)"])
+        return segments
+
+    @classmethod
+    def folder_path_refused(cls, raw: Any) -> str | None:
+        """Why ``raw`` cannot be used as a SharePoint folder path (None: valid)."""
+        try:
+            cls.normalize_folder_path(raw)
+        except AdapterRefused as err:
+            return err.problems[0]
         return None
 
     # a site id is ``{hostname},{site-collection guid},{web guid}`` (or the guids alone)
@@ -1700,6 +1754,52 @@ class SharePointAdapter(Adapter):
             out[k] = v
         return out
 
+    def _drive_and_parent(self, target: Mapping[str, Any], *, require_parent: bool = False
+                          ) -> tuple[str, str]:
+        drive = str(target.get("drive_id") or "")
+        if not _GRAPH_ID.fullmatch(drive):
+            raise AdapterRefused(["sharepoint: drive_id missing or malformed"])
+        site = target.get("site_id")
+        if site is not None and not self._SITE.fullmatch(str(site)):
+            raise AdapterRefused(["sharepoint: site_id malformed"])
+        parent_raw = target.get("parent_id")
+        if parent_raw is None or str(parent_raw).strip() == "":
+            if require_parent:
+                raise AdapterRefused(["sharepoint: drive_id or parent_id missing or malformed"])
+            return drive, "root"
+        parent = str(parent_raw)
+        if parent != "root" and not _GRAPH_ID.fullmatch(parent):
+            raise AdapterRefused(["sharepoint: parent_id malformed"])
+        return drive, parent
+
+    def _folder_steps(self, drive: str, parent: str, segments: Sequence[str], *,
+                      idempotent: bool = True) -> list[dict[str, Any]]:
+        drive_q = quote(drive, safe="!-_")
+        parent_q = quote(parent, safe="!-_")
+        steps: list[dict[str, Any]] = []
+        for idx, segment in enumerate(segments):
+            if idx == 0:
+                url = (f"{GRAPH}/drives/{drive_q}/root/children" if parent == "root" else
+                       f"{GRAPH}/drives/{drive_q}/items/{parent_q}/children")
+            else:
+                prefix_q = "/".join(quote(s, safe="()") for s in segments[:idx])
+                url = (f"{GRAPH}/drives/{drive_q}/root:/{prefix_q}:/children" if parent == "root"
+                       else f"{GRAPH}/drives/{drive_q}/items/{parent_q}:/{prefix_q}:/children")
+            steps.append({
+                "method": "POST",
+                "url": url,
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                    "name": segment,
+                    "folder": {},
+                    "@microsoft.graph.conflictBehavior": "fail",
+                },
+                "segment": segment,
+                "path": "/".join(segments[: idx + 1]),
+                "idempotent": idempotent,
+            })
+        return steps
+
     def request(self, action: Mapping[str, Any]) -> dict[str, Any]:
         operation = self._operation(action)
         payload = action.get("payload") or {}
@@ -1707,6 +1807,10 @@ class SharePointAdapter(Adapter):
             return self._upload(action, payload)
         if operation == "file_replace":
             return self._replace(action, payload)
+        if operation == "create_folder":
+            return self._create_folder(action, payload)
+        if operation in ("upload_document", "put_file"):
+            return self._upload_document(action, payload, operation)
         base = self._list_base(action)
         fields = self._columns(payload)
         if operation == "list_item_create":
@@ -1755,6 +1859,207 @@ class SharePointAdapter(Adapter):
                 "headers": {"Content-Type": kind}, "body_b64": raw,
                 "body_sha256": hashlib.sha256(data).hexdigest(), "body_bytes": len(data)}
 
+    def _create_folder(self, action: Mapping[str, Any], payload: Mapping[str, Any]
+                       ) -> dict[str, Any]:
+        _only(payload, ("folder_path", "path", "name", "idempotent"), "sharepoint", "create_folder")
+        target = action.get("target") or {}
+        drive, parent = self._drive_and_parent(target, require_parent=False)
+        raw_path = (payload.get("folder_path") if payload.get("folder_path") is not None else
+                    payload.get("path") if payload.get("path") is not None else
+                    payload.get("name") if payload.get("name") is not None else
+                    target.get("folder_path"))
+        segments = self.normalize_folder_path(raw_path)
+        idempotent = payload.get("idempotent", True)
+        if not isinstance(idempotent, bool):
+            raise AdapterRefused(["sharepoint: idempotent must be true or false"])
+        steps = self._folder_steps(drive, parent, segments, idempotent=idempotent)
+        normalized = "/".join(segments)
+        drive_q = quote(drive, safe="!-_")
+        parent_q = quote(parent, safe="!-_")
+        path_q = "/".join(quote(s, safe="()") for s in segments)
+        dest_url = (f"{GRAPH}/drives/{drive_q}/root:/{path_q}" if parent == "root" else
+                    f"{GRAPH}/drives/{drive_q}/items/{parent_q}:/{path_q}")
+        leaf = steps[-1]
+        return {
+            "method": leaf["method"],
+            "url": leaf["url"],
+            "headers": dict(leaf["headers"]),
+            "body": dict(leaf["body"]),
+            "operation": "create_folder",
+            "folder_path": normalized,
+            "segments": list(segments),
+            "idempotent": idempotent,
+            "destination_url": dest_url,
+            "steps": steps,
+            "preview": {
+                "operation": "create_folder",
+                "drive_id": drive,
+                "parent_id": parent,
+                "folder_path": normalized,
+                "segments": list(segments),
+                "destination_url": dest_url,
+                "idempotent": idempotent,
+                "step_count": len(steps),
+            },
+        }
+
+    def _upload_document(self, action: Mapping[str, Any], payload: Mapping[str, Any],
+                         operation: str) -> dict[str, Any]:
+        _only(payload, ("name", "content_b64", "content_type", "folder_path",
+                        "create_folders", "conflict_behavior", "confirmed_replace"),
+              "sharepoint", operation)
+        target = action.get("target") or {}
+        drive, parent = self._drive_and_parent(target, require_parent=False)
+        name = payload.get("name")
+        refused = self.file_name_refused(name)
+        if refused:
+            raise AdapterRefused([refused])
+        data = self._bytes(payload.get("content_b64"), "content")
+        kind = payload.get("content_type") or "application/octet-stream"
+        if not isinstance(kind, str) or not re.fullmatch(r"[a-z]+/[A-Za-z0-9.+-]{1,100}", kind):
+            raise AdapterRefused(["sharepoint: content_type malformed"])
+
+        conflict = str(payload.get("conflict_behavior") or "rename").strip().lower()
+        if conflict not in self.CONFLICT_BEHAVIORS:
+            raise AdapterRefused(["sharepoint: conflict_behavior must be rename, fail, or replace"])
+        pre = action.get("precondition") or {}
+        confirmed_replace = (payload.get("confirmed_replace") is True
+                             or pre.get("confirmed_replace") is True)
+        if conflict == "replace" and not confirmed_replace:
+            raise AdapterRefused(["sharepoint: conflict_behavior 'replace' requires explicit "
+                                  "confirmation (confirmed_replace=True)"])
+
+        create_folders = payload.get("create_folders", False)
+        if not isinstance(create_folders, bool):
+            raise AdapterRefused(["sharepoint: create_folders must be true or false"])
+
+        raw_folder = (payload.get("folder_path") if payload.get("folder_path") is not None
+                      else target.get("folder_path"))
+        segments: list[str] = []
+        normalized_folder = ""
+        if raw_folder is not None and str(raw_folder).strip() != "":
+            segments = self.normalize_folder_path(raw_folder)
+            normalized_folder = "/".join(segments)
+
+        drive_q = quote(drive, safe="!-_")
+        parent_q = quote(parent, safe="!-_")
+        name_q = quote(str(name), safe="()")
+        if segments:
+            folder_q = "/".join(quote(s, safe="()") for s in segments)
+            rel_path = f"{folder_q}/{name_q}"
+            dest_path = f"{normalized_folder}/{name}"
+        else:
+            rel_path = name_q
+            dest_path = str(name)
+        prefix = f"root:/{rel_path}" if parent == "root" else f"items/{parent_q}:/{rel_path}"
+        dest_url = f"{GRAPH}/drives/{drive_q}/{prefix}"
+        upload_url = f"{dest_url}:/content?@microsoft.graph.conflictBehavior={conflict}"
+        digest = hashlib.sha256(data).hexdigest()
+
+        steps = self._folder_steps(drive, parent, segments, idempotent=True) if (
+            create_folders and segments) else []
+        out: dict[str, Any] = {
+            "method": "PUT",
+            "url": upload_url,
+            "headers": {"Content-Type": kind},
+            "body_b64": payload["content_b64"],
+            "body_sha256": digest,
+            "body_bytes": len(data),
+            "operation": operation,
+            "conflict_behavior": conflict,
+            "folder_path": normalized_folder,
+            "create_folders": create_folders,
+            "destination_path": dest_path,
+            "destination_url": dest_url,
+            "preview": {
+                "operation": operation,
+                "drive_id": drive,
+                "parent_id": parent,
+                "folder_path": normalized_folder,
+                "name": str(name),
+                "destination_path": dest_path,
+                "destination_url": dest_url,
+                "create_folders": create_folders,
+                "folders_to_ensure": [s["path"] for s in steps],
+                "conflict_behavior": conflict,
+                "size_bytes": len(data),
+                "sha256": digest,
+            },
+        }
+        if steps:
+            out["steps"] = steps
+        return out
+
+    def preview(self, action: Mapping[str, Any]) -> dict[str, Any]:
+        """Build a safe dry-run preview of a SharePoint action without calling any transport."""
+        built = self.request(action)
+        if isinstance(built.get("preview"), Mapping):
+            return dict(built["preview"])
+        return {
+            "operation": str(action.get("operation") or ""),
+            "method": built.get("method"),
+            "destination_url": built.get("url"),
+            "size_bytes": built.get("body_bytes"),
+            "sha256": built.get("body_sha256"),
+        }
+
+    def perform(self, request: Mapping[str, Any], key: str) -> dict[str, Any]:
+        if not request.get("steps") and request.get("operation") != "create_folder":
+            return super().perform(request, key)
+        if request.get("proposal_only"):
+            return {"status": "not_performed",
+                    "missing": [f"proposal_only: {request['proposal_only']}"]}
+        why = self.unavailable()
+        if why:
+            return {"status": "not_performed", "missing": [why]}
+
+        folders_created: list[str] = []
+        folders_existing: list[str] = []
+        last_status = 200
+        last_response: dict[str, Any] = {}
+
+        for idx, step in enumerate(request.get("steps") or (), 1):
+            try:
+                status, body = self.transport(step, f"{key}:folder:{idx}")  # type: ignore[misc]
+            except (OSError, TimeoutError) as error:
+                return {"status": "unknown", "http_status": None, "detail": type(error).__name__,
+                        "folders_created": folders_created, "folders_existing": folders_existing}
+            code = int(status)
+            if 200 <= code < 300:
+                folders_created.append(str(step.get("path") or step.get("segment") or ""))
+                last_status = code
+                last_response = dict(body or {})
+            elif code == 409 and step.get("idempotent", True):
+                folders_existing.append(str(step.get("path") or step.get("segment") or ""))
+                last_status = 200
+                if isinstance(body, Mapping) and body:
+                    last_response = dict(body)
+            else:
+                out = _outcome(code, body)
+                out["folders_created"] = folders_created
+                out["folders_existing"] = folders_existing
+                return out
+
+        if request.get("operation") == "create_folder":
+            return {
+                "status": "done",
+                "http_status": last_status,
+                "response": last_response,
+                "folder_path": request.get("folder_path"),
+                "destination_url": request.get("destination_url"),
+                "folders_created": folders_created,
+                "folders_existing": folders_existing,
+                "already_existed": bool(folders_existing) and not bool(folders_created),
+            }
+
+        upload_req = {k: v for k, v in request.items() if k != "steps"}
+        result = super().perform(upload_req, key)
+        result["folders_created"] = folders_created
+        result["folders_existing"] = folders_existing
+        result["destination_path"] = request.get("destination_path")
+        result["destination_url"] = request.get("destination_url")
+        return result
+
     def _bytes(self, raw: Any, what: str) -> bytes:
         import base64
         import binascii
@@ -1797,7 +2102,12 @@ class SharePointAdapter(Adapter):
 
     def undo_request(self, action: Mapping[str, Any], request: Mapping[str, Any]
                      ) -> dict[str, Any] | None:
+        if request.get("operation") == "create_folder":
+            drive = request["url"].split("/drives/", 1)[1].split("/", 1)[0]
+            return {"method": "DELETE", "url": f"{GRAPH}/drives/{drive}/items/{{response:id}}",
+                    "body": None}
         if request["method"] == "PUT" and request["url"].endswith("/content") \
+                and "/items/" in request["url"] \
                 and ":/" not in request["url"].split("/items/", 1)[1]:
             prior = _prior(action, ["content_b64"], "sharepoint")["content_b64"]
             return {"method": "PUT", "url": request["url"],
@@ -1816,8 +2126,8 @@ class SharePointAdapter(Adapter):
                 "body": self._columns(_prior(action, list(request["body"]), "sharepoint"))}
 
     def undo_note(self) -> str:
-        return ("Delete the created item or uploaded file, put a replaced document's prior "
-                "content back (each refused once someone changed it since), or patch the "
+        return ("Delete the created item, folder, or uploaded file, put a replaced document's "
+                "prior content back (each refused once someone changed it since), or patch the "
                 "changed columns back.")
 
 

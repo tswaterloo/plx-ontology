@@ -291,6 +291,14 @@ class TextDocuments(unittest.TestCase):
         self.assertIn("14,148.87", got.text)
         self.assertEqual(got.ocr_pages, 1)
 
+    def test_find_marks_truncated_long_lines_explicitly(self):
+        long_line = "croda " + ("x" * 700)
+        res = doc_read.find(long_line + "\ncroda short", "croda")
+        self.assertEqual(len(res["matches"]), 2)
+        self.assertTrue(res["matches"][0].get("truncated"))
+        self.assertEqual(len(res["matches"][0]["line"]), 600)
+        self.assertNotIn("truncated", res["matches"][1])
+
 
 if __name__ == "__main__":
     unittest.main()

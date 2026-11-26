@@ -49,7 +49,7 @@ class Waits(unittest.TestCase):
         self.cycle()
         state, _why, act, due, title, detail = self.row("wait")
         self.assertEqual((state, act, due), ("open", "ask_person", None))
-        self.assertEqual(title, "No answer yet from Croda")
+        self.assertEqual(title, "Waiting for the COA from Croda")
         self.assertIn("when should it be looked for", detail)
         self.assertEqual(len(self.listed("wait")), 1)               # shown now, not after a guess
 
@@ -69,7 +69,7 @@ class Waits(unittest.TestCase):
         self.assertEqual(self.listed("wait"), [])                    # not due: out of the list
         self.pg.execute("UPDATE assist.matters SET due_at = now() - interval '1 minute' "
                         "WHERE subject_key = 'new'")                 # the day comes
-        self.assertEqual([i["summary"] for i in self.listed("wait")], ["No answer yet from Croda"])
+        self.assertEqual([i["summary"] for i in self.listed("wait")], ["Waiting for the COA from Croda"])
 
     def test_a_stated_date_wins_and_an_answer_closes_the_wait_and_a_kept_promise_closes(self):
         self.sent("w", REAL - dt.timedelta(days=3), wait="the COA", due=(REAL - dt.timedelta(days=1)).date())
@@ -83,6 +83,34 @@ class Waits(unittest.TestCase):
         self.assertEqual(self.row("wait")[:2], ("done", "answered"))
         self.assertEqual(self.row("promise")[:2], ("done", "kept"))
         self.assertEqual(self.listed("wait"), [])
+
+    def test_self_wait_and_agent_messages_are_skipped_and_titles_never_double_from(self):
+        from operating import assist_waits as aw
+        # Title deduplication and trailing generic clause cleanup
+        self.assertEqual(
+            aw.build_wait_title("PO and deposit from Josh at KBM Resorts", "KBM Resorts (Josh)"),
+            "Waiting for PO and deposit from Josh at KBM Resorts",
+        )
+        self.assertEqual(
+            aw.build_wait_title("the COA, from them", "Croda"),
+            "Waiting for the COA from Croda",
+        )
+        self.assertEqual(
+            aw.build_wait_title("pricing update, from our side", ""),
+            "Waiting for pricing update",
+        )
+        # Self-wait and agent self-notifications must never open a wait matter
+        self.sent("self-w", REAL - dt.timedelta(hours=2), wait="signed quote", counterpart="Ann")
+        h_agent = self.mail("agent-w", "ann@ours.example", [OUT], at=REAL - dt.timedelta(hours=2), box=ANN)
+        self.pg.execute(
+            "INSERT INTO assist.readings (source, message_key, handles, thread_key, said_at, read_ver, "
+            "needs_act, act, act_class, summary, quote, status, sender_person, actor_basis, waiting_on, "
+            "promise, counterpart, due) VALUES ('emails', %s, %s, 'agent-w', %s, 2, false, '', 'reply', "
+            "'Agent reports sync complete', 'Workbench can now run', 'ok', %s, '', 'follow up', '', 'Croda', NULL)",
+            (h_agent, [h_agent], REAL - dt.timedelta(hours=2), ANN),
+        )
+        self.cycle()
+        self.assertIsNone(self.row("wait"))
 
 
 if __name__ == "__main__":

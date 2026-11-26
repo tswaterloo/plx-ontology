@@ -113,6 +113,86 @@ def _tz() -> str:
 
 # --------------------------------------------------------------------------- open
 
+_NOISE_READINGS_SQL = f"""
+SELECT r.source, r.message_key, r.summary, r.act, r.quote,
+       e_info.sender, e_info.subject, t_info.sender, t_info.subject
+FROM {SCHEMA}.readings r
+LEFT JOIN LATERAL (
+    SELECT e.sender, e.subject FROM biz.emails e
+    WHERE r.source = 'emails' AND e.handle = ANY(r.handles) LIMIT 1
+) e_info ON true
+LEFT JOIN LATERAL (
+    SELECT t.sender, t.subject FROM biz.teams_messages t
+    WHERE r.source = 'teams_messages' AND t.handle = ANY(r.handles) LIMIT 1
+) t_info ON true
+WHERE r.status = 'ok' AND r.needs_act AND r.actor_person IS NOT NULL"""
+
+_OPEN_FOR_NOISE_SQL = f"""
+SELECT m.matter_id, m.title, m.detail, m.counterpart,
+       b.source, b.summary, b.act, b.quote,
+       e_info.sender, e_info.subject, t_info.sender, t_info.subject
+FROM {SCHEMA}.matters m
+LEFT JOIN {SCHEMA}.readings b
+  ON jsonb_typeof(m.sources->'readings') = 'array'
+ AND b.source = m.sources->'readings'->-1->>0
+ AND b.message_key = m.sources->'readings'->-1->>1
+LEFT JOIN LATERAL (
+    SELECT e.sender, e.subject FROM biz.emails e
+    WHERE b.source = 'emails' AND e.handle = ANY(b.handles) LIMIT 1
+) e_info ON true
+LEFT JOIN LATERAL (
+    SELECT t.sender, t.subject FROM biz.teams_messages t
+    WHERE b.source = 'teams_messages' AND t.handle = ANY(b.handles) LIMIT 1
+) t_info ON true
+WHERE m.state IN ('open', 'unverified')"""
+
+
+def _system_noise_reading_keys(pg: Any) -> list[str]:
+    """Identify ``source|message_key`` pairs among candidate readings that are automated IT
+    or system monitoring alerts, so ``open_from_readings`` never opens employee matters for
+    them."""
+    from operating.assist_readings import is_automated_system_alert
+    rows = pg.execute(_NOISE_READINGS_SQL).fetchall()
+    noise: list[str] = []
+    for source, message_key, summary, act, quote, e_sender, e_subject, t_sender, t_subject in rows:
+        sender = e_sender if source == "emails" else t_sender
+        subject = e_subject if source == "emails" else t_subject
+        if is_automated_system_alert(
+            sender=sender,
+            subject=subject,
+            summary=summary,
+            note=act,
+            message=quote,
+        ):
+            noise.append(f"{source}|{message_key}")
+    return noise
+
+
+def retire_system_noise_matters(pg: Any) -> dict[str, int]:
+    """Safely and idempotently auto-close existing open or unverified matters that came from
+    automated IT monitoring alerts, staging/UAT sync bot notifications, quarantine digests,
+    or system health checks (``done_reason = 'system_noise'``)."""
+    from operating.assist_readings import is_automated_system_alert
+    rows = pg.execute(_OPEN_FOR_NOISE_SQL).fetchall()
+    verdicts: list[dict[str, str]] = []
+    for (matter_id, title, detail, counterpart, source, summary, act, quote,
+         e_sender, e_subject, t_sender, t_subject) in rows:
+        sender = e_sender if source == "emails" else (t_sender or counterpart)
+        subject = e_subject if source == "emails" else (t_subject or "")
+        if is_automated_system_alert(
+            sender=sender,
+            subject=subject,
+            summary=title or summary,
+            note=detail or act,
+            message=quote,
+        ):
+            verdicts.append({"matter": matter_id, "state": "done", "reason": "system_noise"})
+    if not verdicts:
+        return {"retired": 0}
+    got = set_states(pg, verdicts)
+    return {"retired": int(got.get("done", 0))}
+
+
 def _readings_sql() -> str:
     acts = " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in NEXT_ACT.items())
     mid = _ID_SQL.format(o="b.owner", k="'conversation'", s="b.tk")
@@ -123,6 +203,7 @@ WITH r AS MATERIALIZED (
          r.counterpart, r.counterpart_party, r.records
   FROM {SCHEMA}.readings r
   WHERE r.status = 'ok' AND r.needs_act AND r.actor_person IS NOT NULL
+    AND NOT ((r.source || '|' || r.message_key) = ANY(%(noise_keys)s::text[]))
     ),
 b AS (SELECT DISTINCT ON (owner, tk) * FROM r ORDER BY owner, tk, said_at DESC, message_key DESC),
 s AS (SELECT owner, tk, jsonb_agg(jsonb_build_array(source, message_key)
@@ -188,12 +269,123 @@ SELECT (SELECT count(*) FROM up), (SELECT count(*) FROM logged WHERE what = 'ope
           AND x.actor_basis LIKE 'unresolved%%')"""
 
 
+_BACKFILL_TEAMS_SQL = f"""
+SELECT r.message_key, r.thread_key, r.handles, r.sender_person, r.actor_person, r.act_class,
+       t.chat, t.sender, t.chat_type, t.member_ids, t.addresses,
+       r.summary, r.act, r.quote, t.said
+FROM {SCHEMA}.readings r
+LEFT JOIN LATERAL (
+    SELECT tm.chat, tm.sender,
+           to_jsonb(tm)->>'chat_type' AS chat_type,
+           coalesce(to_jsonb(tm)->'member_ids', '[]'::jsonb) AS member_ids,
+           coalesce(to_jsonb(tm)->'addresses', '[]'::jsonb) AS addresses,
+           to_jsonb(tm)->>'said' AS said
+    FROM biz.teams_messages tm
+    WHERE tm.handle = ANY(r.handles)
+    LIMIT 1
+) t ON true
+WHERE r.source = 'teams_messages' AND r.status = 'ok' AND r.needs_act
+  AND (
+    (r.actor_person IS NULL AND r.actor_basis NOT LIKE 'unresolved%%')
+    OR (r.actor_person IS NOT NULL AND r.actor_person = r.sender_person)
+  )"""
+
+
+def _backfill_one_on_one_teams_actors(pg: Any) -> int:
+    """Resolve missing or self-assigned ``actor_person`` on existing 1:1 Teams readings
+    whose recipient was not included in the reading's participant list (for example,
+    1:1 chats identified by ``chat_type = 'oneOnOne'``, ``member_ids``, or a
+    ``19:<uuid1>_<uuid2>@unq.gbl.spaces`` chat handle). Never assigns agent-authored
+    self-notifications as action items for the other chat participant."""
+    from operating import assist_readings as ar
+    from operating.assist_waits import is_agent_notification
+    rows = pg.execute(_BACKFILL_TEAMS_SQL).fetchall()
+    if not rows:
+        return 0
+    staff = ar.staff_of(pg, "biz")
+    if not staff.by_id:
+        return 0
+    updates: list[dict[str, Any]] = []
+    for (mkey, thread_key, handles, sender_person, actor_person, _act_class,
+         t_chat, t_sender, chat_type, member_ids, addresses,
+         r_summary, r_act, r_quote, t_said) in rows:
+        sender_pid = staff.lookup_id(sender_person) if sender_person else None
+        if sender_pid is None and t_sender:
+            tid, _shown, _kind = ar.teams_sender(t_sender)
+            if tid:
+                if "@" in tid:
+                    pids = staff.by_address.get(tid, [])
+                    sender_pid = pids[0] if len(pids) == 1 else None
+                else:
+                    sender_pid = staff.lookup_id(tid)
+        if not sender_pid:
+            continue
+        actor_pid = staff.lookup_id(actor_person) if actor_person else None
+        self_assigned = bool(actor_pid and actor_pid == sender_pid)
+        if is_agent_notification(r_summary, r_act, r_quote, t_said, self_assigned=self_assigned):
+            continue
+        raw_members = list(member_ids or ())
+        mids = ar.teams_chat_member_ids(t_chat or thread_key, raw_members)
+        if thread_key and thread_key != t_chat:
+            mids = ar.teams_chat_member_ids(thread_key, mids)
+        for h in handles or ():
+            mids = ar.teams_chat_member_ids(h, mids)
+        one_on_one = (
+            ar.is_one_on_one_teams_chat(t_chat or thread_key, chat_type or "", mids)
+            or (bool(thread_key) and ar.is_one_on_one_teams_chat(thread_key, chat_type or "", mids))
+            or any(ar.is_one_on_one_teams_chat(h, chat_type or "", mids) for h in (handles or ()))
+        )
+        if not one_on_one:
+            continue
+        staff_members: list[str] = []
+        seen: set[str] = set()
+        for mid in mids:
+            canon = staff.lookup_id(mid)
+            if canon and canon not in seen:
+                seen.add(canon)
+                staff_members.append(canon)
+        for addr in addresses or ():
+            a = str(addr or "").strip().lower()
+            pids = staff.by_address.get(a, [])
+            if len(pids) == 1 and pids[0] not in seen:
+                seen.add(pids[0])
+                staff_members.append(pids[0])
+        others = [p for p in staff_members if p != sender_pid]
+        if len(others) == 1:
+            updates.append({
+                "message_key": mkey,
+                "actor_person": others[0],
+                "sender_person": sender_pid,
+            })
+    if not updates:
+        return 0
+    pg.execute(
+        f"UPDATE {SCHEMA}.readings r SET "
+        "actor_person = u.actor_person, "
+        "actor = CASE WHEN coalesce(r.actor, '') IN ('', 'outside') "
+        "OR r.actor_person = r.sender_person THEN u.actor_person ELSE r.actor END, "
+        "actor_basis = 'teams_one_on_one', "
+        "sender_person = coalesce(r.sender_person, u.sender_person) "
+        "FROM jsonb_to_recordset(%(u)s::jsonb) AS u("
+        "message_key text, actor_person text, sender_person text) "
+        "WHERE r.source = 'teams_messages' AND r.message_key = u.message_key",
+        {"u": json.dumps(updates)},
+    )
+    return len(updates)
+
+
 def open_from_readings(pg: Any, *, now: dt.datetime) -> dict[str, int]:
-    """One conversation matter per (actor, thread) of the readings that need an act, in one
-    statement; returns ``changed``, ``opened``, ``basis_moved``, ``actor_unresolved``."""
-    row = pg.execute(_readings_sql(), {"tz": _tz()}).fetchone()
-    return dict(zip(("changed", "opened", "basis_moved", "actor_unresolved"),
-                    (int(v or 0) for v in row)))
+    """One conversation matter per (actor, thread) of the readings that need an act, skipping
+    automated IT/system monitoring alerts; returns ``changed``, ``opened``, ``basis_moved``,
+    ``actor_unresolved``, ``teams_1on1_resolved``, and ``system_noise_skipped``."""
+    resolved_teams = _backfill_one_on_one_teams_actors(pg)
+    noise_keys = _system_noise_reading_keys(pg)
+    row = pg.execute(_readings_sql(), {"tz": _tz(), "noise_keys": noise_keys}).fetchone()
+    out = dict(zip(("changed", "opened", "basis_moved", "actor_unresolved"),
+                   (int(v or 0) for v in row)))
+    out["teams_1on1_resolved"] = resolved_teams
+    out["system_noise_skipped"] = len(noise_keys)
+    return out
 
 
 _UPSERT = f"""
@@ -357,20 +549,64 @@ def _assignees(otype: str, props: Mapping[str, Any]) -> list[str]:
     return [str(a) for a in got if a] if isinstance(got, list) else []
 
 
-def tasks(pg: Any, people: People, questions: Optional[Callable[[], list[dict]]] = None
+LEGACY_ZOMBIE_TASK_DAYS = 180      # undated Planner tasks older than 180 days
+LEGACY_ZOMBIE_MAX_TASK_DAYS = 365  # any unupdated task older than 365 days without a future due_at
+LEGACY_ZOMBIE_WAIT_DAYS = 120      # ancient undated waits/promises older than 120 days
+
+
+def is_zombie_task(
+    otype: str,
+    props: Mapping[str, Any],
+    basis_at: Optional[dt.datetime],
+    *,
+    now: Optional[dt.datetime] = None,
+) -> bool:
+    """True for stale legacy tasks (2021-2025 Planner zombies and >365d unupdated tasks
+    with no upcoming due date) that should be closed rather than cluttering active work."""
+    ref = now or dt.datetime.now(dt.timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=dt.timezone.utc)
+    due_at = _instant(props.get("due_at") or props.get("due_date"))
+    if due_at is not None and due_at >= ref:
+        return False
+    updated_at = (
+        _instant(props.get("updated_at") or props.get("modified_at") or props.get("last_modified_at"))
+        or basis_at
+    )
+    if updated_at is None:
+        return False
+    if otype == "PlannerTask" and due_at is None:
+        if updated_at < ref - dt.timedelta(days=LEGACY_ZOMBIE_TASK_DAYS):
+            return True
+    max_cutoff = ref - dt.timedelta(days=LEGACY_ZOMBIE_MAX_TASK_DAYS)
+    if updated_at < max_cutoff and (due_at is None or due_at < max_cutoff):
+        return True
+    return False
+
+
+def tasks(pg: Any, people: People, questions: Optional[Callable[[], list[dict]]] = None, *,
+          now: Optional[dt.datetime] = None
           ) -> tuple[list[dict], list[dict], dict[str, int]]:
     """(matters to open, verdicts, counts) of the open MC and Planner tasks assigned to a
     person and the open MC questions asked of one (``questions()``: rows of the MC
     capture, see ``mc_questions``). An assignee no staff id resolves is counted
-    ``assignee_unresolved``, never guessed."""
+    ``assignee_unresolved``, never guessed. Stale legacy Planner/unupdated zombie tasks
+    are closed as ``stale_legacy_task``."""
     from operating.autopilot_queue import TASK_DONE
-    opened, verdicts, counts = [], [], {"assignee_unresolved": 0, "questions_unreadable": 0}
+    ref = now or dt.datetime.now(dt.timezone.utc)
+    opened, verdicts, counts = [], [], {"assignee_unresolved": 0, "questions_unreadable": 0,
+                                        "zombie_tasks_closed": 0}
     for otype in ("MCTask", "PlannerTask"):
         for r in _objects(pg, otype):
             p, oid = r["props"], r["object_id"]
             closed = bool(p.get("completed_at")) or bool(TASK_DONE.match(str(p.get("stage") or "")))
             if closed:
                 verdicts.append({"subject": oid, "state": "done", "reason": "task_closed"})
+                continue
+            basis_at = _instant(p.get("created_at")) or _instant(r["first"])
+            if is_zombie_task(otype, p, basis_at, now=ref):
+                counts["zombie_tasks_closed"] += 1
+                verdicts.append({"subject": oid, "state": "done", "reason": "stale_legacy_task"})
                 continue
             names = [a for a in _assignees(otype, p) if a]
             owners = [people.person(a) for a in names]
@@ -383,7 +619,7 @@ def tasks(pg: Any, people: People, questions: Optional[Callable[[], list[dict]]]
                 opened.append({
                     "owner": owner, "kind": "task", "subject": oid,
                     "sources": {"records": [oid]},
-                    "basis_at": _instant(p.get("created_at")) or _instant(r["first"]),
+                    "basis_at": basis_at,
                     "title": str(p.get("title") or "Task"),
                     "detail": ("Mission Control task " + str(p.get("task_id") or "")
                                if otype == "MCTask" else
@@ -480,9 +716,11 @@ def mc_questions(state: Path) -> Callable[[], list[dict]]:
 
 def alerts(pg: Any, kinds: Sequence[str]) -> tuple[list[dict], list[dict]]:
     """Open alerts of the shown kinds that name their person (``mailbox``): a record matter
-    each; a closed one is ``alert_closed``. No kinds named: nothing (the default)."""
+    each; a closed one is ``alert_closed``. Automated IT/system monitoring alerts are skipped
+    as ``system_noise``. No kinds named: nothing (the default)."""
     if not kinds:
         return [], []
+    from operating.assist_readings import is_automated_system_alert
     rows = pg.execute(
         "SELECT rule, handle, topic, concerns, mailbox, why, since, state, kind FROM biz.alerts "
         "WHERE kind = ANY(%s) AND mailbox IS NOT NULL", (list(kinds),)).fetchall()
@@ -491,6 +729,9 @@ def alerts(pg: Any, kinds: Sequence[str]) -> tuple[list[dict], list[dict]]:
         subject = "|".join((rule, handle, topic, concerns))
         if state != "open":
             verdicts.append({"subject": subject, "state": "done", "reason": "alert_closed"})
+            continue
+        if is_automated_system_alert(subject=topic, summary=why):
+            verdicts.append({"subject": subject, "state": "done", "reason": "system_noise"})
             continue
         verdicts.append({"subject": subject, "state": "open", "reason": ""})
         opened.append({"owner": mailbox, "kind": "record", "subject": subject,
@@ -524,11 +765,112 @@ def queue_items(path: Path, autopilots: Optional[Sequence[str]]) -> list[dict]:
     return out
 
 
+QC_HOLD_AUTOPILOTS = frozenset({"qc_hold", "lot_on_hold", "quality_hold"})
+
+
+def _staff_role_sets(pg: Any) -> tuple[set[str], set[str], dict[str, set[str]]]:
+    """Read ``biz.staff`` department and title metadata (when columns exist) to identify
+    ``(quality_ids_lower, non_operational_ids_lower, role_pools_by_person_lower)``."""
+    if pg.execute("SELECT to_regclass('biz.staff')").fetchone()[0] is None:
+        return set(), set(), {}
+    from operating import autopilot_roster as ar_roster
+    rows = pg.execute(
+        "SELECT person_id, to_jsonb(s)->>'department', to_jsonb(s)->>'title' "
+        "FROM biz.staff s WHERE person_id IS NOT NULL"
+    ).fetchall()
+    quality_ids: set[str] = set()
+    non_op_ids: set[str] = set()
+    pools_by_person: dict[str, set[str]] = {}
+    for pid, dept, title in rows:
+        pl = str(pid or "").strip().lower()
+        if not pl:
+            continue
+        if ar_roster.is_non_operational_staff(dept, title):
+            non_op_ids.add(pl)
+            continue
+        for role in ar_roster.DEPARTMENT_RULES:
+            if ar_roster.staff_matches_role(role, dept, title):
+                pools_by_person.setdefault(pl, set()).add(f"pool:{role}")
+                if role == "quality":
+                    quality_ids.add(pl)
+    return quality_ids, non_op_ids, pools_by_person
+
+
+def _expand_owner_role_pools(pg: Any, owners: Sequence[str]) -> list[str]:
+    """Add department-matched role pools (such as ``pool:quality`` for QA/QC staff) for
+    the given ``owners`` based on ``biz.staff`` department and title."""
+    base = [str(o) for o in owners if o]
+    if not base:
+        return []
+    _qa, _non_op, pools_by_person = _staff_role_sets(pg)
+    out = list(dict.fromkeys(base))
+    seen = {o.strip().lower() for o in out}
+    for owner in base:
+        for pool in sorted(pools_by_person.get(owner.strip().lower(), ())):
+            if pool not in seen:
+                seen.add(pool)
+                out.append(pool)
+    return out
+
+
+def reroute_qc_hold_matters(pg: Any) -> dict[str, int]:
+    """Safely and idempotently reroute open or unverified ``qc_hold`` / ``lot_on_hold`` /
+    ``quality_hold`` matters assigned to non-QA staff (for example software/IT engineers or
+    executives) into ``pool:quality`` so QA/QC staff own them instead."""
+    rows = pg.execute(
+        f"SELECT matter_id, owner_person, kind, subject_key, sources, basis_at, title, detail, "
+        f"next_act, due_at, audiences, markings, legacy_item_id "
+        f"FROM {SCHEMA}.matters "
+        "WHERE state IN ('open', 'unverified') AND owner_person <> 'pool:quality' "
+        "AND (sources->>'autopilot' = ANY(%s) "
+        "OR split_part(coalesce(sources->>'alert', ''), '|', 1) = ANY(%s))",
+        (sorted(QC_HOLD_AUTOPILOTS), sorted(QC_HOLD_AUTOPILOTS)),
+    ).fetchall()
+    if not rows:
+        return {"rerouted": 0, "closed": 0}
+    qa_ids, non_op_ids, _pools = _staff_role_sets(pg)
+    if not qa_ids and not non_op_ids:
+        return {"rerouted": 0, "closed": 0}
+    verdicts: list[dict[str, str]] = []
+    canonical: dict[tuple[str, str], dict[str, Any]] = {}
+    for (mid, owner, kind, subject, sources, basis_at, title, detail,
+         next_act, due_at, audiences, markings, legacy) in rows:
+        ol = str(owner or "").strip().lower()
+        misrouted = ol in non_op_ids or (bool(qa_ids) and ol not in qa_ids)
+        if not misrouted:
+            continue
+        verdicts.append({"matter": mid, "state": "done", "reason": "misrouted_role"})
+        key = (str(kind), str(subject))
+        if key not in canonical:
+            canonical[key] = {
+                "owner": "pool:quality",
+                "kind": kind,
+                "subject": subject,
+                "sources": dict(sources or {}),
+                "basis_at": basis_at,
+                "title": title,
+                "detail": detail,
+                "next_act": next_act or "ask_person",
+                "due_at": due_at,
+                "audiences": list(audiences or ()),
+                "markings": list(markings or ()),
+                "legacy": legacy,
+            }
+    if not verdicts:
+        return {"rerouted": 0, "closed": 0}
+    closed = set_states(pg, verdicts)
+    upserted = upsert(pg, list(canonical.values()))
+    return {
+        "closed": int(closed.get("done", 0)),
+        "rerouted": int(upserted.get("changed", 0)),
+    }
+
+
 def from_queue(pg: Any, items: Sequence[Mapping[str, Any]]) -> list[dict]:
     """Matters for queue items: a message item becomes its thread's conversation matter
     (the thread read from the comms views by the event's object, one statement), an
     approval item the approval's matter, any other its own record or routine matter keyed
-    by the item."""
+    by the item. QC hold items assigned to non-QA staff are routed to ``pool:quality``."""
     objs = sorted({str((i["body"].get("happened") or {}).get("object_id") or "")
                    for i in items} - {""})
     threads: dict[str, str] = {}
@@ -547,9 +889,21 @@ def from_queue(pg: Any, items: Sequence[Mapping[str, Any]]) -> list[dict]:
                 f"SELECT h, r.source, r.message_key FROM {SCHEMA}.readings r, unnest(r.handles) h "
                 "WHERE r.handles && %s::text[] AND h = ANY(%s::text[])", (cited, cited)).fetchall():
             read[h] = [src, key]
+    qa_ids: set[str] = set()
+    non_op_ids: set[str] = set()
+    if any(i["autopilot"] in QC_HOLD_AUTOPILOTS for i in items):
+        qa_ids, non_op_ids, _pools = _staff_role_sets(pg)
+    from operating.assist_readings import is_automated_system_alert
     out = []
     for i in items:
         happened = i["body"].get("happened") or {}
+        if is_automated_system_alert(
+            sender=happened.get("sender") or (happened.get("fields") or {}).get("sender") or "",
+            subject=happened.get("subject") or (happened.get("fields") or {}).get("subject") or "",
+            summary=i["title"],
+            note=i["body"].get("label") or "",
+        ):
+            continue
         oid = str(happened.get("object_id") or "")
         kind = QUEUE_KIND.get(i["autopilot"])
         if kind is None:
@@ -557,8 +911,13 @@ def from_queue(pg: Any, items: Sequence[Mapping[str, Any]]) -> list[dict]:
                 "message.received", "message.waiting") else "record"
         subject = (threads.get(oid) or oid or i["item_id"]) if kind == "conversation" else (
             oid if kind == "approval" and oid else i["item_id"])
+        owner = i["owner"]
+        if i["autopilot"] in QC_HOLD_AUTOPILOTS and owner != "pool:quality":
+            ol = str(owner or "").strip().lower()
+            if ol in non_op_ids or (bool(qa_ids) and ol not in qa_ids):
+                owner = "pool:quality"
         out.append({
-            "owner": i["owner"], "kind": kind, "subject": subject,
+            "owner": owner, "kind": kind, "subject": subject,
             "sources": {"queue_item": i["item_id"], "records": i["citations"],
                         "autopilot": i["autopilot"],
                         **({"readings": [read[h] for h in i["citations"] if h in read][-1:]}
@@ -642,7 +1001,8 @@ v AS (
            THEN 'done:owner_acted'
          WHEN j.src = 'teams_messages' AND EXISTS (SELECT 1 FROM biz.teams_messages t
               WHERE t.chat = j.subject_key AND t.created_at > j.basis_at
-                AND t.sender LIKE '{{%%' AND t.sender::jsonb->>'id' = j.owner_person)
+                AND ((t.sender LIKE '{{%%' AND lower(coalesce(t.sender::jsonb->>'id', '')) = lower(j.owner_person))
+                     OR lower(coalesce(t.sender, '')) = lower(j.owner_person)))
            THEN 'done:owner_acted'
          -- the owner's own message or logged act on the thread after the basis, wherever it
          -- is stored (the thread's other mailbox copies, the readings, the actions log)
@@ -688,6 +1048,294 @@ def reverify_conversations(pg: Any) -> dict[str, int]:
     text), queue-made ones too (their message's reading, once read, is their source)."""
     return {("verified" if v == "open" else v): int(n)
             for v, n in pg.execute(_CONVERSATIONS).fetchall()}
+
+
+_TOPIC_STOPWORDS = frozenset({
+    "the", "and", "for", "that", "with", "this", "from", "have", "your", "about", "please",
+    "thanks", "thank", "hello", "good", "morning", "afternoon", "just", "quick", "need",
+    "needs", "want", "will", "would", "could", "should", "can", "reply", "sent", "mail",
+    "email", "message", "chat", "call", "today", "tomorrow", "yesterday", "still", "here",
+    "there", "some", "more", "also", "been", "were", "what", "when", "where", "which",
+    "their", "them", "they", "into", "onto", "over", "under", "only", "very", "much",
+    "make", "made", "done", "sure", "okay", "not", "but", "are", "was", "has", "had",
+    "you", "our", "his", "her", "its", "all", "any", "one", "two", "see", "let", "know",
+    "get", "got", "out", "off", "back", "now", "new", "check", "following", "follow",
+    "hey", "dear", "regards", "best", "cheers", "fwd", "answer", "asked", "asking",
+})
+_TOPIC_WORD_RE = re.compile(r"[a-z]{3,}", re.IGNORECASE)
+_CODE_TOKEN_RE = re.compile(r"\b[a-z]{2,8}[-_#\s]?\d{3,}\b", re.IGNORECASE)
+_CROSS_CHANNEL_OPEN_SQL = f"""
+SELECT m.matter_id, m.owner_person, m.subject_key, m.basis_at,
+       m.title, m.detail, m.counterpart,
+       b.source, b.handles, b.sender_person, b.summary, b.quote, b.records,
+       e.sender AS e_sender, e.subject AS e_subject,
+       t.sender AS t_sender, t.subject AS t_subject,
+       t.chat AS t_chat, t.chat_type AS t_chat_type,
+       t.member_ids AS t_member_ids, t.addresses AS t_addresses,
+       t.said AS t_said
+FROM {SCHEMA}.matters m
+JOIN {SCHEMA}.readings b
+  ON jsonb_typeof(m.sources->'readings') = 'array'
+ AND b.source = m.sources->'readings'->-1->>0
+ AND b.message_key = m.sources->'readings'->-1->>1
+LEFT JOIN LATERAL (
+    SELECT x.sender, x.subject FROM biz.emails x
+    WHERE b.source = 'emails' AND x.handle = ANY(b.handles)
+    LIMIT 1
+) e ON true
+LEFT JOIN LATERAL (
+    SELECT y.sender, y.subject, y.chat,
+           to_jsonb(y)->>'chat_type' AS chat_type,
+           coalesce(to_jsonb(y)->'member_ids', '[]'::jsonb) AS member_ids,
+           coalesce(to_jsonb(y)->'addresses', '[]'::jsonb) AS addresses,
+           to_jsonb(y)->>'said' AS said
+    FROM biz.teams_messages y
+    WHERE b.source = 'teams_messages' AND y.handle = ANY(b.handles)
+    LIMIT 1
+) t ON true
+WHERE m.kind = 'conversation' AND m.state IN ('open', 'unverified')
+  AND m.basis_at IS NOT NULL
+  AND b.source IN ('emails', 'teams_messages')"""
+
+
+def _stem_topic_word(word: str) -> str:
+    w = word.lower()
+    if len(w) >= 5 and w.endswith("s") and not w.endswith(("ss", "us", "is")):
+        return w[:-1]
+    return w
+
+
+def _extract_topic_tokens(texts: Sequence[Any], ignore: set[str]) -> tuple[set[str], set[str]]:
+    words: set[str] = set()
+    codes: set[str] = set()
+    for raw in texts:
+        text = str(raw or "")
+        if not text:
+            continue
+        for match in _CODE_TOKEN_RE.findall(text):
+            norm = re.sub(r"[^a-z0-9]", "", match.lower())
+            if len(norm) >= 4:
+                codes.add(norm)
+        for match in _TOPIC_WORD_RE.findall(text):
+            low = match.lower()
+            if low in _TOPIC_STOPWORDS or low in ignore:
+                continue
+            stemmed = _stem_topic_word(low)
+            if stemmed in _TOPIC_STOPWORDS or stemmed in ignore:
+                continue
+            words.add(stemmed)
+    return words, codes
+
+
+def cross_channel_topic_overlap(
+    matter_texts: Sequence[Any],
+    reply_texts: Sequence[Any],
+    *,
+    ignore_names: Iterable[str] = (),
+) -> bool:
+    """Whether a direct cross-channel message overlaps the open matter's topic (at least
+    1 shared record code such as ``PO-90412`` or ``TASK-3601``, or at least 2 shared
+    content words excluding stopwords and participant names)."""
+    ignore: set[str] = set()
+    for name in ignore_names:
+        for part in _TOPIC_WORD_RE.findall(str(name or "")):
+            ignore.add(part.lower())
+            ignore.add(_stem_topic_word(part.lower()))
+    m_words, m_codes = _extract_topic_tokens(matter_texts, ignore)
+    r_words, r_codes = _extract_topic_tokens(reply_texts, ignore)
+    if m_codes & r_codes:
+        return True
+    return len(m_words & r_words) >= 2
+
+
+def reverify_cross_channel_replies(pg: Any, people: Optional[People] = None) -> dict[str, int]:
+    """Close open conversation matters when the owner answered the same counterpart after
+    ``basis_at`` on the other direct channel (email -> 1:1 Teams chat, or 1:1 Teams chat ->
+    direct email) with overlapping topic tokens (``done_reason = 'replied_cross_channel'``)."""
+    from operating import assist_readings as ar
+    rows = pg.execute(_CROSS_CHANNEL_OPEN_SQL).fetchall()
+    if not rows:
+        return {}
+    staff = ar.staff_of(pg, "biz")
+    if people is None:
+        people = people_of(pg)
+    owner_addrs_map: dict[str, set[str]] = {}
+    for pid, addrs in people.addresses.items():
+        owner_addrs_map.setdefault(pid.lower(), set()).update(a.lower() for a in addrs)
+    for pid, (_name, addr) in staff.by_id.items():
+        if addr:
+            owner_addrs_map.setdefault(pid.lower(), set()).add(addr.lower())
+
+    email_matters: list[dict[str, Any]] = []
+    teams_matters: list[dict[str, Any]] = []
+    for (mid, owner_person, _subj_key, basis_at, title, detail, counterpart,
+         source, handles, sender_person, summary, quote, records,
+         e_sender, e_subject, t_sender, t_subject, t_chat, _t_chat_type,
+         _t_member_ids, _t_addresses, t_said) in rows:
+        owner_l = str(owner_person or "").strip().lower()
+        if not owner_l or basis_at is None:
+            continue
+        cp_pids: set[str] = set()
+        cp_addrs: set[str] = set()
+        if sender_person:
+            sp = staff.lookup_id(sender_person) or str(sender_person)
+            cp_pids.add(sp.lower())
+            cp_addrs.update(owner_addrs_map.get(sp.lower(), ()))
+        if source == "emails":
+            addr = ar._bare_email(e_sender)
+            if addr and "@" in addr:
+                cp_addrs.add(addr)
+                for p in staff.by_address.get(addr, ()):
+                    cp_pids.add(p.lower())
+                    cp_addrs.update(owner_addrs_map.get(p.lower(), ()))
+                dp = people.directory.get(addr)
+                if dp:
+                    cp_pids.add(dp.lower())
+                    cp_addrs.update(owner_addrs_map.get(dp.lower(), ()))
+            if not cp_pids and not cp_addrs:
+                continue
+            email_matters.append({
+                "matter_id": mid,
+                "owner_l": owner_l,
+                "basis_at": basis_at,
+                "cp_pids": cp_pids,
+                "cp_addrs": cp_addrs,
+                "texts": [e_subject, title, summary, quote, detail, " ".join(records or ())],
+                "names": [counterpart, (staff.by_id.get(owner_person) or ("", ""))[0]]
+                + [(staff.by_id.get(staff.lookup_id(p) or "") or ("", ""))[0] for p in cp_pids],
+            })
+        else:
+            tid, shown, _kind = ar.teams_sender(t_sender)
+            if tid:
+                if "@" in tid:
+                    cp_addrs.add(tid)
+                    for p in staff.by_address.get(tid, ()):
+                        cp_pids.add(p.lower())
+                        cp_addrs.update(owner_addrs_map.get(p.lower(), ()))
+                else:
+                    cp_pids.add(tid)
+                    canon = staff.lookup_id(tid)
+                    if canon:
+                        cp_pids.add(canon.lower())
+                        cp_addrs.update(owner_addrs_map.get(canon.lower(), ()))
+                    cp_addrs.update(owner_addrs_map.get(tid, ()))
+            if not cp_addrs:
+                continue
+            teams_matters.append({
+                "matter_id": mid,
+                "owner_l": owner_l,
+                "basis_at": basis_at,
+                "cp_pids": cp_pids,
+                "cp_addrs": cp_addrs,
+                "texts": [t_subject, t_said, title, summary, quote, detail, " ".join(records or ())],
+                "names": [shown, counterpart, (staff.by_id.get(owner_person) or ("", ""))[0]]
+                + [(staff.by_id.get(staff.lookup_id(p) or "") or ("", ""))[0] for p in cp_pids],
+            })
+
+    verdicts: list[dict[str, str]] = []
+    # Direction A: open email matter -> owner sent a 1:1 Teams message to the counterpart
+    if email_matters:
+        owners = sorted({m["owner_l"] for m in email_matters})
+        owner_addrs = sorted({a for o in owners for a in owner_addrs_map.get(o, ())})
+        since = min(m["basis_at"] for m in email_matters)
+        t_rows = pg.execute(
+            "SELECT t.handle, t.chat, t.sender, t.created_at, t.subject, "
+            "to_jsonb(t)->>'chat_type' AS chat_type, "
+            "coalesce(to_jsonb(t)->'member_ids', '[]'::jsonb) AS member_ids, "
+            "coalesce(to_jsonb(t)->'addresses', '[]'::jsonb) AS addresses, "
+            "to_jsonb(t)->>'said' AS said, r.summary, r.quote "
+            "FROM biz.teams_messages t "
+            f"LEFT JOIN {SCHEMA}.readings r "
+            "  ON r.source = 'teams_messages' AND r.message_key = t.handle "
+            "WHERE t.created_at > %(since)s AND ("
+            "  (t.sender LIKE '{%%' AND lower(coalesce(t.sender::jsonb->>'id', '')) = ANY(%(owners)s::text[])) "
+            "  OR lower(coalesce(t.sender, '')) = ANY(%(owners)s::text[]) "
+            "  OR lower(coalesce(t.sender, '')) = ANY(%(addrs)s::text[]))",
+            {"since": since, "owners": owners, "addrs": owner_addrs},
+        ).fetchall()
+        by_owner_teams: dict[str, list[dict[str, Any]]] = {}
+        for (handle, chat, sender, created_at, subject, chat_type,
+             member_ids, addresses, said, r_summary, r_quote) in t_rows:
+            tid, _shown, _kind = ar.teams_sender(sender)
+            if not tid:
+                continue
+            sender_l = tid
+            if "@" in tid:
+                pids = staff.by_address.get(tid, [])
+                if len(pids) == 1:
+                    sender_l = pids[0].lower()
+            mids = ar.teams_chat_member_ids(chat, member_ids or ())
+            mids = ar.teams_chat_member_ids(handle, mids)
+            one_on_one = (
+                ar.is_one_on_one_teams_chat(chat, chat_type or "", mids)
+                or ar.is_one_on_one_teams_chat(handle, chat_type or "", mids)
+            )
+            if not one_on_one or len(mids) > 2:
+                continue
+            addr_set = {str(a).strip().lower() for a in (addresses or ()) if a}
+            by_owner_teams.setdefault(sender_l, []).append({
+                "at": created_at,
+                "mids": set(mids),
+                "addrs": addr_set,
+                "texts": [subject, said, r_summary, r_quote],
+            })
+        for m in email_matters:
+            for msg in by_owner_teams.get(m["owner_l"], ()):
+                if msg["at"] is None or msg["at"] <= m["basis_at"]:
+                    continue
+                if not ((msg["mids"] & m["cp_pids"]) or (msg["addrs"] & m["cp_addrs"])):
+                    continue
+                if cross_channel_topic_overlap(m["texts"], msg["texts"], ignore_names=m["names"]):
+                    verdicts.append({
+                        "matter": m["matter_id"],
+                        "state": "done",
+                        "reason": "replied_cross_channel",
+                    })
+                    break
+
+    # Direction B: open Teams matter -> owner sent a direct email to the counterpart
+    if teams_matters:
+        owners = sorted({m["owner_l"] for m in teams_matters})
+        owner_addrs = sorted({a for o in owners for a in owner_addrs_map.get(o, ())})
+        if owner_addrs:
+            since = min(m["basis_at"] for m in teams_matters)
+            e_rows = pg.execute(
+                "SELECT e.sender, e.to_addresses, e.subject, e.received_at, r.summary, r.quote "
+                "FROM biz.emails e "
+                f"LEFT JOIN {SCHEMA}.readings r "
+                "  ON r.source = 'emails' AND r.message_key = coalesce(e.message_id, e.handle) "
+                "WHERE e.received_at > %(since)s AND lower(e.sender) = ANY(%(addrs)s::text[])",
+                {"since": since, "addrs": owner_addrs},
+            ).fetchall()
+            addr_to_owner: dict[str, set[str]] = {}
+            for o in owners:
+                for a in owner_addrs_map.get(o, ()):
+                    addr_to_owner.setdefault(a, set()).add(o)
+            by_owner_mail: dict[str, list[dict[str, Any]]] = {}
+            for sender, to_addrs, subject, received_at, r_summary, r_quote in e_rows:
+                sl = ar._bare_email(sender)
+                to_set = {ar._bare_email(a) for a in (to_addrs or ()) if a}
+                entry = {"at": received_at, "to": to_set, "texts": [subject, r_summary, r_quote]}
+                for o in addr_to_owner.get(sl, ()):
+                    by_owner_mail.setdefault(o, []).append(entry)
+            for m in teams_matters:
+                for msg in by_owner_mail.get(m["owner_l"], ()):
+                    if msg["at"] is None or msg["at"] <= m["basis_at"]:
+                        continue
+                    if not (msg["to"] & m["cp_addrs"]):
+                        continue
+                    if cross_channel_topic_overlap(m["texts"], msg["texts"], ignore_names=m["names"]):
+                        verdicts.append({
+                            "matter": m["matter_id"],
+                            "state": "done",
+                            "reason": "replied_cross_channel",
+                        })
+                        break
+
+    if not verdicts:
+        return {}
+    got = set_states(pg, verdicts)
+    return {"replied_cross_channel": int(got.get("done", 0))}
 
 
 STILL_OPS = {"in": "= ANY(%s)", "eq": "= %s", "is_null": "IS NULL", "not_null": "IS NOT NULL"}
@@ -1280,7 +1928,9 @@ def item_of(row: Mapping[str, Any], *, mark_unshown: bool = False, theirs: bool 
         "sender": sender, "channel": _channel(row["source"]),
         "subject": clean_user_text(row["subject"] or raw_title or ""),
         "message": clean_user_text(row["quote"] or ""),
-        "kind": "reply" if body else "your_call" if ask else "todo", "ask": ask, "summary": raw_title,
+        "kind": ("your_call" if ask else "todo") if row["kind"] == "task" else (
+            "reply" if body else "your_call" if ask else "todo"),
+        "ask": ask, "summary": raw_title,
         "next_act": str(row["next_act"] or ""),
         "note": note, "body": body, "still_open": silent,
         "to": to_list,
@@ -1320,14 +1970,15 @@ def as_items(pg: Any, owners: Iterable[str], *, shown: Optional[bool], owner_vie
     if not owner_view and not shown:
         return {"items": [], "total": 0, "next": None, "older": 0,
                 "status": "off", "reason": OPT_IN_UNREADABLE if shown is None else "not_opted_in"}
+    owner_list = sorted(set(owners)) if everyone else _expand_owner_role_pools(pg, list(owners))
     if matter_id is not None:
         cur = pg.execute(_ITEM_ONE, {"matter_id": matter_id, "everyone": everyone,
-                                     "owners": sorted(set(owners))})
+                                     "owners": owner_list})
     else:
-        cur = pg.execute(_ITEMS, {"everyone": everyone, "owners": sorted(set(owners))})
+        cur = pg.execute(_ITEMS, {"everyone": everyone, "owners": owner_list})
     cols = [d.name for d in cur.description]
     rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-    mine = {str(o).strip().lower() for o in owners}
+    mine = {str(o).strip().lower() for o in owner_list}
     names = _staff_names(pg) if rows else {}
     if names_of is not None and rows:
         missing = _unresolved_ids(rows, mine=mine, owner_view=owner_view, names=names)
@@ -1379,7 +2030,7 @@ def cycle(pg: Any, *, now: Optional[dt.datetime] = None, queue: Optional[Path] =
         out["approvals"] = {**upsert(pg, opened), **apply(pg, "approval", verdicts)}
         questions = mc_questions(state) if state and (state / "mc-capture" / "capture.sqlite"
                                                       ).exists() else None
-        opened, verdicts, counts = tasks(pg, people, questions)
+        opened, verdicts, counts = tasks(pg, people, questions, now=now)
         if counts["questions_unreadable"]:
             verdicts = [v for v in verdicts if not v["subject"].startswith("mc-question:")]
         out["tasks"] = {**counts, **upsert(pg, opened),
@@ -1392,12 +2043,16 @@ def cycle(pg: Any, *, now: Optional[dt.datetime] = None, queue: Optional[Path] =
             items = queue_items(queue, REMAINING)
             out["queue"] = upsert(pg, from_queue(pg, items))
             out["queue"].update(settle_queue(pg, queue))
+        out["qc_reroute"] = reroute_qc_hold_matters(pg)
         from operating import assist_waits
         out["waits"] = assist_waits.open_from_readings(pg, _tz())
+        out["waits_deduped"] = assist_waits.reconcile_duplicate_promises(pg)
+        out["system_noise"] = retire_system_noise_matters(pg)
         from operating import assist_routines
         out["routines"] = {**assist_routines.open_from_routines(pg, now), **assist_routines.reverify(pg)}
         out["persons"] = apply_persons(pg)
         out["conversations"] = reverify_conversations(pg)
+        out["cross_channel"] = reverify_cross_channel_replies(pg, people=people)
         from operating import assist_activity
         out["activity"] = assist_activity.cycle(pg)
         out["waits_closed"] = assist_waits.reverify(pg)

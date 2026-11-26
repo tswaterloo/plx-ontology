@@ -179,14 +179,14 @@ class WorkLogApi(unittest.TestCase):
         got = chats(self.ana)
         self.assertTrue(got["available"])
         self.assertEqual([(c["conversation_id"], c["title"], c["questions"]) for c in got["chats"]],
-                         [(other["conversation_id"], "which orders are late", 1),
-                          (first["conversation_id"], "where is PO 90412, is it late", 2)])
-        self.assertEqual([c["title"] for c in chats(self.ben)["chats"]], ["what did we ship today"])
+                         [(other["conversation_id"], "Which orders are late", 1),
+                          (first["conversation_id"], "Where is PO 90412, is it late", 2)])
+        self.assertEqual([c["title"] for c in chats(self.ben)["chats"]], ["What did we ship today"])
         # rename and pin: the pinned one first, under its name; search reads names and questions
         path = f"/api/ask/chats/{first['conversation_id']}"
         out = self.ana.post(path, json={"name": "PO 90412 chase", "pinned": True}).json()
         self.assertEqual([(c["title"], c["pinned"], c["named"]) for c in out["chats"]],
-                         [("PO 90412 chase", True, True), ("which orders are late", False, False)])
+                         [("PO 90412 chase", True, True), ("Which orders are late", False, False)])
         self.assertEqual([c["title"] for c in chats(self.ana, q="supplier")["chats"]],
                          ["PO 90412 chase"])
         self.assertEqual(chats(self.ana, q="chase late")["chats"][0]["title"], "PO 90412 chase")
@@ -198,14 +198,55 @@ class WorkLogApi(unittest.TestCase):
                          .status_code, 404)
         # deleted: off the list, still in the work log and still opened by its link
         out = self.ana.post(path, json={"deleted": True}).json()
-        self.assertEqual([c["title"] for c in out["chats"]], ["which orders are late"])
+        self.assertEqual([c["title"] for c in out["chats"]], ["Which orders are late"])
         self.assertEqual(self.log(self.ana, thread=f"ask:{first['conversation_id']}")["total"], 2)
         # asked again in the deleted chat: it is back on the list with all its questions
         ask(self.ana, "and when is it due", first["conversation_id"])
         self.assertEqual([(c["title"], c["questions"]) for c in chats(self.ana)["chats"]],
-                         [("PO 90412 chase", 3), ("which orders are late", 1)])
+                         [("PO 90412 chase", 3), ("Which orders are late", 1)])
         self.guard = Guard(unavailable=True)
         self.assertEqual(chats(self.ana), {"available": False, "chats": []})
+
+    def test_clean_chat_title_strips_filler_and_trims_cleanly(self):
+        self.assertEqual(wl._clean_chat_title("hey can you please show me our late POs?"), "Our late POs")
+        self.assertEqual(wl._clean_chat_title("make me a nice weekly margin summary!"), "Weekly margin summary")
+        self.assertEqual(wl._clean_chat_title("Focus on PO 106001: what are the open lines?"), "Open lines")
+        self.assertEqual(wl._clean_chat_title("   "), "Untitled")
+        long_q = "Please tell me every overdue purchase order from Croda and Azelis scheduled to ship next month"
+        trimmed = wl._clean_chat_title(long_q)
+        self.assertLessEqual(len(trimmed), 54)
+        self.assertFalse(trimmed.endswith(" "))
+        self.assertNotIn("\u2014", trimmed)
+        self.assertNotIn("\u2026", trimmed)
+        self.assertEqual(
+            wl._clean_chat_title("Can you figure out internal company culture score (create one) and figure o"),
+            "Internal company culture score",
+        )
+        self.assertEqual(
+            wl._clean_chat_title("No any other teamas messages? and why can you tell me why stuff was onyl ca"),
+            "Teamas messages",
+        )
+        # Abbreviations do not split the sentence, and unclipped titles keep single-char endings
+        self.assertEqual(wl._clean_chat_title("Status of Dr. Bronner's order"), "Status of Dr. Bronner's order")
+        self.assertEqual(wl._clean_chat_title("Show me A & B"), "A & B")
+        self.assertEqual(wl._clean_chat_title("Invoice from Acme Inc. and Mr. Smith"), "Invoice from Acme Inc. and Mr. Smith")
+        clipped_vs = wl._clean_chat_title("Compare monthly purchase volumes across vendors vs last year total")
+        self.assertFalse(clipped_vs.lower().endswith(" vs"))
+
+    def test_failed_only_ask_threads_are_hidden_from_chats_list(self):
+        store = wl.WorkLog(None, guard=lambda: self.guard)
+        reader = SimpleNamespace(key="ana", display_name="Ana", email="ana@plx.example",
+                                 session=SimpleNamespace(identities=(), subject_oid=None, canary=False))
+        store.record(reader, kind="ask", verb="failed", title="broken retry prompt",
+                     thread="ask:failed-only-1", source="ask", source_id="ans-f1")
+        store.record(reader, kind="ask", verb="failed", title="first retry failed",
+                     thread="ask:mixed-1", source="ask", source_id="ans-m1")
+        store.record(reader, kind="ask", verb="asked", title="Can you figure out internal company culture score (create one) and figure o",
+                     thread="ask:mixed-1", source="ask", source_id="ans-m2")
+        got = store.chats("ana")
+        self.assertEqual([c["conversation_id"] for c in got], ["mixed-1"])
+        self.assertEqual(got[0]["title"], "Internal company culture score")
+        self.assertEqual(got[0]["questions"], 1)
 
     def test_a_resumed_trail_only_answer_rechecks_the_trail_sources(self):
         """A partial answer with no facts and only a trail quoting
@@ -1268,3 +1309,37 @@ class DeletedChats(TimeSaved):
         self.assertEqual(sorted(e["title"] for e in on_po), ["about PO 1 c2", "phoned"])
         everything, _ = self.store.events(reader=ana.key)
         self.assertEqual(len(everything), 3)
+
+    def test_partial_and_resumed_ask_preserve_outcome_and_latency_ms(self):
+        from operator_api import work_log as wl
+        huge = {
+            "question": "Soapbox shipments",
+            "conversation_id": "conv-telemetry",
+            "answer_id": "a" * 24,
+            "outcome": "answered",
+            "latency_ms": 4321,
+            "direct_answer": "Here is the summary.",
+            "facts": [{"quote": "x" * 1000}] * 2500,
+        }
+        kept = json.loads(wl._kept_detail(huge))
+        self.assertEqual(kept["outcome"], "answered")
+        self.assertEqual(kept["latency_ms"], 4321)
+
+        # Even if a legacy stored row has outcome=None / latency_ms=None, resume restores safe values
+        legacy_partial = {
+            "_kept": "partial",
+            "question": "Soapbox shipments",
+            "conversation_id": "conv-telemetry",
+            "answer_id": "b" * 24,
+            "outcome": None,
+            "latency_ms": None,
+            "direct_answer": "Legacy partial answer.",
+            "_cited": {"citations": []},
+        }
+        resumed = wl.resume("ask:conv-telemetry", [{
+            "seq": 183, "verb": "asked", "title": "Soapbox shipments",
+            "at": "2026-11-25T17:35:07Z", "detail": json.dumps(legacy_partial),
+        }])
+        ans = resumed["turns"][0]["answer"]
+        self.assertEqual(ans["outcome"], "answered")
+        self.assertEqual(ans["latency_ms"], 0)

@@ -60,7 +60,7 @@ function Row({ e, on, onPick, admin, children }: { e: FeedbackEntry; on: boolean
         }}
         onFocus={onPick}
         className={cn(
-          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 rounded-md px-3 py-2.5 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          "grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-x-2.5 px-4 py-3 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50 lg:px-5",
           on ? "bg-row-on" : "hover:bg-hover",
         )}
         data-testid="feedback-row"
@@ -74,11 +74,11 @@ function Row({ e, on, onPick, admin, children }: { e: FeedbackEntry; on: boolean
         </span>
         <span className="text-right text-[12px] leading-[18px] tabular-nums text-muted">
           <span className="block">{formatDateTime(e.at)}</span>
-          <span className={cn("block", e.status === "new" ? "font-medium text-fg" : "text-faint")}>{STATUS_WORDS[e.status]}</span>
+          <span className={cn("block", e.status === "new" ? "font-medium text-fg" : e.status === "fixed" ? "font-medium text-ok" : "text-faint")}>{STATUS_WORDS[e.status]}</span>
         </span>
       </a>
       {/* a phone has no detail pane: the picked entry opens under its row */}
-      {on && children && <div className="lg:hidden">{children}</div>}
+      {on && children && <div className="border-t border-border/70 bg-bg lg:hidden">{children}</div>}
     </li>
   );
 }
@@ -107,7 +107,7 @@ function Detail({ e, admin, onStatus }: { e: FeedbackEntry; admin: boolean; onSt
   const page = e.page && e.page.startsWith("/") && !e.page.startsWith("//") ? e.page : null;
   return (
     <article className="space-y-5 px-5 py-5" data-testid="feedback-detail" aria-label="Feedback detail">
-      <header className="space-y-1">
+      <header className="space-y-1 border-b border-border pb-4">
         <p className="text-[12px] text-muted">
           {KIND_WORDS[e.kind]}
           {e.reader_name ? ` · ${e.mine ? "You" : e.reader_name}` : ""} · {formatDateTime(e.at)}
@@ -115,7 +115,7 @@ function Detail({ e, admin, onStatus }: { e: FeedbackEntry; admin: boolean; onSt
         <h2 className="text-[15px] leading-5 font-semibold tracking-[-0.01em] first-letter:uppercase">{headline(e)}</h2>
       </header>
       {admin ? (
-        <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Status" data-testid="feedback-status">
+        <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Status" data-testid="feedback-status">
           {STATUSES.map((s) => (
             <button
               key={s}
@@ -124,8 +124,10 @@ function Detail({ e, admin, onStatus }: { e: FeedbackEntry; admin: boolean; onSt
               aria-checked={e.status === s}
               onClick={() => e.status !== s && onStatus(s)}
               className={cn(
-                "inline-flex h-7 items-center rounded-md px-2.5 text-[12px] cursor-pointer",
-                e.status === s ? "bg-accent-soft font-medium text-fg" : "bg-surface-2 text-fg hover:bg-[color-mix(in_srgb,var(--fg)_10%,transparent)]",
+                "inline-flex h-7 items-center rounded-md border px-2.5 text-[12px] transition-colors cursor-pointer",
+                e.status === s
+                  ? "border-border-strong bg-surface-2 font-medium text-fg"
+                  : "border-border bg-transparent text-muted hover:border-border-strong hover:text-fg",
               )}
             >
               {STATUS_WORDS[s]}
@@ -133,7 +135,7 @@ function Detail({ e, admin, onStatus }: { e: FeedbackEntry; admin: boolean; onSt
           ))}
         </div>
       ) : (
-        <p className="text-[12px] text-muted">Status: {STATUS_WORDS[e.status]}</p>
+        <p className="text-[12px] text-muted">Status: <span className={cn("font-medium", e.status === "fixed" ? "text-ok" : "text-fg")}>{STATUS_WORDS[e.status]}</span></p>
       )}
       <dl className="space-y-4">
         {e.note && <Field label={e.kind === "answer" ? "What was wrong" : "Note"}>{e.note}</Field>}
@@ -213,7 +215,7 @@ export default function FeedbackPage() {
   const entries = useMemo(() => list?.entries ?? [], [list]);
   const current = entries.find((e) => e.id === picked) ?? entries[0] ?? null;
   const admin = !!list?.all_readers || (state.status === "signed-in" && !!state.me.feedback_admin);
-  const allCount = list ? Object.values(list.counts).reduce((a, b) => a + b, 0) : 0;
+  const allCount = list ? Object.values(list.counts ?? {}).reduce((a, b) => a + b, 0) : 0;
 
   async function changeStatus(id: string, s: FeedbackStatus) {
     setSaveError(null);
@@ -228,7 +230,7 @@ export default function FeedbackPage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-list">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar
         pin="Feedback"
         heading
@@ -238,9 +240,8 @@ export default function FeedbackPage() {
             {list && <>{" "}<span className="ml-1 text-[13px] font-normal tracking-normal num text-faint">{list.total}</span></>}
           </>
         }
-        className="bg-list"
         actions={
-          <button type="button" onClick={dialog.open} className="inline-flex h-8 items-center rounded-lg px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer">
+          <button type="button" onClick={dialog.open} className="inline-flex h-8 items-center rounded-md px-2.5 text-[13px] font-medium hover:bg-hover cursor-pointer">
             Give feedback
           </button>
         }
@@ -250,14 +251,14 @@ export default function FeedbackPage() {
       {!error && (
       <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2 lg:px-5" data-testid="feedback-filters">
         <div className="mr-2 flex gap-0.5 max-sm:-mx-1 max-sm:mr-0 max-sm:w-[calc(100%+8px)] max-sm:overflow-x-auto max-sm:px-1" role="tablist" aria-label="Status">
-          {[["", "All", allCount] as const, ...STATUSES.map((s) => [s, STATUS_WORDS[s], list?.counts[s] ?? 0] as const)].map(([value, label, n]) => (
+          {[["", "All", allCount] as const, ...STATUSES.map((s) => [s, STATUS_WORDS[s], list?.counts?.[s] ?? 0] as const)].map(([value, label, n]) => (
             <button
               key={value || "all"}
               type="button"
               role="tab"
               aria-selected={status === value}
               onClick={() => setStatus(value)}
-              className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12px] cursor-pointer", status === value ? "bg-[color-mix(in_srgb,var(--fg)_7%,transparent)] font-medium" : "text-muted hover:bg-hover hover:text-fg")}
+              className={cn("inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[12px] cursor-pointer", status === value ? "bg-nav-on font-medium text-fg" : "text-muted hover:bg-hover hover:text-fg")}
             >
               {label}
               {list && <span className="num text-faint">{n}</span>}
@@ -301,7 +302,7 @@ export default function FeedbackPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <ul ref={listRef} className="min-w-0 flex-1 space-y-px overflow-y-auto px-2 py-2 sm:px-3 lg:max-w-[460px] lg:border-r lg:border-border" data-testid="feedback-list">
+          <ul ref={listRef} className="min-w-0 flex-1 divide-y divide-border/70 overflow-y-auto lg:max-w-[460px] lg:border-r lg:border-border" data-testid="feedback-list">
             {entries.map((e) => (
               <Row key={e.id} e={e} on={current?.id === e.id} onPick={() => setPicked(e.id)} admin={admin}>
                 {picked === e.id && <Detail e={e} admin={admin} onStatus={(s) => void changeStatus(e.id, s)} />}

@@ -6,7 +6,7 @@ import { cn } from "@/lib/cn";
 import { fieldLabel, formatDate, formatDateTime, formatMoney, isBeforeToday, mailField, plural, readable, SYSTEM_LABEL, withoutFloatNoise } from "@/lib/format";
 import type { Conflict, Fact, Freshness, Hidden, NotFoundItem, Source } from "@/lib/types";
 import { EvidenceDrawer, SourceChip, SourceChips, sourceName } from "./source-chip";
-import { DoneRing, OpenRing, StatusGlyph, SystemCode } from "./ui/glyphs";
+import { DoneRing, OpenRing, SystemCode } from "./ui/glyphs";
 
 const MONEY_LABEL = /\b(?:total|amount|cost|price|balance|value|revenue|margin|invoice)\b/i;
 const BARE_NUMBER = /^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^-?\d+(?:\.\d+)?$/;
@@ -270,7 +270,7 @@ export function HiddenNotice({ hidden }: { hidden: Hidden | null | undefined }) 
     <section
       role="note"
       aria-label="Items you don't have access to"
-      className="flex gap-3 rounded-xl bg-surface px-4 py-3 text-[13px] leading-5"
+      className="flex gap-3 rounded-lg border border-border/80 bg-bg-subtle/60 px-4 py-3 text-[13px] leading-5"
       data-testid="hidden-notice"
     >
       <EyeOff className="mt-[3px] size-[14px] shrink-0 text-muted" strokeWidth={2} aria-hidden />
@@ -330,8 +330,8 @@ export function conflictValue(c: Conflict, value: string): string {
 }
 
 /**
- * Systems that disagree, in suspect violet (a data problem, not a business one): one row per
- * system with its value and source, the value we use marked "Used", and plain words when we
+ * Systems that disagree, marked in muted warm amber (a data problem, not a business one): one row
+ * per system with its value and source, the value we use marked "Used", and plain words when we
  * are not picking one.
  */
 export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: string | null }) {
@@ -340,9 +340,9 @@ export function ConflictCard({ conflict, owner }: { conflict: Conflict; owner?: 
   const what = conflict.subject ? `${field} (${conflict.subject})` : field;
   const used = trusted.length === 1 ? trusted[0] : null;
   return (
-    <section aria-label={`Conflicting values for ${what}`} className="rounded-xl bg-surface px-4 pt-3 pb-2" data-testid="conflict-card">
-      <h3 className="flex items-center gap-2 text-[13px] leading-5 font-medium text-fg">
-        <StatusGlyph status="suspect" size={14} />
+    <section aria-label={`Conflicting values for ${what}`} className="rounded-lg border border-border/80 bg-bg-subtle/60 px-4 pt-3 pb-2" data-testid="conflict-card">
+      <h3 className="flex items-center gap-2 text-[13px] leading-5 font-medium text-risk">
+        <OpenRing size={14} tone="risk" />
         Systems disagree on {what}
       </h3>
       <div className="max-w-full overflow-x-auto">

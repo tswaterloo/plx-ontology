@@ -1476,3 +1476,50 @@ class HomeAtRiskTotal(unittest.TestCase):
                 mock.patch.object(ps, "routed", lambda *a: True), \
                 mock.patch.object(ps, "read", lambda *a, **k: (rows, {})):
             self.assertEqual(ps.alert_home(None, None, limit=5)[5], 5)
+
+
+class RoutingLatenessAndCosAlerts(unittest.TestCase):
+    def test_qc_hold_routing_blocks_super_admin_non_qa_and_allows_owner_and_quality(self):
+        from operating import briefing as bf
+        self.assertFalse(ps.routed("lot_on_hold", bf.Routing(frozenset({"PROD"}), role="SUPER_ADMIN")))
+        self.assertFalse(ps.routed("quality_hold_aging", bf.Routing(frozenset({"IT"}), role="SUPER_ADMIN")))
+        self.assertTrue(ps.routed("lot_on_hold", bf.Routing(frozenset({"IT"}), role="SUPER_ADMIN", is_owner=True)))
+        self.assertTrue(ps.routed("lot_on_hold", bf.Routing(frozenset({"EXEC"}))))
+        self.assertTrue(ps.routed("lot_on_hold", bf.Routing(frozenset({"QUALITY"}))))
+        self.assertTrue(ps.routed("lot_on_hold", bf.Routing(basis="not_an_employee", everything=True)))
+
+    def test_cos_system_monitoring_reply_alerts_are_dropped_while_business_stays(self):
+        now = dt.datetime(2026, 11, 26, 6, 0, tzinfo=dt.timezone.utc)
+        for why in (
+            'cos@petrasoap.com wrote "Email relay failed on staging (email-relay)" on Nov 25.',
+            'cos@petrasoap.com wrote "Storage finalize failed on staging (storage-finalize)" on Nov 25.',
+            'cos@petrasoap.com wrote "Work-routing GHA dispatch failed (relay)" on Nov 25.',
+            'cos@petrasoap.com wrote "Work-routing GHA dispatch recovered (relay)" on Nov 25.',
+        ):
+            row = {"rule": "needs_my_reply", "kind": "reply_owed", "since": now, "why": why}
+            self.assertTrue(ps._drop_reply_alert(row, now=now), why)
+        real_cos = {
+            "rule": "needs_my_reply",
+            "kind": "reply_owed",
+            "since": now,
+            "why": 'cos@petrasoap.com wrote "[ACTION REQUIRED] New Sourcing Request: Bluzen" on Nov 25.',
+        }
+        self.assertFalse(ps._drop_reply_alert(real_cos, now=now))
+
+    def test_copy_of_record_so_and_bc_only_po_suppress_days_late_consistently(self):
+        self.assertIsNone(ps._sales_order_live_days_late({"status": "open", "open_state": "copy_of_record", "days_late": 42}))
+        self.assertIsNone(ps._purchase_order_live_days_late({"status": "open", "verdict": "late", "source_systems": "bc", "days_late": 133}))
+        self.assertIsNone(ps._purchase_order_live_days_late({"status": "open", "verdict": "late", "handle": "bc://po/100109", "days_late": 133}, {"bc://po/100109"}))
+        self.assertEqual(ps._purchase_order_live_days_late({"status": "open", "verdict": "late", "source_systems": "bc,portal", "days_late": 14}), 14)
+
+    def test_alert_item_uses_earlier_since_for_first_seen_while_preserving_new_flag(self):
+        t_since = dt.datetime(2026, 10, 21, 0, 0, tzinfo=dt.timezone.utc)
+        t_seen = dt.datetime(2026, 11, 18, 21, 0, tzinfo=dt.timezone.utc)
+        item = ps.alert_item(
+            {"rule": "lot_on_hold", "kind": "quality_hold", "handle": "api://batch/1", "topic": "",
+             "why": "Batch B1 is on quality hold.", "since": t_since, "first_seen": t_seen,
+             "record_table": "batches"},
+            {}, 1, "2026-11-17T00:00:00+00:00",
+        )
+        self.assertTrue(item.new_since_visit)
+        self.assertEqual(item.first_seen, t_since.isoformat())

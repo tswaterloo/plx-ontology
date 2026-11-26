@@ -87,7 +87,7 @@ function Row({ t, list, onChanged }: { t: Template; list: TemplateList; onChange
               onKeyDown={(e) => e.key === "Enter" && use()}
               data-testid="template-record"
             />
-            <button type="button" className="h-8 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg cursor-pointer" onClick={use}>
+            <button type="button" className="h-8 rounded-lg bg-fg px-3 text-[13px] font-medium text-bg hover:opacity-90 cursor-pointer" onClick={use}>
               Fill
             </button>
           </div>
@@ -133,7 +133,7 @@ function LearnedRow({ t }: { t: LearnedTemplate }) {
             onKeyDown={(e) => e.key === "Enter" && make()}
             data-testid="learned-record"
           />
-          <button type="button" className="h-8 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg cursor-pointer disabled:opacity-50" onClick={make} disabled={!record.trim()}>
+          <button type="button" className="h-8 rounded-lg bg-fg px-3 text-[13px] font-medium text-bg hover:opacity-90 cursor-pointer disabled:opacity-50" onClick={make} disabled={!record.trim()}>
             Make in Ask
           </button>
         </div>

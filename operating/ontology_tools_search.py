@@ -461,9 +461,9 @@ def paged(search: Callable[[dict[str, Any]], Any], arguments: Any,
     """``search(arguments)`` (``run`` then ``fitted``) as one page that fits one response.
     A result too large is never refused or cut without a way on: the search is read again
     with a smaller ``limit`` (each leg's own page and cursor, ``completeness.next_cursor`` or
-    ``continue``), the limit scaled to the hits that would fit, then halved until the page
-    fits or one hit a leg is left. Whole pages only: what the next page holds is the cursor's
-    own rows, so no hit is lost between pages."""
+    ``continue``), scaled proportionally to the response byte budget before falling back to
+    halving, until the page fits or one hit a leg is left. Whole pages only: what the next
+    page holds is the cursor's own rows, so no hit is lost between pages."""
     asked = dict(arguments) if isinstance(arguments, Mapping) else arguments
     result = search(asked)
     if not isinstance(asked, dict) or not over(result, fits):
@@ -471,7 +471,16 @@ def paged(search: Callable[[dict[str, Any]], Any], arguments: Any,
     limit = asked.get("limit") if isinstance(asked.get("limit"), int) else DEFAULT_LIMIT
     while limit > 1 and over(result, fits):
         shown = max(1, len(result.get("documents") or ()))
-        scaled = int(limit * min(MAX_HITS, shown) / shown * 0.9) if shown > MAX_HITS else limit // 2
+        if shown > MAX_HITS:
+            scaled = int(limit * min(MAX_HITS, shown) / shown * 0.9)
+        else:
+            raw_bytes = _encoded(result)
+            if raw_bytes > MANY_BYTES:
+                scaled = int(limit * (MANY_BYTES / raw_bytes) * 0.9)
+            else:
+                scaled = limit // 2
+            if scaled >= limit:
+                scaled = limit // 2
         limit = max(1, min(limit - 1, scaled))
         result = search({**asked, "limit": limit})
     return _last_resort(result, fits)

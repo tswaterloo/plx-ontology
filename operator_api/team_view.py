@@ -55,7 +55,7 @@ HIDDEN_ENV = "PLX_TEAM_HIDDEN_PEOPLE"
 FILE_ENV = "PLX_TEAM_ACTIVITY_FILE"
 # what counts as work done in the tracker: every channel but mail they received
 DONE_CHANNELS = frozenset(("mail_sent", "teams", "meetings", "mc_approvals", "mc_questions",
-                           "mc_tasks", "planner", "sharepoint", "bc", "portal", "sage"))
+                           "mc_tasks", "planner", "sharepoint", "filemaker", "bc", "portal", "sage"))
 NOTE = "Mail, Teams, meetings and the systems that record who did what. Floor, lab and phone work is not seen."
 
 _CACHE: dict[str, tuple[float, Any]] = {}
@@ -367,6 +367,234 @@ def merge_identities(people: Mapping[str, Mapping[str, Any]], shown: Iterable[st
     return merged, new_counts, members_of
 
 
+def _action_channel(system: str, kind: str) -> Optional[str]:
+    """Map an ``assist.actions`` (system, kind) pair to a TeamView channel key."""
+    s = str(system or "").strip().lower()
+    k = str(kind or "").strip().lower()
+    if k == "mail_sent" or s == "mail":
+        return "mail_sent"
+    if k == "teams_sent" or s == "teams":
+        return "teams"
+    if k == "sharepoint_edit" or s == "sharepoint":
+        return "sharepoint"
+    if s == "filemaker" or k.startswith("filemaker"):
+        return "filemaker"
+    if s == "sage" or k.startswith("sage"):
+        return "sage"
+    if s == "planner" or k.startswith("planner"):
+        return "planner"
+    if k in ("approval", "mc_approval", "mc_approvals") or (s == "mission_control" and "approv" in k):
+        return "mc_approvals"
+    if k in ("question", "mc_question", "mc_questions") or (s == "mission_control" and "question" in k):
+        return "mc_questions"
+    if s == "mission_control":
+        return "mc_tasks"
+    if s == "bc":
+        return "bc"
+    if s == "portal":
+        return "portal"
+    if s == "calendar" or k.startswith("meeting"):
+        return "meetings"
+    return None
+
+
+def enrich_from_pg(
+    pg: Any,
+    people: Mapping[str, Mapping[str, Any]],
+    counts: Mapping[str, Counter],
+    members: Mapping[str, frozenset[str]],
+    *,
+    until: date,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Counter], date]:
+    """Enrich Team rows with live Postgres aggregates from ``assist.actions`` (human-only),
+    ``assist.matters`` (open count and 14-day closed throughput), and ``biz.meetings``
+    (non-cancelled, non-excluded meetings) without forcing a ``0`` meetings key for people
+    with no calendar capture. Safe no-op when tables are absent or PG is unavailable."""
+    out_people: dict[str, dict[str, Any]] = {
+        k: {**v, "days": {d: dict(c) for d, c in (v.get("days") or {}).items()}}
+        for k, v in people.items()
+    }
+    out_counts: dict[str, Counter] = {k: Counter(v) for k, v in counts.items()}
+    if pg is None or not out_people:
+        return out_people, out_counts, until
+
+    # Map every lower-cased member oid and address -> representative oid
+    oid_to_rep: dict[str, str] = {}
+    addr_to_rep: dict[str, str] = {}
+    for rep, ms in members.items():
+        if rep not in out_people:
+            continue
+        oid_to_rep[rep.lower()] = rep
+        for m_oid in ms:
+            oid_to_rep[str(m_oid).lower()] = rep
+        for addr in out_people[rep].get("addresses") or ():
+            a = str(addr or "").strip().lower()
+            if a and a not in addr_to_rep:
+                addr_to_rep[a] = rep
+
+    from datetime import datetime, timezone
+    today = date.today()
+    window_start = min(until, today) - timedelta(days=35)
+    latest_day = until
+
+    try:
+        has_actions = pg.execute("SELECT to_regclass('assist.actions') IS NOT NULL").fetchone()[0]
+    except Exception:  # noqa: BLE001
+        return out_people, out_counts, until
+
+    if has_actions:
+        try:
+            since_ts = datetime(window_start.year, window_start.month, window_start.day, tzinfo=timezone.utc)
+            pg_days: dict[str, dict[str, Counter]] = {}
+            for person, system, kind, day, n in pg.execute(
+                "SELECT lower(person), system, kind, "
+                "(at AT TIME ZONE 'America/New_York')::date AS day, count(*) "
+                "FROM assist.actions "
+                "WHERE coalesce(not_human, '') = '' AND at >= %s "
+                "GROUP BY 1, 2, 3, 4",
+                (since_ts,),
+            ).fetchall():
+                rep = oid_to_rep.get(str(person or "").strip().lower())
+                if not rep or day is None:
+                    continue
+                chan = _action_channel(system, kind)
+                if not chan:
+                    continue
+                day_iso = day.isoformat() if hasattr(day, "isoformat") else str(day)[:10]
+                if hasattr(day, "isoformat") and day > latest_day:
+                    latest_day = day
+                pg_days.setdefault(rep, {}).setdefault(day_iso, Counter())[chan] += int(n or 0)
+            for rep, by_day in pg_days.items():
+                days = out_people[rep]["days"]
+                for day_iso, ch_counts in by_day.items():
+                    slot = days.setdefault(day_iso, {})
+                    for chan, n in ch_counts.items():
+                        if n > int(slot.get(chan, 0)):
+                            slot[chan] = n
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        has_matters = pg.execute("SELECT to_regclass('assist.matters') IS NOT NULL").fetchone()[0]
+    except Exception:  # noqa: BLE001
+        has_matters = False
+
+    if has_matters:
+        try:
+            open_by_rep: Counter = Counter()
+            closed_by_rep: Counter = Counter()
+            for owner, open_n, closed_14d in pg.execute(
+                "SELECT lower(owner_person), "
+                "count(*) FILTER (WHERE state IN ('open', 'unverified')) AS open_n, "
+                "count(*) FILTER (WHERE state = 'done' AND done_at >= now() - interval '14 days') AS closed_14d "
+                "FROM assist.matters "
+                "WHERE owner_person NOT LIKE 'pool:%%' "
+                "GROUP BY 1"
+            ).fetchall():
+                rep = oid_to_rep.get(str(owner or "").strip().lower())
+                if not rep:
+                    continue
+                open_by_rep[rep] += int(open_n or 0)
+                closed_by_rep[rep] += int(closed_14d or 0)
+            for rep in set(open_by_rep) | set(closed_by_rep):
+                slot = out_counts.setdefault(rep, Counter())
+                if open_by_rep[rep] > slot.get("tasks", 0):
+                    slot["tasks"] = open_by_rep[rep]
+                if closed_by_rep[rep] > slot.get("alerts_closed", 0):
+                    slot["alerts_closed"] = closed_by_rep[rep]
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        has_meetings = pg.execute("SELECT to_regclass('biz.meetings') IS NOT NULL").fetchone()[0]
+    except Exception:  # noqa: BLE001
+        has_meetings = False
+
+    if has_meetings:
+        try:
+            since_ts = datetime(window_start.year, window_start.month, window_start.day, tzinfo=timezone.utc)
+            seen_mtgs: dict[str, set[tuple[str, str]]] = {}
+            mtg_days: dict[str, Counter] = {}
+            for start_at, start_date, ical_uid, mailbox, organizer, attendees in pg.execute(
+                "SELECT start_at, start_date, ical_uid, lower(coalesce(mailbox, '')), "
+                "lower(coalesce(organizer, '')), attendees "
+                "FROM biz.meetings "
+                "WHERE start_at >= %s AND start_at <= now() "
+                "AND COALESCE(excluded, false) = false "
+                "AND COALESCE(is_cancelled, false) = false",
+                (since_ts,),
+            ).fetchall():
+                if start_at is None:
+                    continue
+                day_iso = (
+                    start_date.isoformat() if hasattr(start_date, "isoformat")
+                    else start_at.date().isoformat()
+                )
+                uid_key = (str(ical_uid or ""), str(start_at))
+                matched_reps: set[str] = set()
+                if mailbox and mailbox in oid_to_rep:
+                    matched_reps.add(oid_to_rep[mailbox])
+                if mailbox and mailbox in addr_to_rep:
+                    matched_reps.add(addr_to_rep[mailbox])
+                if organizer and organizer in addr_to_rep:
+                    matched_reps.add(addr_to_rep[organizer])
+                for a in attendees or ():
+                    al = str(a or "").strip().lower()
+                    if al in addr_to_rep:
+                        matched_reps.add(addr_to_rep[al])
+                for rep in matched_reps:
+                    if uid_key[0] and uid_key in seen_mtgs.setdefault(rep, set()):
+                        continue
+                    if uid_key[0]:
+                        seen_mtgs[rep].add(uid_key)
+                    mtg_days.setdefault(rep, Counter())[day_iso] += 1
+            for rep, by_day in mtg_days.items():
+                days = out_people[rep]["days"]
+                for day_iso, n in by_day.items():
+                    if n > 0:
+                        slot = days.setdefault(day_iso, {})
+                        if n > int(slot.get("meetings", 0)):
+                            slot["meetings"] = n
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Strip any literal zero-valued channel entries so users without calendar capture
+    # never appear with a synthetic "meetings": 0 entry.
+    for row in out_people.values():
+        for day_iso, slot in list(row["days"].items()):
+            cleaned = {k: int(v) for k, v in slot.items() if int(v or 0) > 0}
+            if cleaned:
+                row["days"][day_iso] = cleaned
+            else:
+                row["days"].pop(day_iso, None)
+
+    return out_people, out_counts, latest_day
+
+
+def _pg_alias_domains(pg: Any, existing_domains: Iterable[str]) -> tuple[str, ...]:
+    """Collect additional internal company email domains from ``biz.mailbox_owners`` and
+    ``biz.staff`` so brand-alias accounts (such as ``vince@1hourafter.com``) merge into
+    their canonical person row even when the static snapshot omitted that domain."""
+    doms = {str(d).strip().lower() for d in existing_domains if str(d or "").strip()}
+    if pg is None:
+        return tuple(sorted(doms))
+    try:
+        if pg.execute("SELECT to_regclass('biz.mailbox_owners') IS NOT NULL").fetchone()[0]:
+            for (addrs,) in pg.execute("SELECT addrs FROM biz.mailbox_owners").fetchall():
+                for a in addrs or ():
+                    _, _, d = str(a or "").strip().lower().partition("@")
+                    if d:
+                        doms.add(d)
+        if pg.execute("SELECT to_regclass('biz.staff') IS NOT NULL").fetchone()[0]:
+            for (email,) in pg.execute("SELECT email FROM biz.staff WHERE email IS NOT NULL").fetchall():
+                _, _, d = str(email or "").strip().lower().partition("@")
+                if d:
+                    doms.add(d)
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(sorted(doms))
+
+
 class TeamViewMixin:
     """``/api/team`` and ``/api/team/{key}`` on the real backend."""
 
@@ -434,9 +662,28 @@ class TeamViewMixin:
         teams = (grants.load() if grants else {}).get("teams") or {}
         people = (snap or {}).get("people") or {}
         shown = {oid for oid in people if not gone(oid) and (everyone or oid in me)}
-        people, counts, members = merge_identities(people, shown, counts, (snap or {}).get("domains") or ())
+        domains = tuple((snap or {}).get("domains") or ())
+        pg_provider = self.pg if getattr(self, "pg_dsn", None) and callable(getattr(self, "pg", None)) else None
+        if pg_provider is not None and domains:
+            try:
+                with pg_provider().connection() as conn:
+                    domains = _pg_alias_domains(conn, domains)
+            except Exception:  # noqa: BLE001
+                pass
+        people, counts, members = merge_identities(people, shown, counts, domains)
         shown = {oid for oid in shown if oid in people}
         me = frozenset(me | {rep for rep, ms in members.items() if ms & me})
+        if pg_provider is not None and snap is not None and snap.get("status") == "built":
+            try:
+                base_until = date.fromisoformat(snap["window"]["to"])
+                with pg_provider().connection() as conn:
+                    people, counts, new_until = enrich_from_pg(
+                        conn, people, counts, members, until=base_until,
+                    )
+                if new_until > base_until:
+                    snap = {**snap, "window": {**snap["window"], "to": new_until.isoformat()}}
+            except Exception:  # noqa: BLE001 - fall back to snapshot only if PG unavailable
+                pass
         return everyone, me, gone, snap, counts, teams, people, shown, known, members
 
     def team_view(self, reader: Reader) -> m.TeamView:

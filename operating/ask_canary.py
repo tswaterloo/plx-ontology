@@ -147,6 +147,10 @@ class TruthUnreadable(Exception):
     pass
 
 
+class _DevLoginDisabled(Exception):
+    """Raised internally when the API runs in Entra SSO mode (dev_login=false)."""
+
+
 def sse_events(lines: Iterable[bytes]) -> Iterable[tuple[str, Any]]:
     """(event, data) of a server-sent event stream."""
     event, data = "", []
@@ -229,20 +233,47 @@ class Canary:
         with os.fdopen(fd, "w") as f:
             f.write(cookie)
 
+    def _dev_login_disabled(self) -> bool:
+        """True when the local API explicitly reports dev-login is disabled (Entra SSO
+        mode): the canary must not mint a dev ticket or treat 404 on dev-login as an Ask
+        outage."""
+        try:
+            status, _h, body = self.transport("GET", API_BASE + "auth/config", {}, None, 15)
+        except Exception:  # noqa: BLE001 - unreachable API is handled by sign-in/ask
+            return False
+        if status != 200:
+            return False
+        raw = b"".join(body)[:16384]
+        try:
+            cfg = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            return False
+        if not isinstance(cfg, dict):
+            return False
+        return cfg.get("dev_login") is False or cfg.get("mode") == "entra"
+
     def _signed_in(self) -> Optional[str]:
-        """A session cookie the API accepts: the kept one, else a new sign-in."""
+        """A session cookie the API accepts: the kept one, else a new sign-in.
+        Raises ``_DevLoginDisabled`` when the API is in Entra SSO mode
+        (``dev_login=false`` or HTTP 404 on ``/api/auth/dev-login``)."""
         cookie = self._cookie()
         if cookie:
             status, _h, _b = self.transport("GET", API_BASE + "me", {"Cookie": cookie},
                                             None, 30)
             if status == 200:
                 return cookie
+        if self._dev_login_disabled():
+            self._keep(None)
+            raise _DevLoginDisabled()
         ticket = self.mint()
         if not ticket:
             return None
         status, headers, _b = self.transport(
             "POST", API_BASE + "auth/dev-login", {"Content-Type": "application/json"},
             json.dumps({"ticket": ticket}).encode(), 30)
+        if status == 404:
+            self._keep(None)
+            raise _DevLoginDisabled()
         found = re.match(r"\s*([^=;\s]+=[^;]*)", str(headers.get("set-cookie") or ""))
         if status != 200 or not found:
             return None
@@ -292,6 +323,11 @@ class Canary:
                         if self.clock() - started > cfg["max_seconds"] * 2:
                             error = "timeout"
                             break
+        except _DevLoginDisabled:
+            seconds = round(self.clock() - started, 1)
+            return {"ok": True, "skipped": True, "verdict": "skipped:entra_mode",
+                    "seconds": seconds, "outcome": "skipped", "steps": [],
+                    "model": False, "answer_ms": None}
         except Exception as exc:  # noqa: BLE001 - an unreachable API is the finding
             error = type(exc).__name__
         seconds = round(self.clock() - started, 1)

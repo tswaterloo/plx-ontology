@@ -610,6 +610,152 @@ class Matters(unittest.TestCase):
                               door=self.everything, now=NOW)
             self.assertEqual([i["summary"] for i in got["items"]], ["Batch on hold"])
 
+    def test_qc_hold_reroute_moves_non_qa_matters_to_quality_pool_idempotently(self):
+        self.pg.execute("ALTER TABLE biz.staff ADD COLUMN department text, ADD COLUMN title text")
+        self.pg.execute(
+            "INSERT INTO biz.staff (person_id, email, name, department, title) VALUES "
+            "('u-theo', 'theo@petrasoap.com', 'Theo Park', 'Production', 'Software Engineer'),"
+            "('u-vince', 'vince@petrasoap.com', 'Vince Alton', 'IT', 'CEO'),"
+            "('u-ali', 'ali@petrasoap.com', 'Ali Torabi', 'QA/QC', 'QA/QC Manager')"
+        )
+        # Seed misrouted open qc_hold matters on Theo and Vince (as audited in production)
+        for owner, subj in (("u-theo", "qc-b1"), ("u-vince", "qc-b1"), ("u-theo", "qc-b2")):
+            self.pg.execute(
+                "INSERT INTO assist.matters (matter_id, owner_person, kind, subject_key, sources, "
+                "basis_at, title, detail, next_act, audiences) VALUES (%s, %s, 'record', %s, %s, "
+                "%s, 'Batch on QC hold', 'qc_hold', 'ask_person', '[\"mc:x\"]')",
+                (am.matter_id(owner, "record", subj), owner, subj,
+                 json.dumps({"autopilot": "qc_hold", "records": [subj]}), NOW),
+            )
+        first = am.reroute_qc_hold_matters(self.pg)
+        self.assertEqual(first, {"closed": 3, "rerouted": 2})
+        # Second call is a clean idempotent no-op
+        self.assertEqual(am.reroute_qc_hold_matters(self.pg), {"rerouted": 0, "closed": 0})
+        rows = self.matters("record")
+        by_owner = {(r[0], r[2]): (r[3], r[4]) for r in rows}
+        self.assertEqual(by_owner[("u-theo", "qc-b1")], ("done", "misrouted_role"))
+        self.assertEqual(by_owner[("u-vince", "qc-b1")], ("done", "misrouted_role"))
+        self.assertEqual(by_owner[("pool:quality", "qc-b1")], ("open", None))
+        self.assertEqual(by_owner[("pool:quality", "qc-b2")], ("open", None))
+        # QA/QC staff automatically receive pool:quality items; Theo sees none
+        ali_items = am.as_items(self.pg, ["u-ali"], shown=True, door=self.everything, now=NOW)
+        self.assertEqual(len(ali_items["items"]), 2)
+        theo_items = am.as_items(self.pg, ["u-theo"], shown=True, door=self.everything, now=NOW)
+        self.assertEqual(theo_items["items"], [])
+
+    def test_one_on_one_teams_backfill_and_cross_channel_reply_resolution(self):
+        vince = "29e05178-1111-4222-8333-444444444444"
+        theo = "55555555-6666-4777-8888-999999999999"
+        self.pg.execute("ALTER TABLE biz.teams_messages ADD COLUMN chat_type text, "
+                        "ADD COLUMN member_ids text[], ADD COLUMN addresses text[], "
+                        "ADD COLUMN said text")
+        for pid, addr, name in (
+            (vince, "vince@petrasoap.com", "Vince Alton"),
+            (theo, "theo@petrasoap.com", "Theo Park"),
+        ):
+            self.pg.execute("INSERT INTO biz.staff VALUES (%s, %s, %s)", (pid, addr, name))
+            self.pg.execute("INSERT INTO biz.mailbox_owners VALUES (%s, %s)", (pid, [addr]))
+
+        chat_id = f"19:{vince}_{theo}@unq.gbl.spaces"
+        enc_handle = f"teams-chat://19%3A{vince}_{theo}%40unq.gbl.spaces/m-1352"
+        t_mail = NOW - dt.timedelta(hours=3)
+        t_unrelated = NOW - dt.timedelta(hours=2, minutes=45)
+        t_reply = NOW - dt.timedelta(hours=2, minutes=30)
+        t_vince_teams = NOW - dt.timedelta(hours=2)
+
+        # 13:10 ET: Vince emails Theo about Workbench instant Teams updates
+        h_mail = "mail://t-wb/1"
+        self.pg.execute(
+            "INSERT INTO biz.emails VALUES (%s, '<wb-1>', 't-wb', %s, 'vince@petrasoap.com', "
+            "ARRAY['theo@petrasoap.com'], '{}', "
+            "'Workbench instant Teams updates: notification endpoint setup', %s, "
+            "ARRAY['mail:' || %s], '{[]}', '{o:wb1}')",
+            (h_mail, theo, t_mail, theo),
+        )
+        self.read(h_mail, thread="t-wb", actor=theo, at=t_mail,
+                  summary="Set up Workbench instant Teams notification endpoint")
+
+        # Another unrelated email from Vince stays open if Theo only talks about Workbench
+        h_other = "mail://t-lunch/1"
+        self.pg.execute(
+            "INSERT INTO biz.emails VALUES (%s, '<l-1>', 't-lunch', %s, 'vince@petrasoap.com', "
+            "ARRAY['theo@petrasoap.com'], '{}', 'Warehouse racking vendor quote', %s, "
+            "ARRAY['mail:' || %s], '{[]}', '{o:l1}')",
+            (h_other, theo, t_mail, theo),
+        )
+        self.read(h_other, thread="t-lunch", actor=theo, at=t_mail,
+                  summary="Review warehouse racking vendor quote")
+
+        # 13:15 ET: Theo sends an unrelated Teams note to Vince -> neither email should close
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages (handle, chat, sender, created_at, subject, "
+            "audience_keys, rec_marks, object_ids, chat_type, member_ids, addresses, said) "
+            "VALUES ('teams://c/1', %s, %s, %s, NULL, '{teams:chat:c}', '{[]}', '{o:t0}', "
+            "'oneOnOne', %s, %s, 'Hi Vince, grabbing coffee in 5 minutes')",
+            (chat_id, json.dumps({"id": theo, "display_name": "Theo Park"}), t_unrelated,
+             [vince, theo], ["vince@petrasoap.com", "theo@petrasoap.com"]),
+        )
+        self.cycle()
+        states = {r[2]: r[3] for r in self.matters("conversation")}
+        self.assertEqual(states["t-wb"], "open")
+        self.assertEqual(states["t-lunch"], "open")
+
+        # 13:30 ET: Theo replies to Vince on 1:1 Teams about the Workbench webhook endpoint
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages (handle, chat, sender, created_at, subject, "
+            "audience_keys, rec_marks, object_ids, chat_type, member_ids, addresses, said) "
+            "VALUES ('teams://c/2', %s, %s, %s, NULL, '{teams:chat:c}', '{[]}', '{o:t1}', "
+            "'oneOnOne', %s, %s, 'Hi Vince, quick updates: Instant Teams webhook endpoint is live')",
+            (chat_id, json.dumps({"id": theo, "display_name": "Theo Park"}), t_reply,
+             [vince, theo], ["vince@petrasoap.com", "theo@petrasoap.com"]),
+        )
+        # 13:52 ET: Vince replies back on Teams; its reading had actor_person NULL (the bug)
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages (handle, chat, sender, created_at, subject, "
+            "audience_keys, rec_marks, object_ids, chat_type, member_ids, addresses, said) "
+            "VALUES (%s, %s, %s, %s, NULL, '{teams:chat:c}', '{[]}', '{o:t2}', "
+            "'oneOnOne', %s, %s, 'Two things need your attention: Workbench can now send email')",
+            (enc_handle, chat_id, json.dumps({"id": vince.upper(), "display_name": "Vince Alton"}),
+             t_vince_teams, [vince, theo], ["vince@petrasoap.com", "theo@petrasoap.com"]),
+        )
+        self.read(enc_handle, source="teams_messages", thread=chat_id, actor=None, basis="",
+                  at=t_vince_teams, summary="Two things need your attention on Workbench email")
+        out = self.cycle()
+        self.assertEqual(out["readings"]["teams_1on1_resolved"], 1)
+        self.assertEqual(out["cross_channel"].get("replied_cross_channel"), 1)
+        by_subj = {r[2]: (r[0], r[3], r[4]) for r in self.matters("conversation")}
+        self.assertEqual(by_subj["t-wb"], (theo, "done", "replied_cross_channel"))
+        self.assertEqual(by_subj["t-lunch"], (theo, "open", None))
+        self.assertEqual(by_subj[chat_id], (theo, "open", None))
+
+        # Reverse direction: Theo emails Vince directly referencing Workbench email -> closes Teams matter
+        self.pg.execute(
+            "INSERT INTO biz.emails VALUES ('mail://t-wb-re/1', '<wb-re>', 't-wb-re', %s, "
+            "'theo@petrasoap.com', ARRAY['vince@petrasoap.com'], '{}', "
+            "'Re: Workbench email attention items completed', %s, ARRAY['mail:' || %s], "
+            "'{[]}', '{o:wb2}')",
+            (theo, t_vince_teams + dt.timedelta(minutes=10), theo),
+        )
+        out2 = self.cycle()
+        self.assertEqual(out2["cross_channel"].get("replied_cross_channel"), 1)
+        by_subj2 = {r[2]: (r[0], r[3], r[4]) for r in self.matters("conversation")}
+        self.assertEqual(by_subj2[chat_id], (theo, "done", "replied_cross_channel"))
+
+    def test_item_of_keeps_task_matters_as_todo_never_reply(self):
+        row = {
+            "matter_id": "t" * 24, "owner_person": ANN, "kind": "task",
+            "source": None, "sender": None, "tsender": None, "subject": "TASK-3601",
+            "title": "Finish TASK-3601 migration", "quote": "", "detail": "Mission Control task TASK-3601",
+            "next_act": "ask_person",
+            "plan": {"prepared": {"draft": {"body": "Status update draft"}}},
+            "plan_status": "ready", "plan_reason": "", "plan_at": NOW,
+            "requested_at": None, "basis_at": NOW, "due_at": NOW, "touched_at": None,
+            "state": "open", "verified_at": NOW, "verify_note": "", "legacy_item_id": None,
+            "sources": {"records": ["MCTask:3601"]}, "audiences": [], "markings": [], "handles": [],
+        }
+        item = am.item_of(row, now=NOW)
+        self.assertEqual(item["kind"], "todo")
+
     def test_the_true20_check_samples_shown_peoples_matters_and_needs_hand_verdicts(self):
         import contextlib
         import io
@@ -664,6 +810,48 @@ class Matters(unittest.TestCase):
         self.assertEqual(counts[1], counts[10])
         self.assertEqual(counts[1], counts[60])
         self.assertLess(seconds[60], 3 * seconds[1] + 1.0, seconds)
+
+    def test_zombie_planner_tasks_closed_and_agent_teams_messages_not_backfilled(self):
+        # 1) Undated Planner task > 180 days old is treated as zombie and closed
+        self.assertTrue(am.is_zombie_task(
+            "PlannerTask", {"title": "Old 2023 task"}, NOW - dt.timedelta(days=250), now=NOW,
+        ))
+        # Future due_at keeps a task alive even if created long ago
+        self.assertFalse(am.is_zombie_task(
+            "PlannerTask",
+            {"title": "Long-running task", "due_at": (NOW + dt.timedelta(days=15)).isoformat()},
+            NOW - dt.timedelta(days=400),
+            now=NOW,
+        ))
+        # Any task > 365 days unupdated with past due_at is zombie
+        self.assertTrue(am.is_zombie_task(
+            "MCTask",
+            {"title": "Ancient MC task", "due_at": (NOW - dt.timedelta(days=400)).isoformat()},
+            NOW - dt.timedelta(days=420),
+            now=NOW,
+        ))
+        # 2) Agent-authored self-notification in 1:1 Teams chat is never assigned to the other user
+        h_agent = "teams://m-agent"
+        chat = f"19:{ANN}_{BOB}@unq.gbl.spaces"
+        self.pg.execute(
+            "INSERT INTO biz.teams_messages (handle, chat, sender, created_at, audience_keys, rec_marks) "
+            "VALUES (%s, %s, %s, %s, ARRAY['teams:c1'], ARRAY['[]'])",
+            (h_agent, chat, json.dumps({"id": ANN, "display_name": "Ann"}), NOW - dt.timedelta(hours=1)),
+        )
+        self.pg.execute(
+            "INSERT INTO assist.readings (source, message_key, handles, thread_key, said_at, read_ver, "
+            "needs_act, act, act_class, summary, quote, status, sender_person, actor_person, actor_basis) "
+            "VALUES ('teams_messages', %s, %s, %s, %s, 2, true, 'Review', 'reply', "
+            "'Agent reports two things need your attention', 'Two things need your attention', "
+            "'ok', %s, NULL, '')",
+            (h_agent, [h_agent], chat, NOW - dt.timedelta(hours=1), ANN),
+        )
+        updated = am._backfill_one_on_one_teams_actors(self.pg)
+        self.assertEqual(updated, 0)
+        actor = self.pg.execute(
+            "SELECT actor_person FROM assist.readings WHERE message_key = %s", (h_agent,)
+        ).fetchone()[0]
+        self.assertIsNone(actor)
 
 
 if __name__ == "__main__":

@@ -106,17 +106,21 @@ def _peers(ctx: Any, batch: str, product: str | None, before: date) -> list[tupl
     return sorted(dated, key=lambda x: (x[0], x[1]), reverse=True)[:LOOKBACK]
 
 
-def keyer(ctx: Any, peers: Sequence[tuple[date, str, dict]], prop: str, people: Any) -> str | None:
+def keyer(ctx: Any, peers: Sequence[tuple[date, str, dict]], prop: str, people: Any,
+          *, staff_rows: Sequence[Mapping[str, Any]] | None = None) -> str | None:
     """Who enters this product's QC: the person named by ``prop`` on its latest earlier batch
     that names exactly one cleared person; None when none does or the people exclusion is
-    unavailable."""
+    unavailable. When ``staff_rows`` is supplied, IT/software engineers and executives are
+    never selected as QC keyers."""
+    from .autopilot_roster import _non_operational_ids
     from .day_coverage import user_code_person
     if people is None or getattr(people, "unavailable", None):
         return None
     directory, _addresses_of, domains = ap._people_maps(people)
+    blocked = _non_operational_ids(staff_rows)
     for _d, _o, row in peers:
         oid = user_code_person(autopilot_records._v(row, prop), directory, domains)
-        if oid and people.identity_clear(oid):
+        if oid and oid.lower() not in blocked and people.identity_clear(oid):
             return oid
     return None
 

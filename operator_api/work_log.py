@@ -84,9 +84,9 @@ MAX_DETAIL = 2_000_000    # an Ask answer as JSON (2 MB)
 EVENT_BATCH = 500         # matching rows read (and exclusion-checked) at a time (API-008)
 # What an answer too large to keep whole keeps (API-010): the rendered answer, charts,
 # instruction and drafts; ``_kept`` says it is partial.
-_KEPT_CORE = ("question", "conversation_id", "answer_id", "outcome", "direct_answer",
-              "charts", "documents", "work_items", "instruction", "drafts", "answer",
-              "markdown", "summary")
+_KEPT_CORE = ("question", "conversation_id", "answer_id", "outcome", "latency_ms",
+              "direct_answer", "charts", "documents", "work_items", "instruction", "drafts",
+              "answer", "markdown", "summary")
 PARTIAL_TURN = ("This answer was too large to keep in full: its drafts and the question "
                 "are kept. Ask again to see the whole answer.")
 
@@ -148,7 +148,10 @@ def _kept_detail(detail: Any) -> str:
         return text
     return json.dumps({"_kept": "none", "question": str(detail.get("question") or "")[:2000],
                        "conversation_id": detail.get("conversation_id"),
-                       "answer_id": detail.get("answer_id")}, default=str)
+                       "answer_id": detail.get("answer_id"),
+                       "outcome": detail.get("outcome") or "answered",
+                       "latency_ms": detail.get("latency_ms") if isinstance(detail.get("latency_ms"), int) else 0},
+                      default=str)
 _THREAD = re.compile(r"^(ask|autopilot|card|write|record|alert|case):[A-Za-z0-9_.:/@#-]{1,400}$")
 _CASE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
 
@@ -206,6 +209,87 @@ def _row_excluded(guard: Any, row: Mapping[str, Any]) -> bool:
 
 
 # ---- the store ------------------------------------------------------------------------------
+
+_CHAT_FOCUS_PREFIX_RE = re.compile(r"^focus\s+on\s+[^:]{1,80}:\s*", re.IGNORECASE)
+_CHAT_FILLER_RE = re.compile(  # guard-ok: display-only conversational filler stripping for Ask chat sidebar titles; never routes or classifies meaning
+    r"^(?:"
+    r"(?:hey|hi|hello)(?:\s+there)?\b[\s,:-]*|"
+    r"(?:no\s+any\s+other|no|nope|nah|wait|actually|ok|okay|well)\b[\s,:-]*|"
+    r"please\b[\s,:-]*|"
+    r"(?:can|could|would|will)\s+you(?:\s+please)?\b[\s,:-]*|"
+    r"(?:figure|find)\s+out(?:\s+(?:the|our))?\b[\s,:-]*|"
+    r"(?:help\s+me(?:\s+to)?|i\s+(?:want|need)\s+to)\b[\s,:-]*|"
+    r"(?:show|give|tell|find|get)\s+me\b[\s,:-]*|"
+    r"(?:pull|look)\s+up\b[\s,:-]*|"
+    r"(?:make|build|create)\s+(?:me\s+)?(?:a\s+)?(?:nice\s+)?|"
+    r"what\s+are\s+(?:the\s+)?(?=[\w].{4,})"
+    r")",
+    re.IGNORECASE,
+)
+_CHAT_SECOND_CLAUSE_RE = re.compile(  # guard-ok: display-only clause trimming for long rambling Ask chat titles
+    r"\s+(?:and|also)\s+(?:figure|tell|explain|show|why|can\s+you|what|how|create)\b.*$",
+    re.IGNORECASE,
+)
+_CHAT_PAREN_ASIDE_RE = re.compile(r"\s*\([^)]{1,40}\)")
+_CHAT_SENTENCE_SPLIT_RE = re.compile(
+    r"(?:[?!]|"
+    r"(?<!\bDr)(?<!\bMr)(?<!\bMs)(?<!\bVs)(?<!\bSt)(?<!\bJr)(?<!\bSr)(?<!\bCo)(?<!\bNo)"
+    r"(?<!\bMrs)(?<!\bInc)(?<!\bLtd)(?<!\bEtc)\.)(?:\s+|$)",
+    re.IGNORECASE,
+)
+_CHAT_TRAILING_FILLERS = frozenset({  # guard-ok: English grammatical connectors trimmed only at the end of a clipped Ask chat title
+    "and", "or", "the", "a", "an", "of", "in", "for", "to", "with", "which",
+    "that", "right", "by", "on", "at", "from", "is", "are", "was", "were",
+    "but", "so", "if", "as", "into", "about", "why", "how", "vs",
+})
+
+
+def _clean_chat_title(raw: Optional[str], max_len: int = 54) -> str:
+    """Clean a first Ask prompt into a crisp, deterministic sidebar title: takes the primary
+    question clause, strips leading conversational filler, parenthetical meta-asides, and
+    rambling trailing clauses, capitalizes cleanly, and trims on word boundaries."""
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return "Untitled"
+    text = _CHAT_FOCUS_PREFIX_RE.sub("", text).strip()
+    parts = [p.strip() for p in _CHAT_SENTENCE_SPLIT_RE.split(text) if p.strip()]
+    if len(parts) > 1 and len(parts[0]) >= 10 and len(parts[0].split()) >= 2:
+        text = parts[0]
+    for _ in range(6):
+        stripped = _CHAT_FILLER_RE.sub("", text).strip(" ,;:-")
+        if not stripped or stripped == text:
+            break
+        text = stripped
+    without_clause = _CHAT_SECOND_CLAUSE_RE.sub("", text).strip(" ,;:-")
+    if without_clause and len(without_clause.split()) >= 3:
+        text = without_clause
+    without_paren = _CHAT_PAREN_ASIDE_RE.sub("", text).strip(" ,;:-")
+    if without_paren and len(without_paren.split()) >= 2:
+        text = " ".join(without_paren.split())
+    text = text.rstrip(" ?!.,;:-").strip()
+    if not text:
+        fallback = " ".join(str(raw or "").split()).rstrip(" ?!.,;:-").strip()
+        text = fallback or "Untitled"
+    text = text[0].upper() + text[1:]
+    was_clipped = len(text) > max_len
+    if not was_clipped:
+        return text
+    cut = text[:max_len]
+    if " " in cut:
+        word_cut = cut.rsplit(" ", 1)[0].rstrip(" ,;:-")
+        if len(word_cut) >= max_len // 2:
+            words = word_cut.split()
+            while len(words) > 2 and (
+                words[-1].lower() in _CHAT_TRAILING_FILLERS
+                or (len(words[-1]) == 1 and words[-1].lower() not in ("a", "i"))
+            ):
+                words.pop()
+            return " ".join(words).rstrip(" ,;:-")
+    return cut.rstrip(" ,;:-")
+
+
+clean_chat_title = _clean_chat_title
+
 
 class WorkLog:
     """One SQLite file (or memory) behind one lock."""
@@ -387,7 +471,7 @@ class WorkLog:
             return None
         with self._lock:
             rows = self._conn.execute(
-                "SELECT e.seq, e.reader, e.people, e.thread, e.title, e.at FROM event e "
+                "SELECT e.seq, e.reader, e.people, e.verb, e.thread, e.title, e.at FROM event e "
                 "WHERE e.reader = ? AND e.kind = 'ask' AND e.thread LIKE 'ask:%' AND "
                 "e.thread != 'ask:failed' AND "
                 "e.thread NOT IN (SELECT thread FROM thread_hidden WHERE reader = ?) "
@@ -398,6 +482,8 @@ class WorkLog:
         found: dict[str, dict[str, Any]] = {}
         for r in rows:
             if _row_excluded(guard, r):
+                continue
+            if r["verb"] == "failed":
                 continue
             chat = found.setdefault(r["thread"], {"thread": r["thread"], "first": r["title"],
                                                   "questions": [], "last_at": r["at"]})
@@ -412,7 +498,7 @@ class WorkLog:
             if any(w not in said for w in words):
                 continue
             out.append({"seq": chat["seq"], "conversation_id": chat["thread"][len("ask:"):],
-                        "title": name or chat["first"] or "Untitled", "named": bool(name),
+                        "title": name or _clean_chat_title(chat["first"]), "named": bool(name),
                         "pinned": bool(kept is not None and kept["pinned"]),
                         "questions": len(chat["questions"]), "last_at": chat["last_at"]})
         out.sort(key=lambda c: (c["pinned"], c["last_at"], c.pop("seq")), reverse=True)
@@ -768,7 +854,8 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                         "cited_more": 0,
                         "definitions": [],
                         "latency_ms": 0,
-                        **answer,
+                        **{k: v for k, v in answer.items()
+                           if not (k in ("outcome", "latency_ms") and v is None)},
                     }
                     restored.pop("_review", None)
                     turns.append({"question": restored.get("question") or event["title"],
@@ -777,6 +864,13 @@ def resume(thread: str, events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                     turns.append({"question": answer.get("question") or event["title"],
                                   "answer": None, "withheld": PARTIAL_TURN, "at": event["at"]})
             elif isinstance(answer, dict):
+                answer = dict(answer)
+                if answer.get("outcome") is None:
+                    answer["outcome"] = "answered"
+                if not isinstance(answer.get("latency_ms"), int):
+                    review = answer.get("_review") if isinstance(answer.get("_review"), Mapping) else {}
+                    sms = review.get("stream_ms")
+                    answer["latency_ms"] = sms if isinstance(sms, int) else 0
                 answer.pop("_review", None)    # the usage review's, not the person's view
                 turns.append({"question": answer.get("question") or event["title"],
                               "answer": answer, "at": event["at"]})

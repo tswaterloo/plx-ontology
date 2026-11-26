@@ -217,62 +217,87 @@ def _clean_instruction(rest: str, fallback: str) -> str:
     return cleaned[0].upper() + cleaned[1:]
 
 
+def _stitch_instruction(before: str, after: str, fallback: str) -> str:
+    """Combine text before and after an extracted trigger phrase into a clean instruction."""
+    left = re.sub(r"[\s,;:-]+$", "", before or "").strip()
+    right = re.sub(r"^[\s,;:-]+", "", after or "").strip()
+    if left and right:
+        combined = f"{left} {right}"
+    else:
+        combined = left or right
+    return _clean_instruction(combined, fallback)
+
+
 def parse_plain_language(text: str) -> dict[str, Any]:
     """Parse a user's plain-language workflow description into a structured trigger, instruction and name.
-    The form shows the parsed trigger so the person can review or adjust it before saving."""
+    Matches schedule phrases and event triggers anywhere in the prompt (leading, mid-sentence, or
+    trailing), so the form shows the parsed trigger for review before saving."""
     raw = " ".join(str(text or "").split())
     if not raw:
         raise ValueError("Say what the workflow should do.")
-    low = raw.lower()
 
-    # 1. Event: new Teams message from X [about Y]
+    # 1. Event: new Teams message from X [about Y], or "when X messages on Teams"
     # guard-ok: explicit user-typed workflow trigger syntax, confirmed in UI form
-    m_teams = re.match(
-        r"^(?:when|whenever)\s+(?:a\s+)?(?:new\s+)?teams\s+(?:message\s+|chat\s+)?(?:arrives\s+)?from\s+"
-        r"([^\s,;]+(?:\s+(?!about\b|with\s+subject\b|arrives\b)[^\s,;]+)*)"
+    m_teams = re.search(
+        r"\b(?:when|whenever|if)\s+(?:a\s+)?(?:new\s+)?teams\s+(?:message\s+|chat\s+)?(?:arrives\s+)?from\s+"
+        r"([^\s,;]+(?:\s+(?!about\b|with\s+subject\b|arrives\b|comes\s+in\b)[^\s,;]+)*)"
         r"(?:\s+(?:about|with\s+subject)\s+([^,;]+?))?"
-        r"(?:\s+arrives)?\s*(?:[,;:-]\s*(.*)|$)",
+        r"(?:\s+(?:arrives|comes\s+in))?(?=\s*[,;:-]|\s*$)",
         raw, re.I,
     )
+    if not m_teams:
+        m_teams = re.search(
+            r"\b(?:when|whenever|if)\s+([^\s,;]+(?:\s+(?!messages?\b|pings?\b|writes?\b|chats?\b)[^\s,;]+){0,2})\s+"
+            r"(?:messages?|pings?|writes?|chats?)\s+(?:me\s+)?(?:on|in)\s+teams"
+            r"(?:\s+(?:about|with\s+subject)\s+([^,;]+?))?(?=\s*[,;:-]|\s*$)",
+            raw, re.I,
+        )
     if m_teams:
         sender = m_teams.group(1).strip().rstrip(".,;:")
         subject = (m_teams.group(2) or "").strip()
-        instr = _clean_instruction(m_teams.group(3) or "", raw)
+        instr = _stitch_instruction(raw[:m_teams.start()], raw[m_teams.end():], raw)
         trig: dict[str, Any] = {"event": "teams_from", "sender": sender}
         if subject:
             trig["subject"] = subject
         return {"name": f"When a Teams message arrives from {sender}", "trigger_kind": "event", "trigger": trig,
                 "instruction": instr, "trigger_summary": describe_trigger("event", trig)}
 
-    # 1b. Event: new mail from X [about Y]
+    # 1b. Event: new mail from X [about Y], or "when Croda emails [about Y]"
     # guard-ok: explicit user-typed workflow trigger syntax, confirmed in UI form
-    m_mail = re.match(
-        r"^(?:when|whenever)\s+(?:a\s+)?(?:new\s+)?(?:mail|email|message)\s+(?:arrives\s+)?from\s+"
-        r"([^\s,;]+(?:\s+(?!about\b|with\s+subject\b|arrives\b)[^\s,;]+)*)"
+    m_mail = re.search(
+        r"\b(?:when|whenever|if)\s+(?:a\s+)?(?:new\s+)?(?:mail|email|message)\s+(?:arrives\s+)?from\s+"
+        r"([^\s,;]+(?:\s+(?!about\b|with\s+subject\b|arrives\b|comes\s+in\b)[^\s,;]+)*)"
         r"(?:\s+(?:about|with\s+subject)\s+([^,;]+?))?"
-        r"(?:\s+arrives)?\s*(?:[,;:-]\s*(.*)|$)",
+        r"(?:\s+(?:arrives|comes\s+in))?(?=\s*[,;:-]|\s*$)",
         raw, re.I,
     )
+    if not m_mail:
+        m_mail = re.search(
+            r"\b(?:when|whenever|if)\s+([^\s,;]+(?:\s+(?!e-?mails?\b|sends?\b)[^\s,;]+){0,2})\s+"
+            r"(?:e-?mails?(?:\s+me|\s+us)?|sends?\s+(?:an?\s+)?e-?mail)"
+            r"(?:\s+(?:about|with\s+subject)\s+([^,;]+?))?(?=\s*[,;:-]|\s*$)",
+            raw, re.I,
+        )
     if m_mail:
         sender = m_mail.group(1).strip().rstrip(".,;:")
         subject = (m_mail.group(2) or "").strip()
-        instr = _clean_instruction(m_mail.group(3) or "", raw)
+        instr = _stitch_instruction(raw[:m_mail.start()], raw[m_mail.end():], raw)
         trig = {"event": "mail_from", "sender": sender}
         if subject:
             trig["subject"] = subject
         return {"name": f"When mail arrives from {sender}", "trigger_kind": "event", "trigger": trig,
                 "instruction": instr, "trigger_summary": describe_trigger("event", trig)}
 
-    # 2. Event: PO goes late
+    # 2. Event: PO goes late (anywhere in the prompt)
     # guard-ok: explicit user-typed workflow trigger syntax, confirmed in UI form
-    m_po = re.match(
-        r"^(?:when|whenever)\s+(?:a|any)\s+(?:po|purchase\s+order)\s+(?:from\s+([^,;]+?)\s+)?"
-        r"(?:goes|is|becomes)\s+late\s*[,;:-]?\s*(.*)$",
+    m_po = re.search(
+        r"\b(?:when|whenever|if)\s+(?:a|any)\s+(?:po|purchase\s+order)\s+(?:from\s+([^,;]+?)\s+)?"
+        r"(?:goes|is|becomes)\s+(?:late|overdue|past\s+due)(?=\s*[,;:-]|\s*$)",
         raw, re.I,
     )
     if m_po:
         supplier = (m_po.group(1) or "").strip()
-        instr = _clean_instruction(m_po.group(2) or "", raw)
+        instr = _stitch_instruction(raw[:m_po.start()], raw[m_po.end():], raw)
         trig = {"event": "po_late"}
         if supplier:
             trig["supplier"] = supplier
@@ -280,28 +305,31 @@ def parse_plain_language(text: str) -> dict[str, Any]:
         return {"name": label, "trigger_kind": "event", "trigger": trig,
                 "instruction": instr, "trigger_summary": describe_trigger("event", trig)}
 
-    # 3. Event: MC question arrives
+    # 3. Event: MC question arrives (anywhere in the prompt)
     # guard-ok: explicit user-typed workflow trigger syntax, confirmed in UI form
-    m_mc = re.match(
-        r"^(?:when|whenever)\s+(?:an?\s+)?(?:mc|mission\s+control)\s+question\s+(?:arrives|is\s+asked|comes\s+in)\s*[,;:-]?\s*(.*)$",
+    m_mc = re.search(
+        r"\b(?:when|whenever|if)\s+(?:an?\s+)?(?:mc|mission\s+control)\s+question\s+"
+        r"(?:arrives|is\s+asked|comes\s+in)(?=\s*[,;:-]|\s*$)",
         raw, re.I,
     )
     if m_mc:
-        instr = _clean_instruction(m_mc.group(1) or "", raw)
+        instr = _stitch_instruction(raw[:m_mc.start()], raw[m_mc.end():], raw)
         trig = {"event": "mc_question"}
         return {"name": "When a Mission Control question arrives", "trigger_kind": "event", "trigger": trig,
                 "instruction": instr, "trigger_summary": describe_trigger("event", trig)}
 
-    # 3b. Event: QC hold
+    # 3b. Event: QC hold (anywhere in the prompt, including "watch for any QC hold")
     # guard-ok: explicit user-typed workflow trigger syntax, confirmed in UI form
-    m_qc = re.match(
-        r"^(?:when|whenever)\s+(?:a|any)\s+(?:(?:qc|quality)\s+hold(?:\s+(?:on|for)\s+([^,;]+?))?(?:\s+(?:arrives|happens|occurs|is\s+placed))?|"
-        r"(?:batch|lot)(?:\s+of\s+([^,;]+?))?\s+goes\s+on\s+(?:qc|quality)\s+hold)\s*[,;:-]?\s*(.*)$",
+    m_qc = re.search(
+        r"\b(?:when|whenever|if|watch\s+for|monitor\s+for|alert(?:\s+me)?\s+(?:on|for))\s+(?:a|any|new)?\s*"
+        r"(?:(?:qc|quality)\s+holds?(?:\s+(?:on|for)\s+([^,;]+?))?(?:\s+(?:arrives?|happens?|occurs?|is\s+placed|is\s+opened))?|"
+        r"(?:batch|lot)(?:\s+of\s+([^,;]+?))?\s+(?:goes|is\s+put)\s+on\s+(?:qc|quality)\s+hold)"
+        r"(?=\s*(?:[,;:-]|\band\b|\bthen\b)|\s*$)",
         raw, re.I,
     )
     if m_qc:
         product = (m_qc.group(1) or m_qc.group(2) or "").strip()
-        instr = _clean_instruction(m_qc.group(3) or "", raw)
+        instr = _stitch_instruction(raw[:m_qc.start()], raw[m_qc.end():], raw)
         trig = {"event": "qc_hold"}
         if product:
             trig["product"] = product
@@ -309,49 +337,70 @@ def parse_plain_language(text: str) -> dict[str, Any]:
         return {"name": label, "trigger_kind": "event", "trigger": trig,
                 "instruction": instr, "trigger_summary": describe_trigger("event", trig)}
 
-    # 4. Schedule: hourly / every N hours
-    m_hr = re.match(r"^(?:hourly|every\s+(?:(\d+)\s+)?hours?)\s*[,;:-]?\s*(.*)$", raw, re.I)
+    # 4. Schedule: hourly / every N hours (anywhere in the prompt)
+    m_hr = re.search(r"\b(?:hourly|every\s+(?:(\d+)\s+)?hours?)\b", raw, re.I)
     if m_hr:
         every_h = max(1, int(m_hr.group(1) or 1))
-        instr = _clean_instruction(m_hr.group(2) or "", raw)
+        instr = _stitch_instruction(raw[:m_hr.start()], raw[m_hr.end():], raw)
         trig = {"cadence": "hourly", "every_hours": every_h}
         return {"name": f"{describe_trigger('schedule', trig)}: {instr}", "trigger_kind": "schedule",
                 "trigger": trig, "instruction": instr, "trigger_summary": describe_trigger("schedule", trig)}
 
-    # 5. Schedule: every <weekday> / every weekday / every day / daily / weekly / monthly
+    # 5. Schedule: prefer explicit multi-word schedule phrases first ("weekly on friday",
+    #    "every monday", "every weekday", "every morning", ...) before bare cadence words
+    #    ("daily", "weekdays", "weekly", "monthly") so e.g. "Send weekly scorecard weekly on
+    #    friday at 4pm" binds to "weekly on friday at 4pm" instead of the adjective "weekly".
     # guard-ok: explicit user-typed schedule syntax, confirmed in UI form
-    m_sched = re.match(
-        r"^(?:every\s+(working\s+day|weekday|day|week|month|mon(?:day)?s?|tue(?:s|sday)?s?|wed(?:s|nesday)?s?|"
-        r"thu(?:r|rs|rsday)?s?|fri(?:day)?s?|sat(?:urday)?s?|sun(?:day)?s?)|"
-        r"(daily|weekdays|weekly|monthly))\b\s*(.*)$",
+    _DAY_PAT = (
+        r"mon(?:day)?s?|tue(?:s|sday)?s?|wed(?:s|nesday)?s?|"
+        r"thu(?:r|rs|rsday)?s?|fri(?:day)?s?|sat(?:urday)?s?|sun(?:day)?s?"
+    )
+    m_sched = re.search(
+        r"\b(?:"
+        r"weekly\s+on\s+(" + _DAY_PAT + r")|"
+        r"every\s+(working\s+day|weekdays?|morning|day|week|month|" + _DAY_PAT + r")"
+        r")\b",
         raw, re.I,
     )
+    if not m_sched:
+        m_sched = re.search(r"\b(daily|weekdays|weekly|monthly)\b", raw, re.I)
     if m_sched:
-        token = (m_sched.group(1) or m_sched.group(2) or "").lower().strip()
-        hour, minute, rest = _parse_clock(m_sched.group(3) or "")
-        instr = _clean_instruction(rest, raw)
+        token = next((g for g in m_sched.groups() if g), "").lower().strip()
+        before = raw[:m_sched.start()]
+        after = raw[m_sched.end():]
+        day = 1
+        if token in ("month", "monthly"):
+            m_dom = re.match(r"^\s*(?:on\s+(?:the\s+|day\s+)?)?(\d{1,2})(?:st|nd|rd|th)?\b(.*)$", after, re.I)
+            if m_dom and 1 <= int(m_dom.group(1)) <= 28:
+                day = int(m_dom.group(1))
+                after = m_dom.group(2) or ""
+        hour, minute, rest_after = _parse_clock(after)
+        # Also check for a clock time right before the schedule token (e.g. "at 8am every weekday")
+        if rest_after == after and before:
+            m_pre_clock = re.search(
+                r"\s*\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\s*$",
+                before, re.I,
+            )
+            if m_pre_clock:
+                ph, pm, _ = _parse_clock(m_pre_clock.group(0))
+                hour, minute = ph, pm
+                before = before[:m_pre_clock.start()]
+        instr = _stitch_instruction(before, rest_after, raw)
         if token in _DAY_ALIASES:
             trig = {"cadence": "weekly", "weekday": _DAY_ALIASES[token], "hour": hour, "minute": minute}
         elif token in ("weekday", "weekdays", "working day"):
             trig = {"cadence": "weekdays", "hour": hour, "minute": minute}
-        elif token in ("day", "daily"):
+        elif token in ("day", "daily", "morning"):
             trig = {"cadence": "daily", "hour": hour, "minute": minute}
         elif token in ("week", "weekly"):
             trig = {"cadence": "weekly", "weekday": "monday", "hour": hour, "minute": minute}
         else:
-            day = 1
-            m_dom = re.match(r"^\s*(?:on\s+(?:the\s+|day\s+)?)?(\d{1,2})(?:st|nd|rd|th)?\b\s*(.*)$", m_sched.group(3) or "", re.I)
-            if m_dom and 1 <= int(m_dom.group(1)) <= 28:
-                day = int(m_dom.group(1))
-                hour, minute, rest = _parse_clock(m_dom.group(2) or "")
-                instr = _clean_instruction(rest, raw)
             trig = {"cadence": "monthly", "day": day, "hour": hour, "minute": minute}
         summary = describe_trigger("schedule", trig)
         return {"name": f"{summary}: {instr}", "trigger_kind": "schedule", "trigger": trig,
                 "instruction": instr, "trigger_summary": summary}
 
     # 6. On demand fallback (no schedule or event phrase recognized)
-    _ = low
     return {"name": raw, "trigger_kind": "manual", "trigger": {}, "instruction": raw,
             "trigger_summary": describe_trigger("manual", {})}
 

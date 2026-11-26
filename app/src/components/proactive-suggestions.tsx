@@ -59,8 +59,17 @@ export function collapsedLine(collapsed: Record<string, number> | undefined): st
 
 /** The draft as text a person pastes into their own mail. */
 export function draftText(d: SuggestionDraft): string {
-  const to = d.to.address ? `${d.to.name ? `${d.to.name} <${d.to.address}>` : d.to.address}` : d.to.name ?? "";
-  return [to ? `To: ${to}` : null, `Subject: ${d.subject}`, "", d.body].filter((l) => l !== null).join("\n");
+  const rawTo = d.to as SuggestionDraft["to"] | string | string[] | null | undefined;
+  const to = !rawTo
+    ? ""
+    : typeof rawTo === "string"
+      ? rawTo.trim()
+      : Array.isArray(rawTo)
+        ? rawTo.filter(Boolean).join(", ")
+        : rawTo.address
+          ? `${rawTo.name ? `${rawTo.name} <${rawTo.address}>` : rawTo.address}`
+          : rawTo.name ?? "";
+  return [to ? `To: ${to}` : null, `Subject: ${d.subject ?? ""}`, "", d.body ?? ""].filter((l) => l !== null).join("\n");
 }
 
 /** The draft as a lifted mail sheet: who it goes to, its subject and body; copied whole, never sent from here. */
@@ -121,9 +130,10 @@ function Draft({ draft }: { draft: SuggestionDraft }) {
 }
 
 /** A card's headline as the rest of the app says it: "PO 106001 is 134 days late", never "106001 is" or "PO100095 is". */
-export function suggestionHeadline(s: Pick<ProactiveSuggestion, "headline" | "subject">): string {
-  const h = readable(s.headline).replace(/\b(PO|SO)(?=\d{3,}\b)/g, "$1 ");
-  return /^PurchaseOrder$/.test(s.subject.type) && /^\d{4,}\b/.test(h) ? `PO ${h}` : h;
+export function suggestionHeadline(s: Pick<ProactiveSuggestion, "headline" | "subject"> & { title?: string }): string {
+  const raw = s.headline ?? s.title ?? s.subject?.label ?? "";
+  const h = readable(raw).replace(/\b(PO|SO)(?=\d{3,}\b)/g, "$1 ");
+  return /^PurchaseOrder$/.test(s.subject?.type ?? "") && /^\d{4,}\b/.test(h) ? `PO ${h}` : h;
 }
 
 const sentence = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);

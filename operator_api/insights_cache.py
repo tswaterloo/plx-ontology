@@ -357,6 +357,16 @@ def door_stamp(connect: Callable[[], Any], schema: str = "biz") -> Callable[[], 
     return SharedRead(read)
 
 
+class _PoolJob:
+    """One queued unit of work in ``_PriorityPool``; ``claimed`` guarantees at-most-once
+    execution even when the job is promoted to a higher priority before a worker starts it."""
+    __slots__ = ("fut", "fn", "args", "claimed")
+
+    def __init__(self, fut: Future, fn: Callable[..., Any], args: tuple[Any, ...]) -> None:
+        self.fut, self.fn, self.args = fut, fn, args
+        self.claimed = False
+
+
 class _PriorityPool:
     """Small daemon worker pool ordering background insight reads by priority so a tile
     actively requested by a user (e.g. planner_open on Team/Insights) jumps ahead of
@@ -367,6 +377,7 @@ class _PriorityPool:
         self._lock = threading.Lock()
         self._seq = 0
         self._closed = False
+        self._by_future: dict[Future, _PoolJob] = {}
         self._workers: list[threading.Thread] = []
         for idx in range(max(1, max_workers)):
             t = threading.Thread(target=self._loop, name=f"{thread_name_prefix}-{idx}", daemon=True)
@@ -375,31 +386,51 @@ class _PriorityPool:
 
     def submit(self, fn: Callable[..., Any], *args: Any, priority: int = 1) -> Future:
         fut: Future = Future()
+        job = _PoolJob(fut, fn, args)
         with self._lock:
             if self._closed:
                 raise RuntimeError("cannot schedule new futures after shutdown")
             self._seq += 1
-            self._jobs.put((priority, self._seq, (fut, fn, args)))
+            self._by_future[fut] = job
+            self._jobs.put((priority, self._seq, job))
         return fut
+
+    def promote(self, fut: Future, priority: int = 0) -> bool:
+        """Promote an already-queued, not-yet-started future to ``priority`` so an actively
+        requested tile jumps ahead of background warm-up work without running twice."""
+        with self._lock:
+            if self._closed:
+                return False
+            job = self._by_future.get(fut)
+            if job is None or job.claimed:
+                return False
+            self._seq += 1
+            self._jobs.put((priority, self._seq, job))
+            return True
 
     def _loop(self) -> None:
         while True:
-            _prio, _seq, item = self._jobs.get()
-            if item is None:
+            _prio, _seq, job = self._jobs.get()
+            if job is None:
                 return
-            fut, fn, args = item
-            if not fut.set_running_or_notify_cancel():
+            with self._lock:
+                if job.claimed:
+                    continue
+                job.claimed = True
+                self._by_future.pop(job.fut, None)
+            if not job.fut.set_running_or_notify_cancel():
                 continue
             try:
-                fut.set_result(fn(*args))
+                job.fut.set_result(job.fn(*job.args))
             except BaseException as exc:  # noqa: BLE001 - handed to the future
-                fut.set_exception(exc)
+                job.fut.set_exception(exc)
 
     def shutdown(self, wait: bool = True) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            self._by_future.clear()
             for _ in self._workers:
                 self._seq += 1
                 self._jobs.put((99, self._seq, None))
@@ -453,12 +484,22 @@ class Keeper:
         return 1
 
     def _submit(self, reader: Any, key: tuple, sql: str, *, urgent: bool = False) -> Optional[Future]:
-        """Queue one read of (key, sql) unless one is queued or running already (None)."""
+        """Queue one read of (key, sql) unless one is queued or running already (None).
+        When ``urgent`` is requested for a tile already waiting in ``_PriorityPool``, promote
+        it to priority 0 so visible tiles jump ahead of background warm-up work."""
         slot = (key, sql)
+        existing: Optional[Future] = None
+        already = False
         with self._lock:
             if slot in self._pending:
-                return None
-            self._pending.add(slot)
+                already = True
+                existing = self._pending_futures.get(slot)
+            else:
+                self._pending.add(slot)
+        if already:
+            if urgent and existing is not None and isinstance(self._pool, _PriorityPool):
+                self._pool.promote(existing, priority=0)
+            return None
         pool = self.pool()
         try:
             if isinstance(pool, _PriorityPool):

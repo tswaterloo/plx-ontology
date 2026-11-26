@@ -38,17 +38,17 @@ export function firedKinds(reg: AlertKinds | null, briefing: Briefing | null): F
     const asOfs = groups.map((g) => g.as_of).filter((a): a is string => !!a).sort();
     out.push({
       kind: k.kind,
-      label: k.label,
+      label: k.label ?? (k as { title?: string }).title ?? k.kind ?? "",
       on: types.some((t) => t.default === "on"),
       count,
       fresh: groups.reduce((n, g) => n + g.new_since_visit, 0),
       top: (briefing.items ?? []).filter((i) => (i.alert_kind ?? kindOf.get(i.event_type)) === k.kind),
-      rest: groups.filter((g) => g.count > g.in_top).map((g) => ({ type: g.event_type, label: g.label, more: g.count - g.in_top })),
+      rest: groups.filter((g) => g.count > g.in_top).map((g) => ({ type: g.event_type, label: g.label ?? (g as { title?: string }).title ?? g.event_type ?? "", more: g.count - g.in_top })),
       asOf: asOfs[0] ?? null,
       unavailable,
     });
   }
-  return out.sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  return out.sort((a, b) => b.count - a.count || (a.label ?? "").localeCompare(b.label ?? ""));
 }
 
 function ItemRow({ it }: { it: BriefingItem }) {
@@ -127,11 +127,15 @@ export function FiredKind({ f }: { f: Fired }) {
         </p>
       ))}
       {f.top.length > 0 && <ul className="mt-1">{f.top.map((it) => <ItemRow key={it.id} it={it} />)}</ul>}
-      {f.rest.map((r) => (
-        <div key={r.type} className="mt-1 pl-[22px] text-[12px]">
-          <TypeItems type={r.type} count={r.more} skip={f.top.filter((t) => t.event_type === r.type).map((t) => t.id)} more={`${f.top.length ? `${r.more} more` : `Show ${r.more === 1 ? "the 1" : `all ${r.more}`}`}: ${r.label.toLowerCase()}`} />
-        </div>
-      ))}
+      {f.rest.map((r) => {
+        const restLabel = (r?.label ?? (r as { title?: string })?.title ?? r?.type ?? "").toLowerCase();
+        const base = f.top.length ? `${r.more} more` : `Show ${r.more === 1 ? "the 1" : `all ${r.more}`}`;
+        return (
+          <div key={r.type} className="mt-1 pl-[22px] text-[12px]">
+            <TypeItems type={r.type} count={r.more} skip={f.top.filter((t) => t.event_type === r.type).map((t) => t.id)} more={restLabel ? `${base}: ${restLabel}` : base} />
+          </div>
+        );
+      })}
     </section>
   );
 }

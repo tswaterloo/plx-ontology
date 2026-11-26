@@ -12,7 +12,10 @@ vi.mock("@/components/shell", async (orig) => ({
   loadLate: () => Promise.resolve([]),
   loadHome: () => Promise.resolve({ examples: [], recent_questions: [], freshness: { sources: [] } }),
 }));
-vi.mock("@/components/ask-box", () => ({ AskBox: () => <div data-testid="ask-box" /> }));
+vi.mock("@/components/ask-box", async (orig) => ({
+  ...(await orig<typeof import("@/components/ask-box")>()),
+  AskBox: () => <div data-testid="ask-box" />,
+}));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("c=559a23fcd1231cb2"), useRouter: () => ({ replace: () => undefined, push: () => undefined }) }));
 vi.mock("@/lib/thread", () => ({
   askUrlKey: () => "",

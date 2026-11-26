@@ -210,8 +210,15 @@ class Classes(Base):
 
     # ---- (d) the table in the database, and its CHECKs
     def test_the_migration_seed_is_the_modules_table(self):
-        text = (ROOT / "operating/pg/migrations/0067_write_classes_seed.sql").read_text("utf-8")
-        self.assertIn(wc.migration_sql(), text)
+        mig_dir = ROOT / "operating/pg/migrations"
+        combined = "\n".join(
+            (mig_dir / name).read_text("utf-8")
+            for name in ("0067_write_classes_seed.sql", "0088_write_classes_sharepoint_studio.sql")
+        )
+        for line in wc.migration_sql().splitlines():
+            stripped = line.strip().rstrip(",;")
+            if stripped.startswith("('"):
+                self.assertIn(stripped, combined)
 
 
 @unittest.skipIf(psycopg is None, "psycopg not installed")
@@ -226,7 +233,7 @@ class Journal(unittest.TestCase):
         cls.addClassCleanup(cls.pg.close)
         for stmt in ar.ddl():
             cls.pg.execute(stmt)
-        for name in ("0063_assist_work.sql", "0067_write_classes_seed.sql"):
+        for name in ("0063_assist_work.sql", "0067_write_classes_seed.sql", "0088_write_classes_sharepoint_studio.sql"):
             cls.pg.execute((MIGRATIONS_DIR / name).read_text("utf-8"))
 
     def row(self, **over) -> None:

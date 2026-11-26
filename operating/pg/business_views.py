@@ -2253,26 +2253,52 @@ import sys as _sys
 if __name__ == "__main__":
     _sys.modules.setdefault("operating.pg.business_views", _sys.modules[__name__])
 
-# The products, batches, stock and purchasing views (their own module, registered here in
-# this order after the sales views); their names stay readable as this module's.
-from operating.pg import business_views_supply as _supply  # noqa: E402,F401
-# every Sage AR document with its paid date (receivables of a past day)
-from operating.pg import business_views_ar as _ar  # noqa: E402,F401
-# typed customer shipments with linked sales order required_date and on_time verdict
-from operating.pg import business_views_shipments as _shipments  # noqa: E402,F401
-# typed supply-chain views: receipts, assembly_orders, lots (PLAN-A18 Part 2)
-from operating.pg import business_views_chain as _chain  # noqa: E402,F401
-# typed chain views Part 3: receipt_lines, quotes, freight_bills (PLAN-A18 Part 3)
-from operating.pg import business_views_chain_extra as _chain_extra  # noqa: E402,F401
-# the org chart (staff), read from the org capture's store beside the staff Persons
-from operating.pg import business_staff as _staff  # noqa: E402,F401
-# registered last, after the business views of their rank (stale_views orders them so):
-# the communications tables (emails, Teams, meetings, documents) register into VIEWS too
-from operating.pg import business_comms as _comms  # noqa: E402,F401
-# the company (party) and chain columns of the customer views (contract C7)
-from operating.pg import parties as _parties  # noqa: E402
+_registering = False
 
-_parties.declare_columns(VIEWS)
+
+def _register_submodules() -> None:
+    """Import every business-view submodule once its prerequisites have finished loading so
+    importing any submodule or running ``python3 -m operating.pg.business_views`` in any
+    order never fails with a circular-import error."""
+    global _registering, _supply, _ar, _shipments, _chain, _chain_extra, _staff, _comms, _parties
+    if _registering:
+        return
+    _registering = True
+    try:
+        # The products, batches, stock and purchasing views (their own module, registered here
+        # in this order after the sales views); their names stay readable as this module's.
+        from operating.pg import business_views_supply as _supply  # noqa: E402,F401
+        if not hasattr(_supply, "PO_PROPS"):
+            return
+        # every Sage AR document with its paid date (receivables of a past day)
+        from operating.pg import business_views_ar as _ar  # noqa: E402,F401
+        if "receivable_documents" not in VIEWS:
+            return
+        # typed customer shipments with linked sales order required_date and on_time verdict
+        from operating.pg import business_views_shipments as _shipments  # noqa: E402,F401
+        if "shipments" not in VIEWS:
+            return
+        # typed supply-chain views: receipts, assembly_orders, lots (PLAN-A18 Part 2)
+        from operating.pg import business_views_chain as _chain  # noqa: E402,F401
+        if not hasattr(_chain, "_single_linked"):
+            return
+        # typed chain views Part 3: receipt_lines, quotes, freight_bills (PLAN-A18 Part 3)
+        from operating.pg import business_views_chain_extra as _chain_extra  # noqa: E402,F401
+        if not hasattr(_chain_extra, "_freight_bills"):
+            return
+        # the org chart (staff), read from the org capture's store beside the staff Persons
+        from operating.pg import business_staff as _staff  # noqa: E402,F401
+        # registered last, after the business views of their rank (stale_views orders them so):
+        # the communications tables (emails, Teams, meetings, documents) register into VIEWS too
+        from operating.pg import business_comms as _comms  # noqa: E402,F401
+        # the company (party) and chain columns of the customer views (contract C7)
+        from operating.pg import parties as _parties  # noqa: E402
+        _parties.declare_columns(VIEWS)
+    finally:
+        _registering = False
+
+
+_register_submodules()
 
 
 def product_things(rd: Reader) -> tuple[dict[str, Rec], dict[str, Thing]]:

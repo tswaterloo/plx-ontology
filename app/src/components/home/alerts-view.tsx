@@ -127,6 +127,7 @@ export function AlertsView() {
       <Toolbar
         pin="Alerts"
         heading
+        parent={{ label: "Home", href: "/" }}
         title={
           <>
             Alerts

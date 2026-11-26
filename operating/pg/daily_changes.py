@@ -40,7 +40,8 @@ from typing import Any, Sequence
 TABLE = "daily_changes"
 OBJECTS = "daily_changes_objects"
 MARK = "daily_changes_mark"
-CHUNK = 1_000_000
+CHUNK = 200_000
+REGROUP_CHUNK = 100_000
 ZONE = "America/New_York"
 DOC = ("What each system created, changed and removed per day, by kind of record (one row per "
        "day, system, object type and kind of access: SUM the counts over the rows you read to "
@@ -74,9 +75,11 @@ SELECT (r.since::timestamptz AT TIME ZONE '{ZONE}')::date, r.object_id, count(*)
 FROM ontology.object_removals r WHERE r.since IS NOT NULL GROUP BY 1, 2
 ON CONFLICT (day, object_id) DO UPDATE SET removed = excluded.removed"""
 
-# the groups of what every counted object is NOW (an object the store lacks: the owner's)
-_GROUPS = f"""
-CREATE TEMP TABLE dc_new ON COMMIT DROP AS
+# the groups of one bounded (day, object_id) slice of daily_changes_objects, aggregated by
+# what each object is NOW (an object the store lacks: the owner's). Slicing keeps every join
+# and hash aggregate well under temp_file_limit (4 GB).
+_SLICE_GROUPS = """
+INSERT INTO dc_part
 SELECT s.day,
        coalesce(split_part(regexp_replace(o.binding_id, '^gen[.]', ''), '.', 1), 'unknown') AS system,
        coalesce(o.object_type, 'unknown') AS object_type,
@@ -85,8 +88,9 @@ SELECT s.day,
        (o.object_id IS NULL OR EXISTS (SELECT 1 FROM ontology.people_excluded_objects pe
                                        WHERE pe.object_id = s.object_id)) AS owner_only,
        sum(s.created)::bigint AS created, sum(s.changed)::bigint AS changed,
-       sum(s.removed)::bigint AS removed
-FROM biz.{OBJECTS} s LEFT JOIN ontology.objects o ON o.object_id = s.object_id
+       sum(s.removed)::bigint AS removed,
+       count(*) FILTER (WHERE o.object_id IS NULL)::bigint AS orphan_rows
+FROM dc_slice s LEFT JOIN ontology.objects o ON o.object_id = s.object_id
 LEFT JOIN LATERAL (SELECT v.markings FROM ontology.object_versions v
                    WHERE v.object_id = s.object_id AND v.superseded_at IS NULL LIMIT 1) cv ON true
 GROUP BY 1, 2, 3, 4, 5, 6"""
@@ -132,14 +136,52 @@ def refresh_removed(write: Any) -> int:
                              ).fetchone()[0]
 
 
-def regroup(write: Any) -> dict[str, Any]:
+def regroup(write: Any, regroup_chunk: int = REGROUP_CHUNK) -> dict[str, Any]:
     """The served table from the objects as they are now (module doc, step 2): rows that
     differ are deleted and inserted, classes decided from the current audience, markings and
-    exclusion set. Returns the counts of rows kept, removed and added and the orphans."""
+    exclusion set. Walks ``daily_changes_objects`` in PK-ordered slices of ``regroup_chunk``
+    rows so no join or sort spills past ``temp_file_limit``. Returns the counts of rows kept,
+    removed and added and the orphans."""
     from operating.pg import business_views_access as acc
     from operating.pg.access_classes import OWNER_KEY
     with write.transaction():
-        write.execute(_GROUPS, {"owner": OWNER_KEY})
+        write.execute(
+            "CREATE TEMP TABLE dc_slice (day date, object_id text, created integer, "
+            "changed integer, removed integer) ON COMMIT DROP")
+        write.execute(
+            "CREATE TEMP TABLE dc_part (day date, system text, object_type text, "
+            "audience_key text, markings text, owner_only boolean, created bigint, "
+            "changed bigint, removed bigint, orphan_rows bigint) ON COMMIT DROP")
+        cursor: tuple[Any, str] | None = None
+        while True:
+            write.execute("TRUNCATE dc_slice")
+            if cursor is None:
+                inserted = write.execute(
+                    f"INSERT INTO dc_slice SELECT day, object_id, created, changed, removed "
+                    f"FROM biz.{OBJECTS} ORDER BY day, object_id LIMIT %s",
+                    (regroup_chunk,)).rowcount
+            else:
+                inserted = write.execute(
+                    f"INSERT INTO dc_slice SELECT day, object_id, created, changed, removed "
+                    f"FROM biz.{OBJECTS} WHERE (day, object_id) > (%s, %s) "
+                    f"ORDER BY day, object_id LIMIT %s",
+                    (cursor[0], cursor[1], regroup_chunk)).rowcount
+            if not inserted:
+                break
+            cursor = write.execute(
+                "SELECT day, object_id FROM dc_slice ORDER BY day DESC, object_id DESC LIMIT 1"
+            ).fetchone()
+            write.execute("ANALYZE dc_slice")
+            write.execute(_SLICE_GROUPS, {"owner": OWNER_KEY})
+            if inserted < regroup_chunk:
+                break
+        orphans = int(write.execute(
+            "SELECT coalesce(sum(orphan_rows), 0) FROM dc_part").fetchone()[0])
+        write.execute(
+            "CREATE TEMP TABLE dc_new ON COMMIT DROP AS "
+            "SELECT day, system, object_type, audience_key, markings, owner_only, "
+            "sum(created)::bigint AS created, sum(changed)::bigint AS changed, "
+            "sum(removed)::bigint AS removed FROM dc_part GROUP BY 1, 2, 3, 4, 5, 6")
         pats = write.execute("SELECT DISTINCT audience_key, markings, owner_only FROM dc_new"
                              ).fetchall()
         raw = {}
@@ -153,9 +195,6 @@ def regroup(write: Any) -> dict[str, Any]:
         with write.cursor() as cur:
             cur.executemany("INSERT INTO dc_pat VALUES (%s, %s, %s, %s)",
                             [(a, m, o, ids[acc._key(p)]) for (a, m, o), p in raw.items()])
-        orphans = write.execute(
-            f"SELECT count(*) FROM biz.{OBJECTS} s WHERE NOT EXISTS (SELECT 1 FROM "
-            "ontology.objects o WHERE o.object_id = s.object_id)").fetchone()[0]
         write.execute("CREATE TEMP TABLE dc_full ON COMMIT DROP AS SELECT n.*, p.access_class, "
                       "0 AS col_class, "
                       "'daily_changes:' || n.day || ':' || n.system || ':' || "
@@ -211,7 +250,7 @@ def ensure_view(write: Any) -> bool:
     return True
 
 
-def run(write: Any, chunk: int = CHUNK) -> dict[str, Any]:
+def run(write: Any, chunk: int = CHUNK, regroup_chunk: int = REGROUP_CHUNK) -> dict[str, Any]:
     """Advance to the head, recompute the removals and the groups, make the guarded view."""
     out: dict[str, Any] = {"versions": 0, "chunks": 0}
     while True:
@@ -222,7 +261,7 @@ def run(write: Any, chunk: int = CHUNK) -> dict[str, Any]:
         if not got["versions"] or got["through"] >= got["head"]:
             break
     out["removal_objects"] = refresh_removed(write)
-    out.update(regroup(write))
+    out.update(regroup(write, regroup_chunk=regroup_chunk))
     out["view"] = ensure_view(write)
     return out
 

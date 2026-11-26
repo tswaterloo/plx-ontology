@@ -187,6 +187,43 @@ describe("Assist workflows", () => {
     expect(values).not.toContain("approval_arrived");
   });
 
+  it("embeds the interactive dot-grid workflow pipeline canvas and guards mail/teams sender templates against 422", async () => {
+    state.workflows = [wf("w1")];
+    state.created = [];
+    state.templates = [
+      {
+        template_id: "mail-from-sender",
+        name: "Draft replies to key supplier mail",
+        description: "Trigger when mail arrives from a named sender.",
+        trigger_kind: "event",
+        trigger: { event: "mail_from" },
+        trigger_summary: "When new mail arrives",
+        instruction: "Draft reply",
+      },
+    ];
+    state.routines = [];
+
+    render(<AssistWorkflowsView />);
+    expect(await screen.findByTestId("workflow-dot-grid-section")).toBeInTheDocument();
+    expect(screen.getByTestId("dot-grid-canvas")).toBeInTheDocument();
+    expect(screen.getByTestId("workflow-node-inspector")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Templates/ }));
+    const useBtn = screen.getByRole("button", { name: "Use template" });
+    expect(useBtn).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText(/Subject for Draft replies to key supplier mail/i), {
+      target: { value: "PO 106" },
+    });
+    expect(useBtn).not.toBeDisabled();
+    fireEvent.click(useBtn);
+    await waitFor(() => expect(state.created).toHaveLength(1));
+    expect(state.created[0]).toEqual({
+      template_id: "mail-from-sender",
+      trigger: { event: "mail_from", subject: "PO 106" },
+    });
+  });
+
   it("hides mined routines quietly on 403 and shows a calm note on Workflows tab for read-only sessions", async () => {
     const apiMod = await import("@/lib/api");
     const { ApiError } = await import("@/lib/errors");

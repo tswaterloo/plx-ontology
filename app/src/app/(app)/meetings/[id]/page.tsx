@@ -8,9 +8,9 @@ import { Toolbar } from "@/components/ui/toolbar";
 export default function MeetingFollowUpPage() {
   const params = useParams<{ id: string }>();
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar title="Meeting follow-up" parent={{ label: "Meetings", href: "/meetings?view=follow-ups" }} />
-      <div className="p-5">
+      <div className="mx-auto w-full max-w-[1160px] px-4 py-5 sm:px-6">
         <MeetingFollowUpPanel meetingId={decodeURIComponent(params.id)} />
       </div>
     </div>

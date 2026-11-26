@@ -238,10 +238,14 @@ class ScreensMixin:
         from . import home_needs
         feedback_store = feedback_store or getattr(self, "feedback_store", None)
 
+        item_state_path = home_needs.item_state_store(self).path
+        item_state_wal = Path(str(item_state_path) + "-wal") if item_state_path is not None else None
         files = tuple(
             p for p in (
                 getattr(feedback_store, "directory", None),
                 gap_list.path(),
+                item_state_path,
+                item_state_wal if item_state_wal is not None and item_state_wal.exists() else None,
             )
             if p
         )

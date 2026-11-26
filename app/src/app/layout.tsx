@@ -1,20 +1,19 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
-import { Geist_Mono, Host_Grotesk } from "next/font/google";
+import { Inter, JetBrains_Mono, Plus_Jakarta_Sans } from "next/font/google";
 import { AuthProvider } from "@/components/auth";
 import { StyleNonce } from "@/components/nonce";
 import { ThemeProvider } from "@/components/theme";
 import { EARLY_READS_SCRIPT, OS_BOOT_SCRIPT, TICKET_BOOT_SCRIPT } from "@/lib/ticket-boot";
 import "./globals.css";
 
-// Host Grotesk: a crisp grotesque with tabular figures, at home at 12 to 13 px in a dense app.
-// The variable font, so Windows can set body text a touch heavier (globals.css). Served from
-// the app itself (next/font fetches it at build time), so the CSP's font-src 'self' holds.
-// Geist Mono sets the wordmark and every data figure (the num utility). Its Latin subset only,
-// fetched and served the same way: the geist package's file holds every script (71 KB on
-// every first visit after a deploy); anything outside Latin falls back to the system mono.
-const sans = Host_Grotesk({ subsets: ["latin"], variable: "--font-host", display: "swap" });
-const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono", display: "swap" });
+// Plus Jakarta Sans (--font-jakarta -> --font-display): architectural display headings (h1, h2, wordmark).
+// Inter (--font-host -> --font-sans): crisp neo-grotesk UI/body text with optical alternates.
+// JetBrains Mono (--font-geist-mono -> --font-mono): SQL, code, and IDs.
+// Served from the app itself (next/font fetches at build time) so CSP font-src 'self' holds.
+const display = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["500", "600", "700"], variable: "--font-jakarta", display: "swap" });
+const sans = Inter({ subsets: ["latin"], weight: ["400", "500", "600", "700"], variable: "--font-host", display: "swap" });
+const mono = JetBrains_Mono({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-geist-mono", display: "swap" });
 
 export const metadata: Metadata = {
   title: { default: "PLX Workbench", template: "%s · PLX Workbench" },
@@ -29,8 +28,8 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f7f9" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0c0e" },
+    { media: "(prefers-color-scheme: light)", color: "#fafafa" },
+    { media: "(prefers-color-scheme: dark)", color: "#0f1012" },
   ],
 };
 
@@ -39,7 +38,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // proxy's fresh CSP nonce (src/proxy.ts).
   const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
-    <html lang="en-CA" suppressHydrationWarning className={`${sans.variable} ${mono.variable}`}>
+    <html lang="en-CA" suppressHydrationWarning className={`${display.variable} ${sans.variable} ${mono.variable}`}>
       <head>
         {/* Removes an access link's #ticket= before the router records the URL. */}
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: TICKET_BOOT_SCRIPT }} />
@@ -48,6 +47,20 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: EARLY_READS_SCRIPT }} />
       </head>
       <body>
+        <svg aria-hidden="true" className="pointer-events-none fixed h-0 w-0 overflow-hidden">
+          <defs>
+            <filter id="plx-liquid-glass" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
+              <feTurbulence type="fractalNoise" baseFrequency="0.012 0.018" numOctaves="2" seed="7" result="noise" />
+              <feGaussianBlur in="noise" stdDeviation="2.5" result="softNoise" />
+              <feDisplacementMap in="SourceGraphic" in2="softNoise" scale="14" xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+            <filter id="plx-liquid-lens" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
+              <feTurbulence type="fractalNoise" baseFrequency="0.014 0.02" numOctaves="2" seed="11" result="lensNoise" />
+              <feGaussianBlur in="lensNoise" stdDeviation="2" result="softLensNoise" />
+              <feDisplacementMap in="SourceGraphic" in2="softLensNoise" scale="8" xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+          </defs>
+        </svg>
         <StyleNonce nonce={nonce} />
         <ThemeProvider nonce={nonce}>
           <AuthProvider>{children}</AuthProvider>

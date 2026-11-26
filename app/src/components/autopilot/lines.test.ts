@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteParts, saidOnce } from "./lines";
+import { cleanHeadline, formatSender, noteParts, saidOnce, threadTopicKey } from "./lines";
 
 describe("A card says each thing once", () => {
   it("leaves out the quote and next step that repeat the summary, keeps what adds to it", () => {
@@ -31,5 +31,14 @@ describe("A card says each thing once", () => {
       text: "QC hold or fail",
       labels: ["This is on Pat's list, not yours. Only you can see this."],
     });
+  });
+  it("cleans RE:/Fwd: prefixes and robotic lead-ins and formats senders cleanly", () => {
+    expect(cleanHeadline("RE: Fwd: Workbench instant Teams updates")).toBe("Workbench instant Teams updates");
+    expect(cleanHeadline("You said: Send updated pricing sheet")).toBe("Send updated pricing sheet");
+    expect(cleanHeadline("No answer yet from Ricardo: PO 10442 ETA")).toBe("PO 10442 ETA");
+    expect(threadTopicKey("RE: Workbench instant Teams updates")).toBe(threadTopicKey("Workbench instant Teams updates"));
+    expect(formatSender("Taylor Valton <taylorvalton@gmail.com>")).toEqual({ name: "Taylor Valton", email: "taylorvalton@gmail.com" });
+    expect(formatSender("dana.buyer@customer.example")).toEqual({ name: "Dana Buyer", email: "dana.buyer@customer.example" });
+    expect(formatSender("taylorvalton@gmail.com")).toEqual({ name: "taylorvalton", email: "taylorvalton@gmail.com" });
   });
 });

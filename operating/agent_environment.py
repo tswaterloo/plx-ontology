@@ -49,18 +49,18 @@ def telemetry_name(name: str) -> bool:
             and "HEADERS" not in name and "CLIENT_KEY" not in name)
 
 
-def agent_environment(environ: Mapping[str, str]) -> dict[str, str]:
+def agent_environment(environ: Mapping[str, str], *, caller: str | None = None) -> dict[str, str]:
     """The environment of an agent session: ``ENV_ALLOW`` and ``LC_*`` only, the login
     from ``TOKEN_ALIAS`` when the canonical name is absent or empty, and the metering
-    settings when telemetry is on (tagged with the calling module)."""
+    settings when telemetry is on (tagged with the calling module or explicit ``caller``)."""
     env = {name: value for name, value in environ.items()
            if name in ENV_ALLOW or name.startswith("LC_")}
     if not env.get(TOKEN) and environ.get(TOKEN_ALIAS):
         env[TOKEN] = environ[TOKEN_ALIAS]
     if str(environ.get(TELEMETRY) or "").strip() not in ("", "0", "false"):
         env.update({name: value for name, value in environ.items() if telemetry_name(name)})
-        caller = sys._getframe(1).f_globals.get("__name__") or "?"
-        tag = "plx.caller=" + "".join(c if c.isalnum() or c in "._-" else "_" for c in caller)
+        tag_caller = caller or (sys._getframe(1).f_globals.get("__name__") or "?")
+        tag = "plx.caller=" + "".join(c if c.isalnum() or c in "._-" else "_" for c in tag_caller)
         kept = [p.strip() for p in str(environ.get(RESOURCE) or "").split(",")
                 if p.strip() and not p.strip().startswith("plx.caller=")]
         env[RESOURCE] = ",".join(kept + [tag])

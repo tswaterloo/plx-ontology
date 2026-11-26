@@ -823,7 +823,10 @@ class SqlTool:
         depth = cs.depth_said(args.get("query") if words else None, attach_depth,
                               later=cur is not None,
                               attachments="graph_mail" in wanted and "emails" in views
-                              and bool(self._files_reader(actor)))
+                              and bool(self._files_reader(actor)),
+                              more=more,
+                              exact_complete=bool(not more and (attach_next or meaning_next)),
+                              exact_returned=len(rows))
         if depth:
             searched["depth"] = depth
         out = {"documents": documents,
@@ -847,10 +850,10 @@ class SqlTool:
         if more:
             # a run of refused files longer than a cursor skips: stopped, said, no cursor
             out["completeness"]["reason"] = "page_cap" if nxt else "withheld_run"
-            if words and cur is None and not args.get("participant"):
+            if cur is None and (words or who is not None):
                 # how many matched in all (A1a), when one statement can count them
                 total = self._comms_count(conn, settings, guarded, actor, views, q, since,
-                                          until)
+                                          until, who=who)
                 if total is not None:
                     out["completeness"]["total"] = total
         return out
@@ -888,7 +891,7 @@ class SqlTool:
                 "completeness": {"complete": not more, "truncated": more,
                                  "returned": len(rows),
                                  "next_cursor": cs.attach_cursor(rows[-1]) if more else None,
-                                 **({"reason": "page_cap"} if more else {})}}
+                                 **({"reason": "attachments_continue"} if more else {})}}
 
     def _meaning_page(self, conn: Any, settings: Any, guarded: str, actor: Any,
                       args: dict[str, Any], words: Sequence[str], since: Any, until: Any,
@@ -939,7 +942,7 @@ class SqlTool:
                                  "next_cursor": cs.meaning_cursor(
                                      few, rest["pos"], rest.get("words_only", False))
                                  if more else None,
-                                 **({"reason": "page_cap"} if more else {})}}
+                                 **({"reason": "meaning_continue"} if more else {})}}
 
     def _comms_attached(self, conn: Any, settings: Any, guarded: str, actor: Any, q: str,
                         who: Any, since: Any, until: Any, room: int, seen: set,
@@ -1299,6 +1302,7 @@ class SqlTool:
             raise ToolError("invalid_input", "near: up to 16 words")
 
         shared: list[dict[str, Any]] = []
+        shared_more = [False]
 
         def work(pg: Any) -> Any:
             views = cs.present(pg, guarded, opening=True)
@@ -1310,7 +1314,9 @@ class SqlTool:
                               {"h": handle}).fetchall()
             if rows:
                 if rows[0][0] == "teams_messages":
-                    shared.extend(self._shared_files(pg, guarded, handle))
+                    found_files, trunc_files = self._shared_files(pg, guarded, handle)
+                    shared.extend(found_files)
+                    shared_more[0] = trunc_files
                 return rows
             person = sql_views.person_schema()
             if guarded != person:   # the reader may read it, the AI may not
@@ -1342,46 +1348,55 @@ class SqlTool:
         out = cs.opened(rows, offset=offset, most=most, near=tuple(near))
         if shared:
             out["shared_files"] = shared
+            if shared_more[0]:
+                out["shared_files_truncated"] = True
         return out
 
     SHARED_FILES_MAX = 20
 
-    def _shared_files(self, pg: Any, guarded: str, handle: str) -> list[dict[str, Any]]:
+    def _shared_files(self, pg: Any, guarded: str, handle: str) -> tuple[list[dict[str, Any]], bool]:
         """The files a Teams message shares, linked by exact address
         (``operating.pg.teams_file_links``), each only when the reader's own guarded message
         AND file views show their rows (``<guarded>.teams_message_files``): a reader who may
-        not read a file sees none. No such view (not built here): none, never an error."""
+        not read a file sees none. Returns ``(files, truncated)`` so any cap is explicit."""
         from operating.pg import comms_search as cs
         from operating.pg import teams_file_links as tfl
         if pg.execute("SELECT to_regclass(%s)", (f"{guarded}.{tfl.VIEW}",)).fetchone()[0] is None:
-            return []
+            return [], False
         rows = pg.execute(
             f"SELECT file_handle, file_name, file_path, mime_type, via FROM {guarded}.{tfl.VIEW} "
             "WHERE message_handle = %(h)s ORDER BY file_name, file_handle LIMIT %(n)s",
-            {"h": handle, "n": self.SHARED_FILES_MAX}).fetchall()
-        return [{"citation": fh, "name": cs._text(name, fh, 300) if name else None,
-                 "path": cs._text(path, fh, 500) if path else None,
-                 "mime_type": mime, "linked_by": via}
-                for fh, name, path, mime, via in rows]
+            {"h": handle, "n": self.SHARED_FILES_MAX + 1}).fetchall()
+        truncated = len(rows) > self.SHARED_FILES_MAX
+        rows = rows[:self.SHARED_FILES_MAX]
+        return ([{"citation": fh, "name": cs._text(name, fh, 300) if name else None,
+                  "path": cs._text(path, fh, 500) if path else None,
+                  "mime_type": mime, "linked_by": via}
+                 for fh, name, path, mime, via in rows], truncated)
 
     def _comms_count(self, conn: Any, settings: Mapping[str, str], guarded: str, actor: Any,
-                     views: Sequence[str], q: Any, since: Any, until: Any) -> Optional[int]:
-        """Every row of ``views`` the reader may read holding every query word in the dates
-        (``comms_search.count_sql``, one statement); None (logged) when
-        it cannot count: files among the views (each is re-gated after the statement), or
-        the statement failed."""
+                     views: Sequence[str], q: Any, since: Any, until: Any,
+                     who: Any = None) -> Optional[int]:
+        """Every row of ``views`` the reader may read matching the query and/or party in
+        the dates (``comms_search.count_sql``, one statement); None (logged) when it cannot
+        count: files among the views (each is re-gated after the statement), or the
+        statement failed."""
         from operating.pg import comms_search as cs
         if any(v in cs.SEARCH_ONLY for v in views):
             return None
-        if not cs.count_sql(views, guarded=guarded, biz=bv.SCHEMA, since=since is not None,
-                            until=until is not None):
-            return None
+        party_kind = who.kind if who is not None else None
 
         def work(pg: Any, *_: Any) -> Any:
-            side = cs.sidecar(pg)
+            side = cs.sidecar(pg) if q is not None else {}
+            tm = "teams_messages" in views and cs.teams_members_ready(pg, guarded)
             sql = cs.count_sql(views, guarded=guarded, biz=bv.SCHEMA, since=since is not None,
-                               until=until is not None, side=frozenset(side))
-            return pg.execute(sql, {"q": q, "since": since, "until": until,
+                               until=until is not None, side=frozenset(side),
+                               query=q is not None, party_kind=party_kind,
+                               teams_members=tm)
+            if not sql:
+                return None
+            return pg.execute(sql, {"q": q, "party": who.value if who is not None else None,
+                                    "since": since, "until": until,
                                     **{n: v for one in side.values() for n, v in one.items()}}
                               ).fetchone()[0]
         try:

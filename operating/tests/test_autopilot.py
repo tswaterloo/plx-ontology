@@ -754,12 +754,17 @@ class ChatAskModel(unittest.TestCase):
                                       '{"n": 1, "ask": "YES", "why": "request!"}]'})
         got, calls = self.run_with(reply)
         self.assertEqual(got, [(True, "request"), (False, "closer")])
+        from operating import chat_ask_model as cam, humanize
         argv, kw = calls[0]
         self.assertEqual(argv[argv.index("--tools") + 1], "")
         self.assertEqual(argv[argv.index("--model") + 1], "haiku")
+        self.assertEqual(argv[argv.index("--system-prompt") + 1], cam.SYSTEM_PROMPT)
+        self.assertIn("--exclude-dynamic-system-prompt-sections", argv)
+        self.assertEqual(kw["cwd"], humanize.neutral_dir())
         self.assertEqual(kw["timeout"], 5)
         self.assertIn('"reader": "Oscar"', kw["input"])
         self.assertIn('"mentioned": true', kw["input"])
+        self.assertNotIn("You triage the workplace emails", kw["input"])
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN_X", kw["env"])
 
     def test_the_call_runs_the_absolute_binary_on_the_autopilots_own_config(self):

@@ -1307,6 +1307,26 @@ class HomeNeeds(_Model):
     reading: bool = _reading()
 
 
+class HomeItemStateRequest(_Model):
+    """Universal per-reader Home item state update (close/dismiss, snooze, or restore)."""
+    item_id: str = Field(min_length=1, max_length=500)
+    state: Literal["closed", "snoozed", "open"]
+    until: Optional[str] = Field(
+        None, max_length=64,
+        description="ISO timestamp when a snoozed item returns (defaults to +24h).")
+    reason: Optional[str] = Field(None, max_length=300)
+    matter_id: Optional[str] = Field(None, max_length=120)
+
+
+class HomeItemStateResponse(_Model):
+    """Result of a universal Home item state update."""
+    item_id: str
+    state: Literal["closed", "snoozed", "open"]
+    until: Optional[str] = None
+    at: str
+    propagated: bool = False
+
+
 class SupplierLate(_Model):
     supplier: str
     late: int = Field(ge=1)

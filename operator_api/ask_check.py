@@ -364,10 +364,11 @@ def line(claim: Mapping[str, Any]) -> str:
 def call_for(asker: Any) -> Callable[[str], Optional[str]]:
     """The one call, no tools and no time limit: ``claude -p`` on the Workbench login
     (``humanize.rewriter`` is the one such call: masked, ledgered, no tools and no settings),
-    ``MODEL_ENV``'s model."""
+    ``MODEL_ENV``'s model, with static ``TRACE_METHOD`` in ``--system-prompt``."""
     from operating import humanize
     return humanize.rewriter(binary=getattr(asker, "claude_bin", "claude") or "claude",
-                             model=model(), seconds=humanize.NO_LIMIT, feature=FEATURE)
+                             model=model(), seconds=humanize.NO_LIMIT, feature=FEATURE,
+                             system_prompt=TRACE_METHOD, caller="operator_api.ask_check")
 
 
 def _folded_claim(claim: Mapping[str, Any]) -> str:
@@ -402,25 +403,26 @@ def check(asker: Any, question: str, answer: str, parts: Sequence[Mapping[str, A
     ``printed`` is the same as the person reads it, default ``answer``). Any failure is
     ``not_checked`` with why, logged, never raised: the answer is shown either way."""
     started = time.monotonic()
-    call = call or getattr(asker, "_check_call", None)
-    if call is None and getattr(asker, "_agent_for", None) is not None:
+    custom = call or getattr(asker, "_check_call", None)
+    if custom is None and getattr(asker, "_agent_for", None) is not None:
         # an asker whose sessions are stand-ins (tests) and that names no check call: the
         # call would be a real model; not checked, and said so
         LOG.info(json.dumps({"ask_check_failed": "no check call"}))
         return Verdict("not_checked", [], 0.0, "no check call for this asker")
     why = None
     try:
-        call = call or call_for(asker)
+        fn = custom or call_for(asker)
         lines = facts(events, answer, files, today)
         shown = printed if printed is not None else answer
         pieces = reads(events, CONTEXT_CHARS)
         per_part: list[list[dict[str, Any]]] = []
         for number, piece in enumerate(pieces, 1):
-            prompt = TRACE_METHOD + "\n\n" + task(
+            body = task(
                 question, shown, parts, events, lines=lines, today=today, written=written,
                 part=piece, of=(number, len(pieces)))
+            prompt = (TRACE_METHOD + "\n\n" + body) if custom is not None else body
             for attempt in (1, 2):    # one retry of an unreadable reply
-                reply = call(prompt)
+                reply = fn(prompt)
                 if reply is None:
                     why = "no reply"
                     break

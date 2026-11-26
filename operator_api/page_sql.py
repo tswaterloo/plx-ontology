@@ -190,7 +190,7 @@ def late_po(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], *, sta
                      oid if rec else "")
     due = _iso(row.get("requested_date"))
     promised = _iso(row.get("promised_date"))
-    days = row.get("days_late")
+    days = _purchase_order_live_days_late(row)
     reason = (f"Needed by {due}, still open" if due else "Past its needed-by date")
     if promised and promised != due:
         reason += f"; supplier promised {promised}"
@@ -270,12 +270,126 @@ def _paged(name: str) -> bool:
     return rule is not None and not rule.comms
 
 
+_QC_HOLD_EVENT_TYPES = frozenset({
+    "lot_on_hold", "quality_hold", "quality_hold_aging", "qc_hold", "batch_hold",
+})
+_QC_HOLD_DEPARTMENTS = ("QUALITY", "QA", "QC", "LAB", "REGULATORY")
+_NON_LIVE_OPEN_STATES = frozenset({"nothing_outstanding", "stale", "copy_of_record"})
+_NOREPLY_WHY_RE = re.compile(  # guard-ok: RFC/operational automated no-reply addresses filtered out of reply-owed alerts
+    r"(?:^|[\s<(\"'])(?:no-?reply|do-?not-?reply|updates|newsletter|notifications?|"
+    r"microsoftstore|mailer-daemon|postmaster|bounces?)@",
+    re.IGNORECASE,
+)
+_COS_SYSTEM_RE = re.compile(  # guard-ok: operational system monitoring subjects from cos@petrasoap.com excluded from human reply alerts
+    r"\b(?:health|sync|monitor(?:ing)?|digest|cron|pipeline|ci\s+red|merge[- ]class|relay|"
+    r"stale\s+views?|unavailable|status\s+report|on\s+staging|storage[- ]finalize|"
+    r"gha\s+dispatch|work[- ]routing)\b",
+    re.IGNORECASE,
+)
+
+
 def routed(event_type: str, routing: Any) -> bool:
-    """Routed to this reader (``briefing.Routing``); unknown routing routes nothing."""
+    """Routed to this reader (``briefing.Routing``); unknown routing routes nothing.
+    Quality/QC holds route strictly to Quality/QA/QC/Lab/Regulatory, the company owner,
+    or Executive/fixture-everything routing -- never broadcast via Portal SUPER_ADMIN/ADMIN
+    to general IT or Production staff."""
     from operating import briefing as bf
     spec = bf.EVENT_TYPES.get(event_type)
     routes = getattr(routing, "routes", None)
-    return bool(spec and callable(routes) and routes(spec.get("departments") or ()))
+    if not (spec and callable(routes)):
+        return False
+    if event_type in _QC_HOLD_EVENT_TYPES:
+        if getattr(routing, "everything", False) or getattr(routing, "is_owner", False):
+            return True
+        depts = {str(d).strip().upper() for d in (getattr(routing, "departments", ()) or ())}
+        return bool(depts & (set(_QC_HOLD_DEPARTMENTS) | set(bf.EVERYTHING)))
+    depts = spec.get("departments") or ()
+    return bool(routes(depts))
+
+
+def _sales_order_non_live_handles(backend: Any, handles: Sequence[Any]) -> set[str]:
+    """Batch-read ``biz.sales_orders`` handles whose ``open_state`` is ``nothing_outstanding``,
+    ``stale``, or ``copy_of_record`` so list and customer views never surface zombie ``days_late``."""
+    clean = [str(h) for h in handles if isinstance(h, str) and h]
+    if not clean or backend is None or not getattr(backend, "pg_dsn", None) or not callable(getattr(backend, "pg", None)):
+        return set()
+    try:
+        from operating.pg import business_views as bv
+        with backend.pg().connection() as conn:
+            rows = conn.execute(
+                f"SELECT handle FROM {bv.SCHEMA}.sales_orders "
+                "WHERE handle = ANY(%s) AND open_state IN ('nothing_outstanding', 'stale', 'copy_of_record')",
+                (clean,),
+            ).fetchall()
+        return {str(r[0]) for r in rows if r and r[0]}
+    except Exception:  # guard-ok: best-effort open_state lookup; falls back to row fields
+        return set()
+
+
+def _purchase_order_bc_pilot_handles(backend: Any, handles: Sequence[Any]) -> set[str]:
+    """Batch-read ``biz.purchase_orders`` handles that are BC-only pilot orders
+    (``source_systems = 'bc'``) so ``days_late`` stays consistently suppressed across
+    ``record_list``, ``supplier``, and ``order``."""
+    clean = [str(h) for h in handles if isinstance(h, str) and h]
+    if not clean or backend is None or not getattr(backend, "pg_dsn", None) or not callable(getattr(backend, "pg", None)):
+        return set()
+    try:
+        from operating.pg import business_views as bv
+        from operating.po_pilot import bc_pilot_po_sql
+        with backend.pg().connection() as conn:
+            rows = conn.execute(
+                f"SELECT handle FROM {bv.SCHEMA}.purchase_orders "
+                f"WHERE handle = ANY(%s) AND {bc_pilot_po_sql()}",
+                (clean,),
+            ).fetchall()
+        return {str(r[0]) for r in rows if r and r[0]}
+    except Exception:  # guard-ok: best-effort pilot PO lookup; falls back to row fields
+        return set()
+
+
+def _sales_order_live_days_late(
+    row: Mapping[str, Any],
+    non_live_handles: Collection[str] = (),
+) -> Optional[int]:
+    """Live ``days_late`` for a sales order row, or None when closed, stale, or nothing left to ship."""
+    status = str(row.get("status") or "").strip().lower()
+    if status and status != "open":
+        return None
+    if str(row.get("open_state") or "").strip().lower() in _NON_LIVE_OPEN_STATES:
+        return None
+    handle = row.get("handle")
+    if isinstance(handle, str) and handle in non_live_handles:
+        return None
+    days = row.get("days_late")
+    if isinstance(days, bool) or not isinstance(days, (int, Decimal)):
+        return None
+    val = int(days)
+    return val if val > 0 else None
+
+
+def _purchase_order_live_days_late(
+    row: Mapping[str, Any],
+    non_live_handles: Collection[str] = (),
+) -> Optional[int]:
+    """Live ``days_late`` for a purchase order row, or None when closed, BC-only pilot
+    (not counted late), or verdict is not late."""
+    from operating.po_pilot import is_bc_pilot_po
+    status = str(row.get("status") or "").strip().lower()
+    if status and status != "open":
+        return None
+    verdict = str(row.get("verdict") or "").strip().lower()
+    if verdict and verdict != "late":
+        return None
+    if is_bc_pilot_po(row.get("source_systems")):
+        return None
+    handle = row.get("handle")
+    if isinstance(handle, str) and handle in non_live_handles:
+        return None
+    days = row.get("days_late")
+    if isinstance(days, bool) or not isinstance(days, (int, Decimal)):
+        return None
+    val = int(days)
+    return val if val > 0 else None
 
 
 class ReaderScope:
@@ -535,6 +649,59 @@ def alert_late_pos(backend: Any, reader: Any, *, offset: int = 0, limit: int = 2
     return total, [late_po(r, ids, stale=stale) for r in rows[f"{pre}_list"]], _iso(ok)
 
 
+def _drop_reply_alert(row: Mapping[str, Any], *, now: Optional[datetime] = None) -> bool:
+    """True when a ``needs_my_reply`` / ``reply_owed`` alert row is stale (>14 days) or an
+    automated Microsoft / Teams / Planner / noreply / system notification, OR when an open
+    order or purchase-order alert is a multi-year legacy ERP artifact (>365 days) that must
+    not pollute active Home or Alerts queues."""
+    from operating.pg.alerts import REPLY_ALERT_NAMES, is_filtered_reply_alert, is_legacy_stale_order_alert
+    rule = str(row.get("rule") or "").strip().lower()
+    kind = str(row.get("kind") or "").strip().lower()
+    why = str(row.get("why") or "")
+    if rule in REPLY_ALERT_NAMES or kind in REPLY_ALERT_NAMES:
+        if _NOREPLY_WHY_RE.search(why):
+            return True
+        hay = f"{why} {row.get('subject') or ''}"
+        if "cos@petrasoap.com" in hay.lower() and _COS_SYSTEM_RE.search(hay):
+            return True
+    if is_filtered_reply_alert(
+        rule=row.get("rule"),
+        kind=row.get("kind"),
+        since=row.get("since") or row.get("first_seen"),
+        text=why,
+        subject=row.get("subject") or "",
+        now=now,
+    ):
+        return True
+    return is_legacy_stale_order_alert(
+        rule=row.get("rule"),
+        kind=row.get("kind"),
+        since=row.get("since"),
+        text=why,
+        now=now,
+    )
+
+
+def _filter_reply_rows(
+    rows: Sequence[Mapping[str, Any]],
+    counts: Optional[dict[str, int]] = None,
+    *,
+    now: Optional[datetime] = None,
+) -> list[dict[str, Any]]:
+    """Drop stale (>14 days) or automated ``needs_my_reply`` / ``reply_owed`` alert rows
+    and adjust per-rule counts accordingly."""
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        if _drop_reply_alert(row, now=now):
+            if counts is not None:
+                rule = str(row.get("rule") or "")
+                if rule in counts:
+                    counts[rule] = max(0, counts[rule] - 1)
+            continue
+        kept.append(dict(row))
+    return kept
+
+
 def alert_home(backend: Any, reader: Any, *, limit: int = 25
                ) -> tuple[int, list[m.LatePo], Optional[str], list[m.AtRisk],
                           dict[str, Optional[datetime]], int, int]:
@@ -570,8 +737,10 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
         raise alerts_stale("Late purchase orders", ok)
     total = int(rows["alerts_late_po_count"][0]["late"])
     late = [late_po(r, ids) for r in rows["alerts_late_po_list"]]
+    counts_by_rule = {str(r["rule"]): int(r["open"]) for r in rows.get("alerts_count", ())}
+    open_rows = _filter_reply_rows(rows.get("alerts_open", []), counts_by_rule)
     risk = []
-    for row in rows.get("alerts_open", []):
+    for row in open_rows:
         oid, _otype, url, sources = _alert_ref(row, ids)
         risk.append(m.AtRisk(object_id=oid, label=alert_label(row), kind=str(row.get("kind")),
                              reason=clean_text(row.get("why") or "", strip_email_noise=True),
@@ -581,7 +750,7 @@ def alert_home(backend: Any, reader: Any, *, limit: int = 25
     # "Refreshing" on for good and the app polled /api/home every few seconds)
     stale = {t: runs.get(t, (False, None))[1] for t in types
              if _paged(t) and not runs.get(t, (False, None))[0]}
-    risk_total = sum(int(r["open"]) for r in rows.get("alerts_count", ()))
+    risk_total = sum(counts_by_rule.values())
     return (total, late, _iso(ok), risk, stale, max(risk_total, len(risk)),
             int(rows["alerts_late_po_stale_count"][0]["late"]))
 
@@ -690,8 +859,49 @@ def alerts_read_with_impact(backend: Any, reader: Any, types: Sequence[str], *, 
                                                               "limit": impact_rows}})
     rows, ids = read(backend, reader, reads, ids=bool(types or impact))
     counts = {str(r["rule"]): int(r["open"]) for r in rows.get("alerts_count", ())}
-    return (counts, rows.get("alerts_open", []), ids, runs_state(rows["alert_runs"]),
+    open_rows = _filter_reply_rows(rows.get("alerts_open", []), counts)
+    return (counts, open_rows, ids, runs_state(rows["alert_runs"]),
             rows.get("alerts_impact_top", []))
+
+
+_WHY_DAYS_LATE_RE = re.compile(
+    r"\b(\d{1,5})\s+days?\s+(?:late|past\s+due|overdue)\b",
+    re.IGNORECASE,
+)
+
+
+def _alert_days_late(row: Mapping[str, Any], rule: str, summary: str) -> Optional[int]:
+    """Extract days late for an alert row from its joined ``days_late`` column, ``days``
+    field, summary wording, or ``since`` date (for lateness rules)."""
+    status = str(row.get("status") or "").strip().lower()
+    if (status and status != "open") or str(row.get("open_state") or "").strip().lower() in _NON_LIVE_OPEN_STATES:
+        return None
+    for key in ("days_late", "days"):
+        val = row.get(key)
+        if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+            return val
+    found = _WHY_DAYS_LATE_RE.search(summary)
+    if found:
+        n = int(found.group(1))
+        if n > 0:
+            return n
+    if rule in ("po_late", "customer_order_late", "so_late"):
+        since = row.get("since")
+        since_day: Optional[date] = None
+        if isinstance(since, datetime):
+            since_day = since.date()
+        elif isinstance(since, date):
+            since_day = since
+        elif isinstance(since, str) and len(since) >= 10:
+            try:
+                since_day = date.fromisoformat(since[:10])
+            except ValueError:
+                since_day = None
+        if since_day is not None:
+            delta = (date.today() - since_day).days
+            if delta > 0:
+                return delta
+    return None
 
 
 def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], rank: int,
@@ -705,16 +915,23 @@ def alert_item(row: Mapping[str, Any], ids: Mapping[str, Mapping[str, str]], ran
     # keeps the plain step
     step = NEXT_ACTIONS.get(rule) or ("Open the record and check it.", rule)
     seen = _iso(row.get("first_seen"))
+    since = _iso(row.get("since"))
     new = bool(seen and (last_visit is None or seen > last_visit))
+    basis_seen = since if (since and (seen is None or since[:10] < seen[:10])) else seen
+    summary = clean_text(row.get("why") or "", strip_email_noise=True)
+    days = _alert_days_late(row, rule, summary)
+    supplier = clean_text(row.get("supplier") or "") if row.get("supplier") else None
     return m.BriefingItem(
         rank=rank, id=f"alert:{rule}:{row.get('handle')}:{row.get('topic') or ''}",
         event_type=rule, label=alert_label(row), evidence="live", object_id=oid,
         object_type=otype, subject_label=_subject(row, otype),
-        summary=clean_text(row.get("why") or "", strip_email_noise=True),
+        counterpart=supplier or None,
+        summary=summary,
         next_action=m.NextAction(text=clean_text(step[0]), rule=step[1]),
+        days=days,
         new_since_visit=new, new_this_generation=new, alert_kind=alert_kinds.kind_of(rule),
         default_on=alert_kinds.default_on(rule), home=alert_kinds.home(rule),
-        section=alert_kinds.section(rule), first_seen=seen, open_url=url, sources=sources)
+        section=alert_kinds.section(rule), first_seen=basis_seen, open_url=url, sources=sources)
 
 
 # what each money impact is, in the words a row says it with (``amount_basis``)
@@ -763,6 +980,8 @@ def alert_suggestion_items(backend: Any, reader: Any, types: Collection[str], *,
         counts, rows, ids, runs = alerts_read(backend, reader, mine, limit=limit)
     except PageDoorUnavailable:
         return {"status": "unavailable", "items": [], "complete": False}
+    counts = dict(counts)
+    rows = _filter_reply_rows(rows, counts)
     items = [alert_item(r, ids, i + 1, scope.visit).model_dump(mode="json")
              for i, r in enumerate(rows)]
     current = all(runs.get(t, (False, None))[0] for t in mine)
@@ -807,6 +1026,8 @@ def alert_briefing(backend: Any, reader: Any, *, since_visit: bool = False,
         return m.Briefing(status="unavailable", count=0, new_since_visit=0,
                           since_visit=since_visit, other_teams=0, rank_basis="",
                           routing_basis="", complete=False, digest_preview="")
+    counts = dict(counts)
+    rows = _filter_reply_rows(rows, counts)
     items = [alert_item(r, ids, i + 1, scope.visit) for i, r in enumerate(rows)]
     # a gathered type counts and lists only while its rule is current, like every other
     items += [_impact_item(r, ids, len(items) + i + 1, scope.visit)
@@ -869,6 +1090,8 @@ def alert_briefing_items(backend: Any, reader: Any, event_type: str, *, offset: 
     fresh, ok = runs.get(event_type, (False, None))
     if not fresh:
         raise alerts_stale(alert_label({"rule": event_type}), ok)
+    counts = dict(counts)
+    rows = _filter_reply_rows(rows, counts)
     total = counts.get(event_type, 0)
     return m.BriefingItems(event_type=event_type, total=total, offset=offset,
                            items=[alert_item(r, ids, offset + i + 1, scope.visit)
@@ -1295,6 +1518,7 @@ def account(backend: Any, reader: Any, kind: str, *, handle: str = "", chain: st
             total=len(accounts)))
     n, late, totals, unvalued = _open_totals(rows["customer_open_totals"])
     listed = rows["customer_open_orders"]
+    non_live = _sales_order_non_live_handles(backend, [o.get("handle") for o in listed])
     cols = ["Order", "Customer PO", "Ordered", "Required by", "Days late", "Value"]
     if kind == "chain":
         cols.insert(1, "Account")
@@ -1302,7 +1526,7 @@ def account(backend: Any, reader: Any, kind: str, *, handle: str = "", chain: st
         [_t(o, "order_number", account_url("sales_order", o.get("handle")))]
         + ([_t(o, "customer")] if kind == "chain" else [])
         + [_t(o, "customer_po"), _d(o, "order_date"), _d(o, "required_date"),
-           _n(o, "days_late") if (o.get("days_late") or 0) > 0 else m.BizCell(),
+           _n(o, "days_late") if _sales_order_live_days_late(o, non_live) is not None else m.BizCell(),
            _m(o, "value")] for o in listed], total=n,
         note=_orders_note(n, late, totals, unvalued, len(listed))))
     sections.append(_owed(rows["customer_owed"], "What they owe"))
@@ -1352,11 +1576,12 @@ def _supplier(backend: Any, reader: Any, handle: str, day: str, started: float) 
             ))
     n, late, totals, unvalued = _open_totals(rows["supplier_open_totals"])
     listed = rows["supplier_open_pos"]
+    po_pilot = _purchase_order_bc_pilot_handles(backend, [p.get("handle") for p in listed])
     sections = [m.BizTable(key="open_orders", title="Open purchase orders", columns=[
         "PO", "Ordered", "Needed by", "Promised", "Days late", "Total"], rows=[[
             _t(p, "po_number", account_url("purchase_order", p.get("handle"))),
             _d(p, "order_date"), _d(p, "requested_date"), _d(p, "promised_date"),
-            _n(p, "days_late") if p.get("verdict") == "late" else m.BizCell(),
+            _n(p, "days_late") if _purchase_order_live_days_late(p, po_pilot) is not None else m.BizCell(),
             _m(p, "total")] for p in listed], total=n,
         note=_orders_note(n, late, totals, unvalued, len(listed)))]
     sections.append(_owed(rows["supplier_owed"], "What we owe them"))
@@ -1610,7 +1835,7 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
                  _n(r, "received_quantity"), _n(r, "invoiced_quantity"), _t(r, "uom"),
                  _m(r, "unit_price", max_decimals=4), _m(r, "line_total"), _d(r, "expected_date")]
                 for r in lines]
-        if h.get("verdict") == "late":
+        if _purchase_order_live_days_late(h) is not None:
             facts.append(m.BizFact(label="Days late", value=_n(h, "days_late")))
     else:
         title = _numbered("SO", h.get("order_number"))
@@ -1634,7 +1859,9 @@ def order(backend: Any, reader: Any, kind: str, handle: str,
             # worked for longer than closed orders take, is open on the books and said so
             not_live = {"nothing_outstanding": "Every line states nothing left to ship",
                         "stale": "Nobody has ordered or invoiced it for longer than closed "
-                                 "orders take"}.get(h.get("open_state") or "")
+                                 "orders take",
+                        "copy_of_record": "Duplicate copy of an order of record in another "
+                                          "system"}.get(h.get("open_state") or "")
             facts.append(m.BizFact(label="Past its required date, not counted late",
                                    value=m.BizCell(text=not_live)) if not_live
                          else m.BizFact(label="Days late", value=_n(h, "days_late")))
@@ -1762,9 +1989,12 @@ def record_list(backend: Any, reader: Any, view: str, *, filters: Optional[Mappi
         bound.setdefault(rl.param(f.name), "")
     if spec.search:
         bound["q"] = q.strip()
+    late_sort = view in ("sales_orders", "purchase_orders") and sort == "days_late" and offset + limit <= 400
+    fetch_limit = min(500, max(offset + limit + 120, 200)) if late_sort else limit
+    fetch_offset = 0 if late_sort else offset
     reads: list[dict[str, Any]] = [
         {"name": rl.list_name(view, sort, direction),
-         "params": {**bound, "limit": limit, "offset": offset}},
+         "params": {**bound, "limit": fetch_limit, "offset": fetch_offset}},
         {"name": f"list__{view}__count", "params": bound}, {"name": "views_as_of"}]
     choices = with_filters and any(f.kind == "choice" for f in spec.filters)
     if choices:
@@ -1772,8 +2002,40 @@ def record_list(backend: Any, reader: Any, view: str, *, filters: Optional[Mappi
     rows, ids = read(backend, reader, reads, ids=True)
     total = int(rows[f"list__{view}__count"][0]["n"])
     first = spec.columns[0].name
+    raw_list = list(rows[rl.list_name(view, sort, direction)])
+    non_live = (
+        _sales_order_non_live_handles(backend, [r.get("handle") for r in raw_list])
+        if view == "sales_orders"
+        else (
+            _purchase_order_bc_pilot_handles(backend, [r.get("handle") for r in raw_list])
+            if view == "purchase_orders"
+            else set()
+        )
+    )
+    if view in ("sales_orders", "purchase_orders"):
+        cleaned_list: list[dict[str, Any]] = []
+        for r in raw_list:
+            row_copy = dict(r)
+            if view == "sales_orders":
+                if _sales_order_live_days_late(row_copy, non_live) is None:
+                    row_copy["days_late"] = None
+            else:
+                if _purchase_order_live_days_late(row_copy, non_live) is None:
+                    row_copy["days_late"] = None
+            cleaned_list.append(row_copy)
+        if late_sort:
+            sign = -1 if direction == "desc" else 1
+            cleaned_list.sort(
+                key=lambda r: (
+                    r.get("days_late") is None,
+                    sign * int(r["days_late"]) if r.get("days_late") is not None else 0,
+                    str(r.get("handle") or ""),
+                )
+            )
+            cleaned_list = cleaned_list[offset : offset + limit]
+        raw_list = cleaned_list
     body = []
-    for r in rows[rl.list_name(view, sort, direction)]:
+    for r in raw_list:
         href = _row_url(r, ids)
         body.append([_cell(c, r, href if c.name == first else None) for c in spec.columns])
     offered: list[m.RecordFilter] = []

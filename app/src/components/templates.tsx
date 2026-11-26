@@ -66,13 +66,13 @@ export function TemplateFilledView({ filled }: { filled: TemplateFilled }) {
     write.then(() => setCopied("yes"), () => setCopied("failed"));
   };
   return (
-    <section className="space-y-2 border-l-2 border-accent pl-3" data-testid="template-filled">
+    <section className="space-y-2 border-l-2 border-border-strong pl-3" data-testid="template-filled">
       <p className="text-[13px] leading-5">
         <span className="font-medium">{filled.name}</span>
         {filled.record && (
           <>
             {" "}for{" "}
-            <a className="text-accent hover:underline" href={filled.record.open_url ?? undefined}>
+            <a className="font-medium text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg" href={filled.record.open_url ?? undefined}>
               {filled.record.label}
             </a>
           </>
@@ -103,7 +103,7 @@ export function TemplateFilledView({ filled }: { filled: TemplateFilled }) {
                 <td className={f.status === "filled" ? "pr-4 font-medium whitespace-pre-wrap" : "pr-4 text-muted"}>{f.status === "filled" ? f.value : "Check"}</td>
                 <td className="text-[12px]">
                   {f.status === "filled" && f.citation ? (
-                    <a className="text-accent hover:underline" href={f.citation.open_url ?? undefined}>
+                    <a className="text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg" href={f.citation.open_url ?? undefined}>
                       {f.citation.record} · {f.citation.field}
                     </a>
                   ) : (
@@ -199,7 +199,7 @@ export function TemplateForm({
           {(list.fields ?? []).map((f, i) => (
             <span key={f.name}>
               {i > 0 && ", "}
-              <button type="button" className="text-accent hover:underline cursor-pointer" onClick={() => setBody((b) => `${b}{{${f.name}}}`)}>
+              <button type="button" className="font-medium text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg cursor-pointer" onClick={() => setBody((b) => `${b}{{${f.name}}}`)}>
                 {f.label}
               </button>
             </span>

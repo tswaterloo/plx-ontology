@@ -1884,3 +1884,46 @@ class ReplyFromLine(unittest.TestCase):
         item = next(i for i in owner.get("/api/autopilot").json()["items"]
                     if i["item_id"] == "ap_card")
         self.assertEqual(item["state"], "waiting")
+
+    def test_reopen_clears_decision_and_owner_it_still_receives_qc_holds(self) -> None:
+        owner = self.client(OWNER)
+        self.assertEqual(
+            owner.post("/api/autopilot/items/ap_own/decision", json={"decision": "reject"}).status_code,
+            200,
+        )
+        self.assertEqual(
+            next(i for i in owner.get("/api/autopilot").json()["items"] if i["item_id"] == "ap_own")["state"],
+            "rejected",
+        )
+        owner_reader = self.backend._test_reader if hasattr(self.backend, "_test_reader") else type(
+            "R", (), {"key": OWNER[1], "email": OWNER[0],
+                      "session": fixture_session("plx", ["staff:demo"], channel=CHANNEL_CONSOLE,
+                                                 subject_email=OWNER[0], subject_oid=OWNER[1])}
+        )()
+        self.assertTrue(self.backend.autopilot_reopen(owner_reader, "ap_own", reason="undo"))
+        self.assertEqual(
+            next(i for i in owner.get("/api/autopilot").json()["items"] if i["item_id"] == "ap_own")["state"],
+            "waiting",
+        )
+
+        # Owner with AD department="IT" and 27 reports receives QC holds; non-owner Production (0 reports) does not
+        q = ap.Queue(self.backend.autopilot_queue)
+        qc_owner = queued("ap_qc_owner", OWNER[1])
+        qc_owner["autopilot"] = "qc_hold"
+        qc_owner["body"]["prepared"] = {"summary": "Lot L-1 on hold", "reasons": ["QC hold"], "affected": []}
+        qc_sam = queued("ap_qc_sam", COLLEAGUE[1])
+        qc_sam["autopilot"] = "qc_hold"
+        qc_sam["body"]["prepared"] = {"summary": "Lot L-2 on hold", "reasons": ["QC hold"], "affected": []}
+        with q.conn:
+            q.add_item(qc_owner)
+            q.add_item(qc_sam)
+        q.close()
+        staff_rows = [
+            {"person_id": OWNER[1], "email": OWNER[0], "department": "IT", "title": "", "reports_count": 27},
+            {"person_id": COLLEAGUE[1], "email": COLLEAGUE[0], "department": "Production", "title": "", "reports_count": 0},
+        ]
+        with patch("operating.autopilot_roster._load_staff_rows", return_value=staff_rows):
+            owner_ids = {i["item_id"] for i in owner.get("/api/autopilot/drafts").json()["items"]}
+            sam_ids = {i["item_id"] for i in self.client(COLLEAGUE).get("/api/autopilot/drafts").json()["items"]}
+        self.assertIn("ap_qc_owner", owner_ids)
+        self.assertNotIn("ap_qc_sam", sam_ids)

@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import { QueryToggle } from "@/components/query-work";
 import { approveMeasureCandidate, dismissMeasureCandidate, getMeasureCandidates } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 import type { MeasureCandidate, MeasureCandidateList, MeasureCandidateStatus } from "@/lib/types";
 
-const link = "text-[12px] text-accent underline-offset-2 hover:underline cursor-pointer disabled:cursor-default disabled:opacity-50";
-const btn = "h-7 rounded-md border border-border px-2.5 text-[12px] font-medium text-fg hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
-const primaryBtn = "h-7 rounded-md bg-accent px-2.5 text-[12px] font-medium text-accent-fg hover:opacity-90 cursor-pointer disabled:cursor-default disabled:opacity-50";
+const btn = "h-7 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover cursor-pointer disabled:cursor-default disabled:opacity-50";
+const primaryBtn = "h-7 rounded-md bg-fg px-2.5 text-[12px] font-medium text-bg hover:opacity-90 cursor-pointer disabled:cursor-default disabled:opacity-50";
 
 /** Plain words for where a candidate definition came from. */
 export function sourceWords(kind: MeasureCandidate["source_kind"]): string {
@@ -53,7 +53,7 @@ export function MeasureCandidates() {
   const updateOne = (next: MeasureCandidate) => {
     setList((prev) => {
       if (!prev) return prev;
-      const candidates = prev.candidates.map((c) => (c.id === next.id ? next : c));
+      const candidates = (prev.candidates ?? []).map((c) => (c.id === next.id ? next : c));
       const counts = { pending: 0, approved: 0, dismissed: 0 };
       for (const c of candidates) counts[c.status] = (counts[c.status] ?? 0) + 1;
       return { ...prev, candidates, counts, total: candidates.length };
@@ -97,34 +97,55 @@ export function MeasureCandidates() {
     }
   };
 
-  const pending = list?.counts.pending ?? 0;
-  const approved = list?.counts.approved ?? 0;
-  const dismissed = list?.counts.dismissed ?? 0;
-  const shown = (list?.candidates ?? []).filter((c) => filter === "all" || c.status === filter);
+  const pending = list?.counts?.pending ?? 0;
+  const approved = list?.counts?.approved ?? 0;
+  const dismissed = list?.counts?.dismissed ?? 0;
+  const allCandidates = list?.candidates ?? [];
+  const shown = allCandidates.filter((c) => filter === "all" || c.status === filter);
+
+  const filterOptions: { id: Filter; label: string }[] = [
+    { id: "pending", label: `Waiting (${pending})` },
+    { id: "approved", label: `Approved (${approved})` },
+    { id: "dismissed", label: `Dismissed (${dismissed})` },
+    { id: "all", label: `All (${allCandidates.length})` },
+  ];
 
   return (
-    <div className="space-y-2 pt-2" data-testid="measure-candidates">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 className="text-[13px] font-semibold">Proposed shared definitions</h4>
+    <div className="space-y-3" data-testid="measure-candidates">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="text-[14px] font-semibold text-fg">Proposed shared definitions</h4>
+          <p className="text-[12px] text-muted">
+            Definitions captured from accepted answers and pinned charts awaiting owner sign-off.
+          </p>
+        </div>
         {list && (
-          <div className="flex flex-wrap items-center gap-3 text-[12px] text-muted" role="group" aria-label="Filter proposed definitions">
-            <button type="button" className={filter === "pending" ? "font-medium text-fg underline underline-offset-2 cursor-pointer" : link} onClick={() => setFilter("pending")}>
-              Waiting ({pending})
-            </button>
-            <button type="button" className={filter === "approved" ? "font-medium text-fg underline underline-offset-2 cursor-pointer" : link} onClick={() => setFilter("approved")}>
-              Approved ({approved})
-            </button>
-            <button type="button" className={filter === "dismissed" ? "font-medium text-fg underline underline-offset-2 cursor-pointer" : link} onClick={() => setFilter("dismissed")}>
-              Dismissed ({dismissed})
-            </button>
-            <button type="button" className={filter === "all" ? "font-medium text-fg underline underline-offset-2 cursor-pointer" : link} onClick={() => setFilter("all")}>
-              All ({list.candidates.length})
-            </button>
+          <div
+            className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-bg p-0.5"
+            role="group"
+            aria-label="Filter proposed definitions"
+          >
+            {filterOptions.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                aria-pressed={filter === opt.id}
+                onClick={() => setFilter(opt.id)}
+                className={cn(
+                  "h-6 rounded-md px-2 text-[11.5px] font-medium transition-colors cursor-pointer",
+                  filter === opt.id
+                    ? "bg-surface-2 text-fg"
+                    : "text-muted hover:text-fg",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
           </div>
         )}
       </div>
 
-      {problem && <p className="text-[13px]" role="alert">{problem}</p>}
+      {problem && <p className="text-[13px] text-late" role="alert">{problem}</p>}
       {list === null && !problem && <p className="text-[13px] text-muted">Reading proposed definitions</p>}
       {list && !list.can_review && pending > 0 && (
         <p className="text-[12px] text-muted" data-testid="candidates-owner-only">
@@ -132,7 +153,7 @@ export function MeasureCandidates() {
         </p>
       )}
       {list && shown.length === 0 && (
-        <p className="text-[13px] text-muted" data-testid="candidates-empty">
+        <p className="py-4 text-[13px] text-muted" data-testid="candidates-empty">
           {filter === "pending" ? "No proposed definitions are waiting for review." : "No definitions match this filter."}
         </p>
       )}
@@ -143,9 +164,9 @@ export function MeasureCandidates() {
             const busy = busyId === c.id;
             const isEditing = editing === c.id;
             return (
-              <li key={c.id} className="space-y-2 py-2.5 text-[13px]" data-testid={`candidate-${c.id}`}>
+              <li key={c.id} className="space-y-2 py-3 text-[13px]" data-testid={`candidate-${c.id}`}>
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <p className="font-medium">
+                  <p className="font-medium text-fg">
                     {c.proposed_name}
                     <span className="ml-2 text-[12px] font-normal text-muted">{usageWords(c.usage_count)}</span>
                   </p>
@@ -157,7 +178,7 @@ export function MeasureCandidates() {
                 {c.question && c.question !== c.proposed_name && (
                   <p className="text-[12px] text-muted">Question: {c.question}</p>
                 )}
-                <p className="text-[12px] text-muted">
+                <p className="text-[12px] text-faint">
                   {(c.views ?? []).length > 0
                     ? `Views: ${(c.views ?? []).join(", ")}`
                     : (c.withheld ?? []).length > 0
@@ -197,7 +218,7 @@ export function MeasureCandidates() {
                 )}
                 {list.can_review && c.status === "pending" && isEditing && (
                   <form
-                    className="space-y-2 rounded-md border border-border bg-surface p-3"
+                    className="space-y-2 rounded-lg border border-border bg-bg p-3"
                     onSubmit={(e) => {
                       e.preventDefault();
                       void approve(c, true);
@@ -206,7 +227,7 @@ export function MeasureCandidates() {
                     <label className="block text-[12px] text-muted">
                       Name
                       <input
-                        className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2 text-[13px] text-fg"
+                        className="mt-1 h-8 w-full rounded-md border border-border bg-surface px-2 text-[13px] text-fg"
                         value={draft.name}
                         onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                         required
@@ -215,7 +236,7 @@ export function MeasureCandidates() {
                     <label className="block text-[12px] text-muted">
                       Description
                       <textarea
-                        className="mt-1 w-full rounded-md border border-border bg-bg p-2 text-[13px] text-fg"
+                        className="mt-1 w-full rounded-md border border-border bg-surface p-2 text-[13px] text-fg"
                         rows={2}
                         value={draft.description}
                         onChange={(e) => setDraft({ ...draft, description: e.target.value })}
@@ -225,7 +246,7 @@ export function MeasureCandidates() {
                     <label className="block text-[12px] text-muted">
                       Owner
                       <input
-                        className="mt-1 h-8 w-full rounded-md border border-border bg-bg px-2 text-[13px] text-fg"
+                        className="mt-1 h-8 w-full rounded-md border border-border bg-surface px-2 text-[13px] text-fg"
                         value={draft.owner}
                         onChange={(e) => setDraft({ ...draft, owner: e.target.value })}
                         required

@@ -1,72 +1,72 @@
-/* Design tokens. A refined layered surface system: subtle cool-slate canvas (#f6f7f9) with
-   crisp white elevated cards, hairline borders, and whisper-soft shadows in light mode;
-   precision obsidian-charcoal tonal elevation in dark mode (deepest #0b0c0e sidebar, #101114
-   workspace canvas, #16181d resting surfaces, #21242c raised menus/popovers) with translucent
-   hairline borders and WCAG AA contrast on every surface. Host Grotesk with tabular figures
-   for crisp typography; Geist Mono reserved for the wordmark and explicit code/monospaced
-   figures. Flat colour only: no gradients, glows, or decorative motion. */
+/* Design tokens. Crisp paper light mode (#ffffff canvas, #fafafa sidebar, #111318 ink)
+   paired with Calibrated Obsidian Charcoal dark surfaces (#0c0d0f chrome, #0d0e11 sidebar,
+   #0f1012 canvas/bg, #141518 subtle, #17181c surface, #1c1e23 raised, #1f2126 elevated)
+   and crisp high-contrast ink (#f3f4f6 primary, #a1a6b2 secondary, #6f7480 metadata).
+   Ultra-subtle semantic soft tints ensure status colors act as crisp text/icons only. */
 
 :root {
   color-scheme: light;
-  --canvas: #f6f7f9; /* subtle cool-slate workspace canvas */
+  --chrome: #fafafa; /* window chrome and sidebar */
+  --canvas: #ffffff; /* pure crisp workspace canvas */
   --bg: #ffffff; /* crisp elevated cards and primary panes */
-  --bg-subtle: #f3f5f8; /* window chrome and subtle bands */
-  --sidebar: #f4f5f8; /* refined cool-slate sidebar */
-  --surface: #f8f9fb; /* nested wells, inputs, secondary surfaces */
-  --surface-2: #edf0f5; /* hover fills, subtle neutral chips */
+  --bg-subtle: #fafafa; /* window chrome and subtle bands */
+  --sidebar: #fafafa; /* refined neutral sidebar */
+  --surface: #f4f5f7; /* nested wells, inputs, secondary surfaces */
+  --surface-2: #e5e7eb; /* hover fills, subtle neutral chips */
   --raised: #ffffff; /* popovers, menus, drawers */
-  --hover: rgba(15, 23, 42, 0.045); /* calm slate hover tint */
-  --list: #f6f7f9; /* list pane canvas so white cards sit cleanly on it */
-  --row-on: #f0f2f6; /* active/selected row surface */
-  --lift: 0 1px 2px rgba(15, 23, 42, 0.04), 0 0 0 1px rgba(15, 23, 42, 0.075); /* refined card lift */
-  --shadow-card-val: 0 1px 2px rgba(15, 23, 42, 0.04), 0 2px 6px -2px rgba(15, 23, 42, 0.03);
-  --selected: #e8f1fc; /* selected row blue tint */
-  --selected-strong: #186bca; /* focused selection */
-  --fg: #0f172a; /* slate-900 ink */
-  --fg-muted: #526071; /* slate-600 secondary ink */
-  --fg-faint: #64748b; /* slate-500 metadata ink */
-  --border: rgba(15, 23, 42, 0.085); /* refined hairline border */
-  --border-strong: rgba(15, 23, 42, 0.14); /* interactive control border */
-  --rule-ink: rgba(15, 23, 42, 0.12);
-  --control-border: rgba(15, 23, 42, 0.16);
-  --accent: #186bca; /* enterprise blue: 5.3:1 on white */
-  --accent-fill: #186bca; /* primary solid button fill */
-  --accent-text: #186bca; /* link and accent text */
+  --hover: rgb(17 19 24 / 0.045); /* calm neutral hover tint */
+  --list: #fafafa; /* list pane canvas so white cards sit cleanly on it */
+  --row-on: #f1f3f6; /* active/selected row surface */
+  --lift: 0 1px 2px rgb(17 19 24 / 0.04), 0 0 0 1px rgb(17 19 24 / 0.08); /* refined card lift */
+  --shadow-card-val: 0 1px 2px rgb(17 19 24 / 0.04), 0 2px 6px -2px rgb(17 19 24 / 0.03);
+  --selected: rgb(17 19 24 / 0.05); /* clean neutral selection */
+  --selected-strong: #1d4ed8; /* focused selection */
+  --fg: #111318; /* crisp primary ink */
+  --fg-muted: #3f4652; /* high-contrast secondary ink */
+  --fg-faint: #5d6675; /* readable metadata ink */
+  --border: rgb(17 19 24 / 0.09); /* crisp hairline border */
+  --border-strong: rgb(17 19 24 / 0.16); /* interactive control border */
+  --rule-ink: rgb(17 19 24 / 0.12);
+  --control-border: rgb(17 19 24 / 0.18);
+  --accent: #1d4ed8; /* editorial steel-blue interactive accent */
+  --accent-fill: #111318; /* monochrome primary solid button fill */
+  --accent-fill-hover: #272c35;
+  --accent-text: #1d4ed8; /* link and accent text */
   --accent-fg: #ffffff;
-  --accent-soft: #e8f1fc;
-  --ring: #186bca;
-  --nav-on: rgba(15, 23, 42, 0.06); /* crisp monochrome active sidebar row */
-  --brand-slash: #2e8ff0;
-  --cube-right: #1e5fae;
-  --live: #1499a6;
-  --shadow: 0 0 0 1px rgba(15, 23, 42, 0.08), 0 8px 24px -6px rgba(15, 23, 42, 0.12);
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 0 0 1px rgba(15, 23, 42, 0.06);
+  --accent-soft: rgb(29 78 216 / 0.06);
+  --ring: #1d4ed8;
+  --nav-on: rgb(17 19 24 / 0.055); /* crisp monochrome active sidebar row */
+  --brand-slash: #1d4ed8;
+  --cube-right: #1d4ed8;
+  --live: #0d9488;
+  --shadow: 0 0 0 1px rgb(17 19 24 / 0.08), 0 8px 24px -6px rgb(17 19 24 / 0.12);
+  --shadow-sm: 0 1px 2px rgb(17 19 24 / 0.05), 0 0 0 1px rgb(17 19 24 / 0.06);
 
-  /* Status: fg (text), soft (fill), line (border). */
-  --late: #c4281c;
-  --late-soft: #fef2f2;
-  --late-line: #f5c2be;
-  --risk: #9a5b00;
-  --risk-soft: #fff8eb;
-  --risk-line: #f0d095;
-  --ok: #157347;
-  --ok-soft: #ecfdf3;
-  --ok-line: #a9e2be;
-  --suspect: #7a3fa0;
-  --suspect-soft: #f6effb;
-  --suspect-line: #d6bce8;
-  --new: #186bca;
-  --new-soft: #e8f1fc;
-  --new-line: #b4d0f7;
-  --neutral: #526071;
-  --neutral-soft: #f1f5f9;
-  --neutral-line: #cbd5e1;
+  /* Status: crisp text tones paired with ultra-subtle neutral/desaturated soft backgrounds. */
+  --late: #c83a31;
+  --late-soft: rgb(200 58 49 / 0.045);
+  --late-line: rgb(200 58 49 / 0.18);
+  --risk: #a66516;
+  --risk-soft: rgb(166 101 22 / 0.05);
+  --risk-line: rgb(166 101 22 / 0.18);
+  --ok: #1d7a4f;
+  --ok-soft: rgb(29 122 79 / 0.045);
+  --ok-line: rgb(29 122 79 / 0.18);
+  --suspect: #b45622;
+  --suspect-soft: rgb(180 86 34 / 0.045);
+  --suspect-line: rgb(180 86 34 / 0.18);
+  --new: #1d5fb8;
+  --new-soft: rgb(29 95 184 / 0.045);
+  --new-line: rgb(29 95 184 / 0.18);
+  --neutral: #3f4652;
+  --neutral-soft: rgb(17 19 24 / 0.04);
+  --neutral-line: rgb(17 19 24 / 0.12);
 
   /* dots: the brighter tone of each status, for 6 px marks */
-  --dot-late: #e5484d;
-  --dot-risk: #f0a020;
-  --dot-ok: #30a46c;
-  --dot-neutral: #94a3b8;
+  --dot-late: #c83a31;
+  --dot-risk: #c2781a;
+  --dot-ok: #1d7a4f;
+  --dot-neutral: #6b7280;
 
   --fs-display: 22px;
   --lh-display: 28px;
@@ -77,7 +77,7 @@
   --fs-stat: 17px;
   --lh-stat: 22px;
 
-  /* Sidebar place icons are restrained monochrome (Linear/Claude style). */
+  /* Sidebar place icons stay restrained monochrome. */
   --place-work: var(--fg-muted);
   --place-late: var(--fg-muted);
   --place-watching: var(--fg-muted);
@@ -89,96 +89,97 @@
   --place-feedback: var(--fg-muted);
 
   /* Source system tones (thin line glyph + readable text ink). */
-  --sys-bc: #1f8a70;
-  --sys-portal: #2563d9;
-  --sys-mail: #1f8fcf;
-  --sys-teams: #5b5fc7;
-  --sys-file: #64748b;
-  --sys-mc: #c2572b;
-  --sys-sage: #3d8b2f;
-  --sys-fm: #8a5cc2;
-  --sys-bc-ink: #1a7660;
-  --sys-portal-ink: #2563d9;
-  --sys-mail-ink: #186fa1;
-  --sys-teams-ink: #5a5ec5;
-  --sys-file-ink: #526071;
-  --sys-mc-ink: #ac4d26;
-  --sys-sage-ink: #357828;
-  --sys-fm-ink: #7e54b2;
+  --sys-bc: #0d9488;
+  --sys-portal: #0369a1;
+  --sys-mail: #0284c7;
+  --sys-teams: #0f766e;
+  --sys-file: #5d6675;
+  --sys-mc: #d97706;
+  --sys-sage: #059669;
+  --sys-fm: #e11d48;
+  --sys-bc-ink: #0f766e;
+  --sys-portal-ink: #0369a1;
+  --sys-mail-ink: #0369a1;
+  --sys-teams-ink: #0f766e;
+  --sys-file-ink: #3f4652;
+  --sys-mc-ink: #b45309;
+  --sys-sage-ink: #047857;
+  --sys-fm-ink: #be123c;
 }
 
 .dark {
   color-scheme: dark;
-  /* Precision obsidian-charcoal tonal elevation ladder (lowest chrome -> highest popover). */
-  --sidebar: #0b0c0e; /* deepest grounded chrome */
-  --bg-subtle: #0d0e11; /* subtle side rails and bands */
-  --canvas: #0d0e11; /* outer workspace canvas so #101114 panes/tiles lift cleanly */
-  --bg: #101114; /* main workspace canvas (never pure #000000 to avoid halation) */
-  --list: #121418; /* list pane surface */
-  --surface: #16181d; /* resting inputs, wells, inspector */
-  --row-on: #1a1d24; /* selected/active list row */
-  --surface-2: #1c1f26; /* hover and secondary fills */
-  --raised: #21242c; /* popovers, menus, drawers, command palette */
+  /* Calibrated Obsidian Charcoal (NO navy, NO pure #000000, NO purple, NO neon cyan). */
+  --chrome: #0c0d0f;
+  --sidebar: #0d0e11;
+  --bg: #0f1012;
+  --canvas: #0f1012;
+  --bg-subtle: #141518;
+  --list: #131417;
+  --surface: #17181c;
+  --row-on: #1d1f24;
+  --surface-2: #1f2126;
+  --raised: #1c1e23;
 
-  --hover: rgb(255 255 255 / 0.045);
-  --lift: 0 0 0 1px rgb(255 255 255 / 0.08), 0 1px 2px rgb(0 0 0 / 0.35);
+  --hover: rgba(255, 255, 255, 0.045);
+  --lift: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 2px rgba(0, 0, 0, 0.42);
   --shadow-card-val: none;
-  --selected: rgb(59 130 246 / 0.14); /* restrained tinted selection */
-  --selected-strong: #2563eb;
+  --selected: rgba(255, 255, 255, 0.07);
+  --selected-strong: #5c9ce6;
 
-  /* Off-white ink hierarchy (all >= WCAG AA 4.5:1 across every elevation step). */
-  --fg: #eceef2; /* 16.2:1 on #101114, zero flashbulb glare */
-  --fg-muted: #969ca8; /* 6.85:1 on #101114, 5.63:1 on #21242c */
-  --fg-faint: #848b99; /* 5.51:1 on #101114, 4.53:1 on #21242c */
+  /* Crisp high-contrast neutral ink. */
+  --fg: #f3f4f6;
+  --fg-muted: #a1a6b2;
+  --fg-faint: #6f7480;
 
-  /* Crisp translucent hairlines. */
-  --border: rgb(255 255 255 / 0.08);
-  --border-strong: rgb(255 255 255 / 0.14);
-  --rule-ink: rgb(255 255 255 / 0.12);
-  --control-border: rgb(255 255 255 / 0.18);
+  /* Ultra-crisp hairlines. */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --rule-ink: rgba(255, 255, 255, 0.11);
+  --control-border: rgba(255, 255, 255, 0.18);
 
-  /* Clean enterprise blue accent: #2563eb solid button fill with #ffffff (5.17:1),
-     #60a5fa link text (7.43:1 on #101114, 6.10:1 on #21242c), #3b82f6 active indicators. */
-  --accent: #3b82f6;
-  --accent-fill: #2563eb;
-  --accent-text: #60a5fa;
-  --accent-fg: #ffffff;
-  --accent-soft: rgb(59 130 246 / 0.14);
-  --ring: rgb(96 165 250 / 0.55);
-  --nav-on: rgb(255 255 255 / 0.07); /* clean monochrome active sidebar row */
-  --brand-slash: #60a5fa;
-  --cube-right: #1d4ed8;
-  --live: #4fdcea;
+  /* Crisp monochrome primary controls + calm calibrated steel-blue links. */
+  --accent: #5c9ce6;
+  --accent-fill: #f3f4f6;
+  --accent-fill-hover: #ffffff;
+  --accent-text: #7cb4f0;
+  --accent-fg: #0f1012;
+  --accent-soft: rgba(92, 156, 230, 0.08);
+  --ring: #5c9ce6;
+  --nav-on: #1c1e23;
+  --brand-slash: #5c9ce6;
+  --cube-right: #3b82c4;
+  --live: #4ca6a8;
 
-  --shadow: 0 0 0 1px rgb(255 255 255 / 0.10), 0 12px 32px -8px rgb(0 0 0 / 0.65);
-  --shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.07), 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow: 0 0 0 1px rgba(255, 255, 255, 0.10), 0 14px 36px -8px rgba(0, 0, 0, 0.65);
+  --shadow-sm: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 1px 3px rgba(0, 0, 0, 0.42);
 
-  /* Status tones: refined desaturated dark tints with crisp translucent 1px borders. */
-  --late: #f87171; /* 6.83:1 on #101114, 6.04:1 on late-soft */
-  --late-soft: rgb(239 68 68 / 0.13);
-  --late-line: rgb(248 113 113 / 0.28);
-  --risk: #f0b45c; /* 10.24:1 on #101114, 8.34:1 on risk-soft */
-  --risk-soft: rgb(245 158 11 / 0.13);
-  --risk-line: rgb(240 180 92 / 0.28);
-  --ok: #57c98a; /* 9.10:1 on #101114, 7.59:1 on ok-soft */
-  --ok-soft: rgb(34 197 94 / 0.12);
-  --ok-line: rgb(87 201 138 / 0.26);
-  --suspect: #c8a2e8; /* 8.80:1 on #101114, 7.72:1 on suspect-soft */
-  --suspect-soft: rgb(168 85 247 / 0.13);
-  --suspect-line: rgb(200 162 232 / 0.28);
-  --new: #60a5fa; /* 7.43:1 on #101114, 6.35:1 on new-soft */
-  --new-soft: rgb(59 130 246 / 0.14);
-  --new-line: rgb(96 165 250 / 0.28);
-  --neutral: #969ca8;
-  --neutral-soft: rgb(255 255 255 / 0.06);
-  --neutral-line: rgb(255 255 255 / 0.12);
+  /* Desaturated semantic text/icon tones with ultra-subtle neutral soft tints (zero bright status boxes). */
+  --late: #d96459;
+  --late-soft: rgba(217, 100, 89, 0.055);
+  --late-line: rgba(217, 100, 89, 0.18);
+  --risk: #d6a148;
+  --risk-soft: rgba(214, 161, 72, 0.055);
+  --risk-line: rgba(214, 161, 72, 0.18);
+  --ok: #5da56f;
+  --ok-soft: rgba(93, 165, 111, 0.055);
+  --ok-line: rgba(93, 165, 111, 0.18);
+  --suspect: #d98245;
+  --suspect-soft: rgba(217, 130, 69, 0.055);
+  --suspect-line: rgba(217, 130, 69, 0.18);
+  --new: #5c9ce6;
+  --new-soft: rgba(92, 156, 230, 0.06);
+  --new-line: rgba(92, 156, 230, 0.18);
+  --neutral: #a1a6b2;
+  --neutral-soft: rgba(255, 255, 255, 0.045);
+  --neutral-line: rgba(255, 255, 255, 0.12);
 
-  --dot-late: #f87171;
-  --dot-risk: #f0b45c;
-  --dot-ok: #4ade80;
-  --dot-neutral: #6b7280;
+  --dot-late: #d96459;
+  --dot-risk: #d6a148;
+  --dot-ok: #5da56f;
+  --dot-neutral: #6f7480;
 
-  /* Sidebar place icons are restrained monochrome in dark mode too. */
+  /* Sidebar place icons stay restrained monochrome in dark mode too. */
   --place-work: var(--fg-muted);
   --place-late: var(--fg-muted);
   --place-watching: var(--fg-muted);
@@ -189,26 +190,27 @@
   --place-activity: var(--fg-muted);
   --place-feedback: var(--fg-muted);
 
-  /* Source system tones tuned for obsidian dark surfaces (all >= 5.5:1 on #101114). */
-  --sys-bc: #52c7a5;
-  --sys-portal: #60a5fa;
-  --sys-mail: #5bc0eb;
-  --sys-teams: #9da3ff;
-  --sys-file: #969ca8;
-  --sys-mc: #eb9367;
-  --sys-sage: #75c97a;
-  --sys-fm: #c09ef0;
-  --sys-bc-ink: #52c7a5;
-  --sys-portal-ink: #60a5fa;
-  --sys-mail-ink: #5bc0eb;
-  --sys-teams-ink: #9da3ff;
-  --sys-file-ink: #969ca8;
-  --sys-mc-ink: #eb9367;
-  --sys-sage-ink: #75c97a;
-  --sys-fm-ink: #c09ef0;
+  /* Source system tones calibrated for Obsidian Charcoal (zero neon cyan, zero purple). */
+  --sys-bc: #4ca6a8;
+  --sys-portal: #5c9ce6;
+  --sys-mail: #5c9ce6;
+  --sys-teams: #5da56f;
+  --sys-file: #a1a6b2;
+  --sys-mc: #d6a148;
+  --sys-sage: #5da56f;
+  --sys-fm: #d96459;
+  --sys-bc-ink: #4ca6a8;
+  --sys-portal-ink: #7cb4f0;
+  --sys-mail-ink: #7cb4f0;
+  --sys-teams-ink: #6db87f;
+  --sys-file-ink: #a1a6b2;
+  --sys-mc-ink: #dca856;
+  --sys-sage-ink: #6db87f;
+  --sys-fm-ink: #e0766b;
 }
 
 @theme inline {
+  --color-chrome: var(--chrome);
   --color-canvas: var(--canvas);
   --color-bg: var(--bg);
   --color-bg-subtle: var(--bg-subtle);
@@ -272,10 +274,11 @@
   --color-info: var(--new);
   --color-info-soft: var(--new-soft);
 
+  --font-display: var(--font-jakarta), var(--font-host), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-sans: var(--font-host), -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --font-serif: var(--font-sans);
   --font-mark: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --shadow-card: var(--shadow-card-val);
   --shadow-pop: var(--shadow);
   --shadow-sm: var(--shadow-sm);
@@ -291,33 +294,33 @@
   --radius-2xl: 10px;
   --radius-3xl: 12px;
 
-  /* Type: crisp 14 px readable body, clear 16 px titles, well-contrasted 12 px metadata. */
+  /* Type: effortless 14.5 px readable body, clear 17 px titles, well-contrasted 13 px metadata. */
   --text-display: var(--fs-display);
   --text-display--line-height: var(--lh-display);
   --text-display--font-weight: 600;
-  --text-display--letter-spacing: -0.015em;
-  --text-title: 16px;
-  --text-title--line-height: 22px;
+  --text-display--letter-spacing: -0.02em;
+  --text-title: 17px;
+  --text-title--line-height: 24px;
   --text-title--font-weight: 600;
-  --text-answer: 14px;
-  --text-answer--line-height: 23px;
+  --text-answer: 15px;
+  --text-answer--line-height: 24px;
   --text-answer--font-weight: 400;
-  --text-section: 14px;
-  --text-section--line-height: 20px;
+  --text-section: 14.5px;
+  --text-section--line-height: 21px;
   --text-section--font-weight: 600;
-  --text-body: 14px;
-  --text-body--line-height: 22px;
-  --text-row: 13.5px;
-  --text-row--line-height: 20px;
-  --text-meta: 12px;
-  --text-meta--line-height: 17px;
-  --text-label: 12px;
-  --text-label--line-height: 16px;
+  --text-body: 14.5px;
+  --text-body--line-height: 23px;
+  --text-row: 14px;
+  --text-row--line-height: 21px;
+  --text-meta: 13px;
+  --text-meta--line-height: 18px;
+  --text-label: 13px;
+  --text-label--line-height: 18px;
   --text-label--font-weight: 500;
   --text-stat: var(--fs-stat);
   --text-stat--line-height: var(--lh-stat);
   --text-stat--font-weight: 600;
-  --text-eyebrow: 11px;
-  --text-eyebrow--line-height: 14px;
-  --text-eyebrow--font-weight: 500;
+  --text-eyebrow: 12px;
+  --text-eyebrow--line-height: 16px;
+  --text-eyebrow--font-weight: 600;
 }

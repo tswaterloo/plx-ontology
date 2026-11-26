@@ -104,7 +104,7 @@ def kept(event: Mapping[str, Any]) -> bool:
 KINDS = ("reply", "fyi", "automated", "notice")
 WORK_CHARS = 120
 
-PROMPT = """You triage the workplace emails and chat messages a busy person receives, before an \
+SYSTEM_PROMPT = """You triage the workplace emails and chat messages a busy person receives, before an \
 assistant prepares their replies. For each message below, say what it is to its reader:
 
 - "reply": a real person expects the reader to write back: a question or a request put to \
@@ -168,9 +168,9 @@ text to read), records (the current state of orders the message names), and for 
 to_reader (the reader is in To; false: only copied).
 
 Answer with only a JSON array, one object per message, in order: \
-{{"n": <n>, "kind": "reply", "fyi", "automated" or "notice", "work": "<a few words or empty>"}}.
+{"n": <n>, "kind": "reply", "fyi", "automated" or "notice", "work": "<a few words or empty>"}."""
 
-{lines}"""
+PROMPT = SYSTEM_PROMPT.replace("{", "{{").replace("}", "}}") + "\n\n{lines}"
 
 
 HABIT_MIN = 5     # the sender's earlier messages before the reader's habit is said
@@ -236,30 +236,35 @@ def pack(batch: Sequence[Mapping[str, Any]], budget: int = PROMPT_CHARS
     return out
 
 
-def prompt_of(batch: Sequence[Mapping[str, Any]]) -> str:
+def batch_lines(batch: Sequence[Mapping[str, Any]]) -> str:
+    """Dynamic JSONL payload for one triage batch (sent on stdin while ``SYSTEM_PROMPT``
+    travels in ``--system-prompt``)."""
     from .autopilot_records import shown
-    lines = "\n".join(json.dumps({"n": n, "reader": str(m.get("reader") or ""),
-                                  "mentioned": bool(m.get("mentioned")),
-                                  "group": bool(m.get("group")),
-                                  "from": _FROM.get(str(m.get("side") or ""), "unknown"),
-                                  "wrote_in_thread": bool(m.get("wrote_in_thread")),
-                                  **({"email": True, "subject": str(m.get("subject") or
-                                                                    "")[:200],
-                                      "to_reader": bool(m.get("to_reader", True))}
-                                     if m.get("email") else {}),
-                                  "text": shown(m.get("full_text") or m.get("text") or "",
-                                                FULL_CHARS if m.get("full_text") else TEXT_CHARS),
-                                  **{k: m[k] for k in ("attachments", "files_unread",
-                                                       "files_not_shown", "records", "left_out")
-                                     if m.get(k)},
-                                  **({"earlier": [str(x) for x in m["earlier"]]}
-                                     if m.get("earlier") else {}),
-                                  **({"answers_sender": str(m["answers_sender"])}
-                                     if m.get("answers_sender") else {}),
-                                  **({"own": True} if m.get("own") else {})},
-                                 ensure_ascii=False)
-                      for n, m in enumerate(batch, 1))
-    return PROMPT.format(lines=lines)
+    return "\n".join(json.dumps({"n": n, "reader": str(m.get("reader") or ""),
+                                 "mentioned": bool(m.get("mentioned")),
+                                 "group": bool(m.get("group")),
+                                 "from": _FROM.get(str(m.get("side") or ""), "unknown"),
+                                 "wrote_in_thread": bool(m.get("wrote_in_thread")),
+                                 **({"email": True, "subject": str(m.get("subject") or
+                                                                   "")[:200],
+                                     "to_reader": bool(m.get("to_reader", True))}
+                                    if m.get("email") else {}),
+                                 "text": shown(m.get("full_text") or m.get("text") or "",
+                                               FULL_CHARS if m.get("full_text") else TEXT_CHARS),
+                                 **{k: m[k] for k in ("attachments", "files_unread",
+                                                      "files_not_shown", "records", "left_out")
+                                    if m.get(k)},
+                                 **({"earlier": [str(x) for x in m["earlier"]]}
+                                    if m.get("earlier") else {}),
+                                 **({"answers_sender": str(m["answers_sender"])}
+                                    if m.get("answers_sender") else {}),
+                                 **({"own": True} if m.get("own") else {})},
+                                ensure_ascii=False)
+                     for n, m in enumerate(batch, 1))
+
+
+def prompt_of(batch: Sequence[Mapping[str, Any]]) -> str:
+    return SYSTEM_PROMPT + "\n\n" + batch_lines(batch)
 
 
 _FROM = {"internal": "colleague", "customer": "customer", "supplier": "supplier"}
@@ -341,7 +346,7 @@ def claude_classify(binary: Optional[str] = None, model: Optional[str] = None,
     run = call or subprocess.run
 
     def classify(batch: Sequence[Mapping[str, Any]]) -> list[Verdict]:
-        from . import model_ledger
+        from . import humanize, model_ledger
         from .agent_environment import agent_environment
         from .card_text import mask_served
         if not batch:
@@ -350,9 +355,10 @@ def claude_classify(binary: Optional[str] = None, model: Optional[str] = None,
         cfg_home = os.environ.get(HOME_ENV) or CLAUDE_HOME
         if not credential_path_safe(exe, cfg_home):
             return [None] * len(batch)
-        prompt = mask_served(prompt_of(batch))
+        prompt = mask_served(batch_lines(batch))
         argv = [exe, "-p", "--setting-sources", "", "--tools", "",
                 "--no-session-persistence", "--max-turns", "1", "--output-format", "json",
+                "--system-prompt", SYSTEM_PROMPT, "--exclude-dynamic-system-prompt-sections",
                 "--model", model or os.environ.get(MODEL_ENV) or MODEL]
         env = dict(agent_environment(os.environ))
         env["HOME"] = cfg_home
@@ -361,7 +367,7 @@ def claude_classify(binary: Optional[str] = None, model: Optional[str] = None,
         started = time.monotonic()
         try:
             done = run(argv, input=prompt, capture_output=True, text=True, timeout=limit,
-                       env=env, start_new_session=True)
+                       env=env, cwd=humanize.neutral_dir(), start_new_session=True)
             reply = json.loads(done.stdout or "{}")
         except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
             model_ledger.record(FEATURE, prompt=prompt, ok=False,

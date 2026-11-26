@@ -5,17 +5,49 @@
 // rows. Hover shows exact values; colours come from one palette for light and dark.
 
 import { useTheme } from "next-themes";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Answer } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import {
-  INK, MOVE, clip, colour, conversion, extent, full, human, inkOn, ramp, short, ticks, waterfall, type Theme,
+  INK, MOVE, THRESHOLD, clip, colour, conversion, extent, full, human, inkForHex, inkOn, ramp, short, thresholdColour, ticks, waterfall, type Theme,
   dateLabel, axisLabels,
 } from "./scale";
 
 export type AskChart = NonNullable<Answer["charts"]>[number];
+export interface ChartReference {
+  value: number;
+  label?: string;
+  semantic?: boolean;
+}
 type Series = AskChart["series"][number];
 type Tip = { x: number; y: number; title: string; rows: { colour?: string; name: string; value: string }[] } | null;
+
+const PCT_NAME = /(?:^|_)(?:pct|percent|percentage|rate|score|sla|attainment|on_time)(?:$|_)/i;
+
+/** Infer a default 80% target reference for single-series 0..100 percentage/score bar charts when none is passed. */
+function resolveReference(
+  chart: AskChart,
+  left: Series[],
+  stacked: boolean,
+  reference?: ChartReference,
+  threshold?: number,
+): ChartReference | undefined {
+  if (reference) return reference;
+  if (threshold !== undefined && Number.isFinite(threshold)) {
+    return { value: threshold, label: short(threshold), semantic: true };
+  }
+  if (stacked || left.length !== 1 || chart.kind !== "bar") return undefined;
+  const s = left[0];
+  if (!PCT_NAME.test(s.name)) return undefined;
+  const vals = s.values.filter((v): v is number => v !== null && v !== undefined);
+  if (vals.length < 2) return undefined;
+  const max = Math.max(...vals);
+  const min = Math.min(...vals);
+  if (min >= 0 && max > 1 && max <= 100) {
+    return { value: 80, label: "80%", semantic: true };
+  }
+  return undefined;
+}
 
 const FONT = "var(--font-sans), Inter, 'Segoe UI', Helvetica, Arial, sans-serif";
 const W = 640;
@@ -34,19 +66,19 @@ function Tooltip({ tip }: { tip: Tip; theme: Theme }) {
   return (
     <div
       role="tooltip"
-      className="pointer-events-none absolute z-10 min-w-[148px] max-w-[280px] rounded-md border border-border-strong bg-raised px-2.5 py-2 text-[12px] text-fg shadow-pop"
+      className="pointer-events-none absolute z-10 min-w-[152px] max-w-[280px] rounded-lg border border-border-strong bg-raised px-3 py-2 text-[12px] text-fg shadow-lg backdrop-blur-md tabular-nums"
       style={{ left: tip.x, top: tip.y }}
     >
-      <div className="mb-0.5 font-medium">{tip.title}</div>
+      <div className="mb-1 font-medium text-fg">{tip.title}</div>
       {tip.rows.map((r, i) => (
-        <div key={i} className="flex items-center gap-2 tabular-nums">
+        <div key={i} className="flex items-center gap-2 py-0.5 tabular-nums">
           {r.colour && (
             <svg width={8} height={8} className="shrink-0" aria-hidden>
-              <rect width={8} height={8} rx={2} fill={r.colour} />
+              <rect width={8} height={8} rx={2.5} fill={r.colour} />
             </svg>
           )}
           <span className="flex-1 truncate text-muted">{r.name}</span>
-          <span>{r.value}</span>
+          <span className="font-medium text-fg">{r.value}</span>
         </div>
       ))}
     </div>
@@ -84,9 +116,23 @@ function Svg({ chart, width = W, height = H, children }: { chart: AskChart; widt
 
 // ---------------------------------------------------------------------- cartesian
 
-type Plot = { chart: AskChart; labels: string[]; series: Series[]; theme: Theme; width?: number; height?: number; range?: [number, number]; compact?: boolean; onTip: ReturnType<typeof useTip> };
+type Plot = {
+  chart: AskChart;
+  labels: string[];
+  series: Series[];
+  theme: Theme;
+  width?: number;
+  height?: number;
+  range?: [number, number];
+  compact?: boolean;
+  reference?: ChartReference;
+  threshold?: number;
+  onTip: ReturnType<typeof useTip>;
+};
 
-function Cartesian({ chart, labels: given0, series, theme, width = W, height: given = H, range, compact, onTip }: Plot) {
+function Cartesian({ chart, labels: given0, series, theme, width = W, height: given = H, range, compact, reference, threshold, onTip }: Plot) {
+  const uid = useId().replace(/:/g, "");
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
   const ink = INK[theme];
   const labels = axisLabels(given0);
   const spec = chart.spec ?? undefined;
@@ -95,11 +141,16 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const horizontal = !!spec?.horizontal;
   const left = series.filter((s) => s.axis !== "right");
   const right = series.filter((s) => s.axis === "right");
+  const refLine = resolveReference(chart, left, stacked, reference, threshold);
   const steps = kind === "waterfall" ? waterfall(left[0]?.values ?? []) : null;
   const names = steps ? [...labels, "Total"] : labels;
   const n = Math.max(1, names.length);
-  const [lo0, hi0] = range ?? (steps ? [Math.min(0, ...steps.map((s) => Math.min(s.from, s.to))), Math.max(0, ...steps.map((s) => Math.max(s.from, s.to)))] : extent(left, stacked || (kind === "area" && stacked)));
-  const axis = ticks(lo0, hi0, compact ? 3 : 5);
+  const [rawLo, rawHi] = range ?? (steps ? [Math.min(0, ...steps.map((s) => Math.min(s.from, s.to))), Math.max(0, ...steps.map((s) => Math.max(s.from, s.to)))] : extent(left, stacked || (kind === "area" && stacked)));
+  const lo0 = refLine ? Math.min(rawLo, refLine.value) : rawLo;
+  const hi0 = refLine ? Math.max(rawHi, refLine.value) : rawHi;
+  const hasVerticalBarLabels = !horizontal && !compact && !steps && !stacked && kind !== "line" && kind !== "area" && left.length === 1 && n <= 16;
+  const hiForTicks = hasVerticalBarLabels && !range && hi0 > 0 ? hi0 * 1.18 : hi0;
+  const axis = ticks(lo0, hiForTicks, compact ? 3 : 5);
   const [lo, hi] = [axis[0], axis[axis.length - 1]];
   const longest = Math.max(0, ...names.map((l) => l.length));
   const rotate = !horizontal && (n > 8 || longest * n * 6.2 > width - 80);
@@ -108,7 +159,8 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const tilt = compact ? 12 : TILT_CHARS;
   const charPx = compact ? 6.6 : 7.4;
   const slant = Math.min(longest, tilt) * charPx * Math.SQRT1_2;
-  const padR = right.length ? 46 : 12;
+  const padT = hasVerticalBarLabels ? 22 : 10;
+  const padR = right.length ? 46 : horizontal ? 36 : 16;
   const hMaxChars = compact ? 18 : 26;
   let padL = horizontal ? Math.min(Math.floor(width * 0.4), 18 + Math.min(longest, hMaxChars) * 7.6) : compact ? 34 : 52;
   const hLabelChars = horizontal ? Math.max(10, Math.floor((padL - 14) / 7.6)) : 24;
@@ -123,16 +175,16 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
     }
     padL = Math.min(padL, Math.floor(width * 0.35));
   }
-  const padB = horizontal ? 22 : rotate ? Math.ceil(Math.min(slant, 155) + 28) : 24;
+  const padB = horizontal ? 24 : rotate ? Math.ceil(Math.min(slant, 155) + 28) : 24;
   const pw = width - padL - padR;
   // the slanted names take their room below the plot, not out of it
   const height = given + (rotate ? Math.max(0, padB - (compact ? 40 : 64)) : 0);
-  const ph = height - padB - 8;
+  const ph = height - padB - padT;
   const along = horizontal ? ph : pw;
   const across = horizontal ? pw : ph;
   const band = along / n;
   const pos = (v: number) => ((v - lo) / (hi - lo || 1)) * across;
-  const at = (v: number) => 8 + ph - pos(v);
+  const at = (v: number) => padT + ph - pos(v);
   const zero = pos(Math.min(Math.max(0, lo), hi));
   // slanted labels need ~18 px apart along the axis to stay clear of each other
   const every = Math.max(1, rotate && !compact ? Math.ceil(18 / band) : (horizontal ? Math.ceil(13 / band) : Math.ceil(n / (compact ? 6 : 16))));
@@ -140,27 +192,51 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   const rpos = (v: number) => (rAxis ? ((v - rAxis[0]) / (rAxis[rAxis.length - 1] - rAxis[0] || 1)) * ph : 0);
 
   const rect = (i: number, a: number, b: number, fill: string, slot = 0, slots = 1, key = "") => {
-    // a few bars stay bars: one category is not drawn as a slab as wide as the plot
-    const inner = kind === "histogram" ? band * 0.98 : Math.min(band * 0.76, 56 * slots);
+    // thicker, punchier Genie-grade bars while keeping a single bar from becoming a slab
+    const inner = kind === "histogram" ? band * 0.98 : Math.min(band * 0.80, 56 * slots);
     const t = inner / slots;
     const start = band * i + (band - inner) / 2 + t * slot;
     const [p, q] = [pos(Math.min(a, b)), pos(Math.max(a, b))];
-    // a subtle 3 px end on plain bars (stacked and histogram bars stay square); each grows from its baseline on first draw
-    const rx = stacked || kind === "histogram" ? undefined : 3;
+    // crisp 4px radius on plain bars; stacked and histogram stay square
+    const square = stacked || kind === "histogram";
+    const fillOpacity = hoverIdx !== null && hoverIdx !== i ? 0.55 : 1;
     return horizontal ? (
-      <rect key={key} className="chart-bar-h" rx={rx} x={padL + p} y={8 + start} width={Math.max(q - p, 0.5)} height={Math.max(t - (slots > 1 ? 1 : 0), 1)} fill={fill} />
+      <rect
+        key={key}
+        className="chart-bar-h transition-opacity duration-150"
+        rx={square ? undefined : 4}
+        ry={square ? undefined : 4}
+        x={padL + p}
+        y={padT + start}
+        width={Math.max(q - p, 0.5)}
+        height={Math.max(t - (slots > 1 ? 1 : 0), 2)}
+        fill={fill}
+        fillOpacity={fillOpacity}
+      />
     ) : (
-      <rect key={key} className="chart-bar" rx={rx} x={padL + start} y={8 + ph - q} width={Math.max(t - (slots > 1 ? 1 : 0), 1)} height={Math.max(q - p, 0.5)} fill={fill} />
+      <rect
+        key={key}
+        className="chart-bar transition-opacity duration-150"
+        rx={square ? undefined : 4}
+        ry={square ? undefined : 4}
+        x={padL + start}
+        y={padT + ph - q}
+        width={Math.max(t - (slots > 1 ? 1 : 0), 2)}
+        height={Math.max(q - p, 0.5)}
+        fill={fill}
+        fillOpacity={fillOpacity}
+      />
     );
   };
 
+  const defs: ReactNode[] = [];
   const marks: ReactNode[] = [];
   if (steps) {
     const move = MOVE[theme];
     steps.forEach((s, i) => {
       marks.push(rect(i, s.from, s.to, s.total ? move.total : s.to >= s.from ? move.up : move.down, 0, 1, `w${i}`));
       if (i < steps.length - 1) {
-        const y = 8 + ph - pos(s.to);
+        const y = padT + ph - pos(s.to);
         marks.push(<line key={`c${i}`} x1={padL + band * (i + 0.88)} x2={padL + band * (i + 1.12)} y1={y} y2={y} stroke={ink.axis} strokeWidth={1} />);
       }
     });
@@ -173,41 +249,71 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
         const top = stacked ? base[i] + v : v;
         const bottom = stacked ? base[i] : Math.min(Math.max(0, lo), hi);
         if (stacked) base[i] += v;
-        return { x: padL + band * (i + 0.5), y: 8 + ph - pos(top), y0: 8 + ph - pos(bottom) };
+        return { x: padL + band * (i + 0.5), y: padT + ph - pos(top), y0: padT + ph - pos(bottom) };
       }).filter((p): p is { x: number; y: number; y0: number } => p !== null);
-      if (kind === "area" && pts.length > 1) {
+      if (pts.length > 1) {
+        const gradId = `${uid}-area-${si}`;
+        defs.push(
+          <linearGradient key={gradId} id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={c} stopOpacity={kind === "area" ? (stacked ? 0.45 : 0.28) : 0.2} />
+            <stop offset="100%" stopColor={c} stopOpacity={stacked ? 0.08 : 0} />
+          </linearGradient>,
+        );
         const d = `M${pts.map((p) => `${p.x},${p.y}`).join("L")}L${[...pts].reverse().map((p) => `${p.x},${p.y0}`).join("L")}Z`;
-        marks.push(<path key={`a${si}`} d={d} fill={c} fillOpacity={stacked ? 0.55 : 0.18} stroke="none" />);
+        marks.push(<path key={`a${si}`} d={d} fill={`url(#${gradId})`} stroke="none" className="pointer-events-none" />);
       }
-      marks.push(<polyline key={`l${si}`} className="chart-line" pathLength={1} fill="none" stroke={c} strokeWidth={compact ? 1.5 : 2} strokeLinejoin="round" points={pts.map((p) => `${p.x},${p.y}`).join(" ")} />);
-      if (pts.length <= 40) pts.forEach((p, i) => marks.push(<circle key={`p${si}-${i}`} className="chart-value" cx={p.x} cy={p.y} r={compact ? 1.8 : (i === pts.length - 1 ? 4 : 2.6)} fill={c} />));
+      marks.push(<polyline key={`l${si}`} className="chart-line" pathLength={1} fill="none" stroke={c} strokeWidth={compact ? 1.8 : 2.5} strokeLinecap="round" strokeLinejoin="round" points={pts.map((p) => `${p.x},${p.y}`).join(" ")} />);
+      if (pts.length <= 40) pts.forEach((p, i) => marks.push(<circle key={`p${si}-${i}`} className="chart-value" cx={p.x} cy={p.y} r={compact ? 2 : (i === pts.length - 1 ? 4.5 : 3)} fill={c} stroke={!compact ? ink.ground : undefined} strokeWidth={!compact ? 1.5 : undefined} />));
       // the latest point is marked larger, with its value, on a single-series line
       const last = pts[pts.length - 1];
       const lastV = [...s.values].reverse().find((v) => v !== null && v !== undefined);
-      if (!compact && !stacked && left.length === 1 && last && lastV !== undefined && lastV !== null && last.y > 22) {
-        marks.push(<text key={`lv${si}`} className="chart-value" x={Math.min(last.x, padL + pw - 14)} y={last.y - 9} textAnchor="middle" fontSize={12} fontWeight={600} fill={ink.text}>{short(lastV)}</text>);
+      if (!compact && !stacked && left.length === 1 && last && lastV !== undefined && lastV !== null && last.y > padT + 14) {
+        marks.push(<text key={`lv${si}`} className="chart-value" x={Math.min(last.x, padL + pw - 14)} y={last.y - 10} textAnchor="middle" fontSize={12} fontWeight={600} fill={ink.text}>{short(lastV)}</text>);
       }
     });
   } else {
     const pos0 = new Array(names.length).fill(0);
     const neg0 = new Array(names.length).fill(0);
+    const useSemantic = Boolean(refLine?.semantic && !stacked && left.length === 1);
     left.forEach((s, si) => {
-      const c = colour(si, theme);
+      const seriesColor = colour(si, theme);
       s.values.forEach((v, i) => {
         if (v === null || v === undefined) return;
+        const c = useSemantic && refLine ? thresholdColour(v, refLine.value, theme) : seriesColor;
         if (stacked) {
           const base = v >= 0 ? pos0 : neg0;
           marks.push(rect(i, base[i], base[i] + v, c, 0, 1, `b${si}-${i}`));
           base[i] += v;
         } else {
           marks.push(rect(i, 0, v, c, si, left.length, `b${si}-${i}`));
-          // the value at the bar's end where there is room (one series, a dozen bars or fewer)
+          // crisp bold value labels: rendered inside wide horizontal bars (high-contrast ink) or cleanly above vertical bars
           const room = across - pos(v);
-          if (!compact && left.length === 1 && n <= 12 && v >= 0 && room > (horizontal ? 44 : 16)) {
+          const barSpan = Math.abs(pos(v) - zero);
+          if (!compact && left.length === 1 && n <= 16 && v >= 0) {
             const mid = band * i + band / 2;
-            marks.push(horizontal
-              ? <text key={`v${i}`} className="chart-value" x={padL + pos(v) + 5} y={8 + mid + 4} fontSize={12} fontWeight={600} fill={ink.text}>{short(v)}</text>
-              : <text key={`v${i}`} className="chart-value" x={padL + mid} y={8 + ph - pos(v) - 5} textAnchor="middle" fontSize={12} fontWeight={600} fill={ink.text}>{short(v)}</text>);
+            const labelText = short(v);
+            if (horizontal) {
+              const inside = barSpan >= Math.max(46, labelText.length * 8 + 16) && band * 0.80 >= 15;
+              if (inside) {
+                marks.push(
+                  <text key={`v${i}`} className="chart-value tabular-nums" x={padL + pos(v) - 8} y={padT + mid + 4} textAnchor="end" fontSize={11.5} fontWeight={700} fill={inkForHex(c)}>
+                    {labelText}
+                  </text>,
+                );
+              } else if (room > 26) {
+                marks.push(
+                  <text key={`v${i}`} className="chart-value tabular-nums" x={padL + pos(v) + 6} y={padT + mid + 4} textAnchor="start" fontSize={11.5} fontWeight={600} fill={ink.text}>
+                    {labelText}
+                  </text>,
+                );
+              }
+            } else if (room + padT > 18) {
+              marks.push(
+                <text key={`v${i}`} className="chart-value tabular-nums" x={padL + mid} y={Math.max(12, padT + ph - pos(v) - 6)} textAnchor="middle" fontSize={11.5} fontWeight={600} fill={ink.text}>
+                  {labelText}
+                </text>,
+              );
+            }
           }
         }
       });
@@ -215,43 +321,82 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
   }
   right.forEach((s, k) => {
     const c = colour(left.length + k, theme);
-    const pts = s.values.map((v, i) => (v === null || v === undefined ? null : `${padL + band * (i + 0.5)},${8 + ph - rpos(v)}`)).filter(Boolean);
-    marks.push(<polyline key={`r${k}`} className="chart-line" pathLength={1} fill="none" stroke={c} strokeWidth={2.2} points={pts.join(" ")} />);
-    s.values.forEach((v, i) => v !== null && v !== undefined && marks.push(<circle key={`rp${k}-${i}`} cx={padL + band * (i + 0.5)} cy={8 + ph - rpos(v)} r={3} fill={ink.ground} stroke={c} strokeWidth={2} />));
+    const pts = s.values.map((v, i) => (v === null || v === undefined ? null : `${padL + band * (i + 0.5)},${padT + ph - rpos(v)}`)).filter(Boolean);
+    marks.push(<polyline key={`r${k}`} className="chart-line" pathLength={1} fill="none" stroke={c} strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" points={pts.join(" ")} />);
+    s.values.forEach((v, i) => v !== null && v !== undefined && marks.push(<circle key={`rp${k}-${i}`} cx={padL + band * (i + 0.5)} cy={padT + ph - rpos(v)} r={3.2} fill={ink.ground} stroke={c} strokeWidth={2} />));
   });
+
+  // Optional dashed reference / threshold line with clean badge (uses <path> to stay cleanly distinct from gridlines)
+  let referenceMark: ReactNode = null;
+  if (refLine && !compact && refLine.value >= lo && refLine.value <= hi) {
+    const refColor = refLine.semantic ? THRESHOLD[theme].ok : ink.muted;
+    const badgeText = refLine.label ?? short(refLine.value);
+    const badgeW = Math.max(34, badgeText.length * 6.8 + 12);
+    if (horizontal) {
+      const rx = padL + pos(refLine.value);
+      const bx = Math.min(Math.max(padL + 2, rx - badgeW / 2), padL + pw - badgeW);
+      referenceMark = (
+        <g data-reference-line="">
+          <path d={`M ${rx} ${padT} L ${rx} ${padT + ph}`} fill="none" stroke={refColor} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.9} />
+          <rect x={bx} y={1} width={badgeW} height={16} rx={4} fill={ink.ground} stroke={refColor} strokeWidth={1} />
+          <text x={bx + badgeW / 2} y={12} textAnchor="middle" fontSize={10} fontWeight={600} fill={refColor} className="tabular-nums">
+            {badgeText}
+          </text>
+        </g>
+      );
+    } else {
+      const ry = at(refLine.value);
+      referenceMark = (
+        <g data-reference-line="">
+          <path d={`M ${padL} ${ry} L ${padL + pw} ${ry}`} fill="none" stroke={refColor} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.9} />
+          <rect x={padL + pw - badgeW - 4} y={Math.max(2, ry - 18)} width={badgeW} height={16} rx={4} fill={ink.ground} stroke={refColor} strokeWidth={1} />
+          <text x={padL + pw - badgeW / 2 - 4} y={Math.max(13, ry - 7)} textAnchor="middle" fontSize={10} fontWeight={600} fill={refColor} className="tabular-nums">
+            {badgeText}
+          </text>
+        </g>
+      );
+    }
+  }
 
   const hover = (i: number) => (e: React.MouseEvent) => {
     const rows = steps
       ? [{ colour: undefined, name: steps[i].total ? "Total" : "Change", value: full(steps[i].total ? steps[i].to : steps[i].to - steps[i].from, chart.currency) },
          ...(steps[i].total ? [] : [{ colour: undefined, name: "Running total", value: full(steps[i].to, chart.currency) }])]
-      : series.map((s, si) => ({ colour: colour(s.axis === "right" ? left.length + right.indexOf(s) : left.indexOf(s), theme), name: human(s.name), value: full(s.values[i], chart.currency) }));
+      : series.map((s) => ({
+          colour: refLine?.semantic && !stacked && left.length === 1 && s.values[i] !== null && s.values[i] !== undefined
+            ? thresholdColour(s.values[i] as number, refLine.value, theme)
+            : colour(s.axis === "right" ? left.length + right.indexOf(s) : left.indexOf(s), theme),
+          name: human(s.name),
+          value: full(s.values[i], chart.currency),
+        }));
     onTip.show(e, names[i], rows);
   };
 
   return (
     <Svg chart={chart} width={width} height={height}>
+      {defs.length > 0 && <defs>{defs}</defs>}
       {axis.map((t) => (horizontal ? (
         <g key={t}>
-          <line x1={padL + pos(t)} x2={padL + pos(t)} y1={8} y2={8 + ph} stroke={ink.grid} strokeWidth={1} strokeOpacity={theme === "dark" ? 0.85 : 0.75} strokeDasharray="3 4" />
           <text x={padL + pos(t)} y={height - 6} textAnchor="middle" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
         </g>
       ) : (
         <g key={t}>
-          <line x1={padL} x2={padL + pw} y1={at(t)} y2={at(t)} stroke={ink.grid} strokeWidth={1} strokeOpacity={theme === "dark" ? 0.85 : 0.75} strokeDasharray="3 4" />
+          <line x1={padL} x2={padL + pw} y1={at(t)} y2={at(t)} stroke={ink.grid} strokeWidth={1} opacity={0.7} strokeDasharray="3 3" />
           <text x={padL - 6} y={at(t) + 4} textAnchor="end" fontSize={compact ? 10 : 11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
         </g>
       )))}
       {rAxis?.map((t) => (
-        <text key={`r${t}`} x={width - padR + 6} y={8 + ph - rpos(t) + 4} fontSize={11} fill={ink.muted}>{short(t)}</text>
+        <text key={`r${t}`} x={width - padR + 6} y={padT + ph - rpos(t) + 4} fontSize={11} fill={ink.muted}>{short(t)}</text>
       ))}
       {horizontal ? (
-        <line x1={padL + zero} x2={padL + zero} y1={8} y2={8 + ph} stroke={ink.axis} strokeWidth={1} />
+        <line x1={padL + zero} x2={padL + zero} y1={padT} y2={padT + ph} stroke={ink.axis} strokeWidth={1} />
       ) : (
-        <line x1={padL} x2={padL + pw} y1={8 + ph - zero} y2={8 + ph - zero} stroke={ink.axis} strokeWidth={1} />
+        <line x1={padL} x2={padL + pw} y1={padT + ph - zero} y2={padT + ph - zero} stroke={ink.axis} strokeWidth={1} />
       )}
       {marks}
+      {referenceMark}
       {names.map((l, i) => (i % every ? null : horizontal ? (
-        <text key={`x${i}`} x={padL - 8} y={8 + band * (i + 0.5) + 4} textAnchor="end" fontSize={11} fill={ink.text}>
+        <text key={`x${i}`} x={padL - 8} y={padT + band * (i + 0.5) + 4} textAnchor="end" fontSize={11.5} fill={ink.text}>
           <title>{l}</title>
           {clip(l, hLabelChars)}
         </text>
@@ -259,11 +404,11 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
         <text
           key={`x${i}`}
           x={padL + band * (i + 0.5)}
-          y={8 + ph + 15}
+          y={padT + ph + 15}
           fontSize={compact ? 10 : 11}
           fill={ink.muted}
           textAnchor={rotate ? "end" : "middle"}
-          transform={rotate ? `rotate(-45 ${padL + band * (i + 0.5)} ${8 + ph + 15})` : undefined}
+          transform={rotate ? `rotate(-45 ${padL + band * (i + 0.5)} ${padT + ph + 15})` : undefined}
         >
           {clip(l, rotate ? tilt : compact ? 10 : 18)}
           {l.length > (rotate ? tilt : compact ? 10 : 18) && <title>{l}</title>}
@@ -274,12 +419,12 @@ function Cartesian({ chart, labels: given0, series, theme, width = W, height: gi
           key={`h${i}`}
           data-hover=""
           x={horizontal ? padL : padL + band * i}
-          y={horizontal ? 8 + band * i : 8}
+          y={horizontal ? padT + band * i : padT}
           width={horizontal ? pw : band}
           height={horizontal ? band : ph}
           fill="transparent"
-          onMouseMove={hover(i)}
-          onMouseLeave={onTip.hide}
+          onMouseMove={(e) => { setHoverIdx(i); hover(i)(e); }}
+          onMouseLeave={() => { setHoverIdx(null); onTip.hide(); }}
         />
       ))}
     </Svg>
@@ -307,7 +452,7 @@ function Funnel({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip:
             ...(conv[i].ofFirst !== null && i > 0 ? [{ name: "Of the first step", value: `${Math.round((conv[i].ofFirst ?? 0) * 100)}%` }] : []),
           ])} onMouseLeave={onTip.hide}>
             <text x={150} y={y + row / 2 + 4} textAnchor="end" fontSize={12} fill={ink.text}>{clip(chart.labels[i], 22)}</text>
-            <rect x={160 + (360 - w) / 2} y={y + 3} width={Math.max(w, 1)} height={row - 8} fill={colour(0, theme)} fillOpacity={1 - i * (0.5 / Math.max(1, values.length))} />
+            <rect x={160 + (360 - w) / 2} y={y + 3} width={Math.max(w, 1)} height={row - 8} rx={3} ry={3} className="transition-opacity duration-150 hover:opacity-90" fill={colour(0, theme)} fillOpacity={1 - i * (0.5 / Math.max(1, values.length))} />
             <text x={530} y={y + row / 2 + 4} fontSize={12} fill={ink.text} className="tabular-nums">
               {short(v ?? 0)}
               {i > 0 && conv[i].ofPrev !== null ? <tspan fill={ink.muted}>{`  ${Math.round((conv[i].ofPrev ?? 0) * 100)}%`}</tspan> : null}
@@ -340,7 +485,7 @@ function Pie({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip: Re
         const a0 = angle;
         angle += (v / total) * Math.PI * 2;
         return v > 0 ? (
-          <path key={i} d={arc(a0, angle)} fill={colour(i, theme)} stroke={ink.ground} strokeWidth={1.5}
+          <path key={i} d={arc(a0, angle)} fill={colour(i, theme)} stroke={ink.ground} strokeWidth={1.5} className="transition-opacity duration-150 hover:opacity-90"
             onMouseMove={(e) => onTip.show(e, chart.labels[i], [{ colour: colour(i, theme), name: `${Math.round((v / total) * 1000) / 10}%`, value: full(chart.series[0].values[i], chart.currency) }])}
             onMouseLeave={onTip.hide} />
         ) : null;
@@ -370,13 +515,28 @@ function Scatter({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip
   const known = xs.filter((v): v is number => v !== null && v !== undefined);
   const xa = ticks(Math.min(...known), Math.max(...known));
   const [ylo, yhi] = extent(chart.series);
-  const ya = ticks(Math.min(ylo, ...chart.series.flatMap((s) => s.values.filter((v): v is number => v != null))), yhi);
-  const [padL, padB] = [52, 40];
-  const pw = W - padL - 12;
-  const ph = H - padB - 8;
+  const yVals = chart.series.flatMap((s) => s.values.filter((v): v is number => v != null));
+  const ya = ticks(Math.min(ylo, ...yVals), yhi);
+  const [padL, padB, padR, padT] = [52, 42, 16, 18];
+  const pw = W - padL - padR;
+  const ph = H - padB - padT;
   const X = (v: number) => padL + ((v - xa[0]) / (xa[xa.length - 1] - xa[0] || 1)) * pw;
-  const Y = (v: number) => 8 + ph - ((v - ya[0]) / (ya[ya.length - 1] - ya[0] || 1)) * ph;
+  const Y = (v: number) => padT + ph - ((v - ya[0]) / (ya[ya.length - 1] - ya[0] || 1)) * ph;
   const trend = chart.trend;
+
+  // Quadrant mean crosshairs (Avg X, Avg Y) across paired valid points
+  const pairs: { x: number; y: number }[] = [];
+  for (const s of chart.series) {
+    s.values.forEach((v, i) => {
+      const xv = xs[i];
+      if (v !== null && v !== undefined && xv !== null && xv !== undefined) pairs.push({ x: xv, y: v });
+    });
+  }
+  const avgX = pairs.length >= 2 ? pairs.reduce((sum, p) => sum + p.x, 0) / pairs.length : null;
+  const avgY = pairs.length >= 2 ? pairs.reduce((sum, p) => sum + p.y, 0) / pairs.length : null;
+  const avgXLabel = avgX !== null ? `Avg X: ${short(avgX)}` : "";
+  const avgYLabel = avgY !== null ? `Avg Y: ${short(avgY)}` : "";
+
   return (
     <Svg chart={chart}>
       {ya.map((t) => (
@@ -386,64 +546,166 @@ function Scatter({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip
         </g>
       ))}
       {xa.map((t) => (
-        <text key={`x${t}`} x={X(t)} y={8 + ph + 16} textAnchor="middle" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
+        <text key={`x${t}`} x={X(t)} y={padT + ph + 16} textAnchor="middle" fontSize={11} fill={ink.muted} className="tabular-nums">{short(t)}</text>
       ))}
       <text x={padL + pw} y={H - 4} textAnchor="end" fontSize={11} fill={ink.muted}>{human(chart.x)}</text>
+      {avgX !== null && avgY !== null && (
+        <g data-quadrant-crosshair="">
+          <path
+            d={`M ${X(avgX)} ${padT} L ${X(avgX)} ${padT + ph}`}
+            fill="none"
+            stroke={ink.muted}
+            strokeOpacity={0.6}
+            strokeWidth={1.25}
+            strokeDasharray="4 4"
+          />
+          <path
+            d={`M ${padL} ${Y(avgY)} L ${padL + pw} ${Y(avgY)}`}
+            fill="none"
+            stroke={ink.muted}
+            strokeOpacity={0.6}
+            strokeWidth={1.25}
+            strokeDasharray="4 4"
+          />
+          <rect
+            x={Math.min(Math.max(padL + 2, X(avgX) - (avgXLabel.length * 3.4 + 6)), padL + pw - (avgXLabel.length * 6.8 + 12))}
+            y={1}
+            width={avgXLabel.length * 6.8 + 12}
+            height={15}
+            rx={3}
+            fill={ink.ground}
+            stroke={ink.axis}
+            strokeWidth={1}
+          />
+          <text
+            x={Math.min(Math.max(padL + 2 + (avgXLabel.length * 3.4 + 6), X(avgX)), padL + pw - (avgXLabel.length * 3.4 + 6))}
+            y={11.5}
+            textAnchor="middle"
+            fontSize={10}
+            fontWeight={600}
+            fill={ink.muted}
+            className="tabular-nums"
+          >
+            {avgXLabel}
+          </text>
+          <rect
+            x={padL + pw - (avgYLabel.length * 6.8 + 12) - 4}
+            y={Math.max(padT + 2, Y(avgY) - 18)}
+            width={avgYLabel.length * 6.8 + 12}
+            height={15}
+            rx={3}
+            fill={ink.ground}
+            stroke={ink.axis}
+            strokeWidth={1}
+          />
+          <text
+            x={padL + pw - (avgYLabel.length * 3.4 + 6) - 4}
+            y={Math.max(padT + 12.5, Y(avgY) - 7.5)}
+            textAnchor="middle"
+            fontSize={10}
+            fontWeight={600}
+            fill={ink.muted}
+            className="tabular-nums"
+          >
+            {avgYLabel}
+          </text>
+        </g>
+      )}
       {chart.series.map((s, si) => s.values.map((v, i) => (v === null || v === undefined || xs[i] === null || xs[i] === undefined ? null : (
-        <circle key={`${si}-${i}`} cx={X(xs[i] as number)} cy={Y(v)} r={4} fill={colour(si, theme)} fillOpacity={0.75} stroke={ink.ground} strokeWidth={0.8}
+        <circle
+          key={`${si}-${i}`}
+          cx={X(xs[i] as number)}
+          cy={Y(v)}
+          r={6.5}
+          fill={colour(si, theme)}
+          fillOpacity={0.68}
+          stroke={colour(si, theme)}
+          strokeOpacity={0.95}
+          strokeWidth={1.25}
           onMouseMove={(e) => onTip.show(e, chart.labels[i], [{ name: human(chart.x), value: full(xs[i]) }, { colour: colour(si, theme), name: human(s.name), value: full(v, chart.currency) }])}
-          onMouseLeave={onTip.hide} />
+          onMouseLeave={onTip.hide}
+        />
       ))))}
       {trend && (
         <line x1={X(xa[0])} x2={X(xa[xa.length - 1])} y1={Y(trend.slope * xa[0] + trend.intercept)} y2={Y(trend.slope * xa[xa.length - 1] + trend.intercept)}
-          stroke={ink.text} strokeOpacity={0.6} strokeWidth={1.5} strokeDasharray="5 4" />
+          stroke={ink.text} strokeOpacity={0.65} strokeWidth={1.75} strokeDasharray="5 4" />
       )}
     </Svg>
   );
 }
 
 function Heatmap({ chart, theme, onTip }: { chart: AskChart; theme: Theme; onTip: ReturnType<typeof useTip> }) {
+  const uid = useId().replace(/:/g, "");
+  const heatKeyId = `${uid}-heat-key`;
   const ink = INK[theme];
   const cells = chart.series.flatMap((s) => s.values.filter((v): v is number => v !== null && v !== undefined));
   const [lo, hi] = [Math.min(...cells), Math.max(...cells)];
+  const mid = (lo + hi) / 2;
   const cols = chart.labels.length;
   const rows = chart.series.length;
-  const padL = Math.min(160, 12 + Math.max(...chart.series.map((s) => Math.min(24, s.name.length))) * 6.4);
-  const cw = Math.max(8, Math.min(48, (W - padL - 8) / Math.max(cols, 1)));
-  const ch = Math.max(12, Math.min(26, 320 / Math.max(rows, 1)));
-  const height = 8 + ch * rows + 64;
-  const width = Math.max(W, padL + cw * cols + 8);
+  const padL = Math.min(160, 12 + Math.max(...chart.series.map((s) => Math.min(24, s.name.length))) * 6.6);
+  const scaleRailW = 64;
+  const cw = Math.max(10, Math.min(56, (W - padL - scaleRailW - 12) / Math.max(cols, 1)));
+  const ch = Math.max(16, Math.min(30, 340 / Math.max(rows, 1)));
+  const gridH = ch * rows;
+  const height = Math.max(116, 10 + gridH + 56);
+  const width = Math.max(W, padL + cw * cols + scaleRailW + 12);
   const every = Math.max(1, Math.ceil((cols * 12) / (cw * cols)));
+  const barX = padL + cw * cols + 16;
+  const barH = Math.max(64, Math.min(gridH, 160));
+  const barY = 10 + Math.max(0, (gridH - barH) / 2);
   return (
     <Svg chart={chart} width={width} height={height}>
       {chart.series.map((s, r) => (
         <g key={r}>
-          <text x={padL - 6} y={8 + ch * r + ch / 2 + 4} textAnchor="end" fontSize={11} fill={ink.text}>{clip(s.name, 24)}</text>
+          <text x={padL - 8} y={10 + ch * r + ch / 2 + 4} textAnchor="end" fontSize={11.5} fill={ink.text}>{clip(s.name, 24)}</text>
           {s.values.map((v, c) => (
-            <rect key={c} x={padL + cw * c} y={8 + ch * r} width={cw - 1} height={ch - 1}
+            <rect
+              key={c}
+              x={padL + cw * c}
+              y={10 + ch * r}
+              width={cw - 2}
+              height={ch - 2}
+              rx={3}
               fill={v === null || v === undefined ? ink.grid : ramp(v, lo, hi, theme)}
               onMouseMove={(e) => onTip.show(e, `${s.name} · ${chart.labels[c]}`, [{ name: human(chart.spec?.y?.[0] ?? "value"), value: full(v, chart.currency) }])}
-              onMouseLeave={onTip.hide} />
+              onMouseLeave={onTip.hide}
+            />
           ))}
-          {cw >= 30 && ch >= 14 && s.values.map((v, c) => (v === null || v === undefined ? null : (
-            <text key={`n${c}`} x={padL + cw * c + (cw - 1) / 2} y={8 + ch * r + ch / 2 + 3.5} textAnchor="middle"
-              fontSize={10} pointerEvents="none" fill={inkOn(v, lo, hi, theme)}>{short(v)}</text>
+          {cw >= 26 && ch >= 15 && s.values.map((v, c) => (v === null || v === undefined ? null : (
+            <text
+              key={`n${c}`}
+              x={padL + cw * c + (cw - 2) / 2}
+              y={10 + ch * r + (ch - 2) / 2 + 3.5}
+              textAnchor="middle"
+              fontSize={10.5}
+              fontWeight={600}
+              pointerEvents="none"
+              className="tabular-nums"
+              fill={inkOn(v, lo, hi, theme)}
+            >
+              {short(v)}
+            </text>
           )))}
         </g>
       ))}
       {chart.labels.map((l, c) => (c % every ? null : (
-        <text key={c} x={padL + cw * (c + 0.5)} y={8 + ch * rows + 12} fontSize={10} fill={ink.muted} textAnchor="end"
-          transform={`rotate(-40 ${padL + cw * (c + 0.5)} ${8 + ch * rows + 12})`}>{clip(l, 12)}</text>
+        <text key={c} x={padL + cw * (c + 0.5)} y={10 + gridH + 14} fontSize={10.5} fill={ink.muted} textAnchor="end"
+          transform={`rotate(-40 ${padL + cw * (c + 0.5)} ${10 + gridH + 14})`}>{clip(l, 12)}</text>
       )))}
       <defs>
-        <linearGradient id="heat-key">
-          <stop offset="0" stopColor={ramp(lo, lo, hi, theme)} />
-          <stop offset="1" stopColor={ramp(hi, lo, hi, theme)} />
+        <linearGradient id={heatKeyId} x1="0" y1="1" x2="0" y2="0">
+          <stop offset="0%" stopColor={ramp(lo, lo, hi, theme)} />
+          <stop offset="50%" stopColor={ramp(mid, lo, hi, theme)} />
+          <stop offset="100%" stopColor={ramp(hi, lo, hi, theme)} />
         </linearGradient>
       </defs>
-      <rect x={width - 168} y={height - 14} width={120} height={8} fill="url(#heat-key)" />
-      <text x={width - 172} y={height - 7} textAnchor="end" fontSize={10} fill={ink.muted}>{short(lo)}</text>
-      <text x={width - 44} y={height - 7} fontSize={10} fill={ink.muted}>{short(hi)}</text>
+      <g data-heatmap-scale="">
+        <rect x={barX} y={barY} width={10} height={barH} rx={3} fill={`url(#${heatKeyId})`} stroke={ink.axis} strokeWidth={0.75} />
+        <text x={barX + 16} y={barY + 8} fontSize={10} fontWeight={500} fill={ink.muted} className="tabular-nums">{short(hi)}</text>
+        <text x={barX + 16} y={barY + barH / 2 + 3.5} fontSize={10} fill={ink.muted} className="tabular-nums">{short(mid)}</text>
+        <text x={barX + 16} y={barY + barH} fontSize={10} fontWeight={500} fill={ink.muted} className="tabular-nums">{short(lo)}</text>
+      </g>
     </Svg>
   );
 }
@@ -604,7 +866,7 @@ export function chartNotes(chart: AskChart, opts?: { includeAggregation?: boolea
 
 // a panel of a facet by the currency column (as charts._CURRENCY_COL names it) is in the
 // currency its title codes; any other facet (a site or country code) keeps the chart's own
-const ROW_PX = 20; // a horizontal bar's row, in the drawing's own units
+const ROW_PX = 24; // a horizontal bar's row, in the drawing's own units
 const CURRENCY_COL = /(^|_)(currency|currency_code|ccy)$/i;
 function panelCurrency(chart: AskChart, title: string) {
   return CURRENCY_COL.test(chart.spec?.facet ?? "") && /^[A-Z]{3}$/.test(title) ? title : chart.currency;
@@ -694,7 +956,7 @@ function drawKey(chart: AskChart): string {
   return `${h}:${text.length}`;
 }
 
-export function ChartView({ chart }: { chart: AskChart }) {
+export function ChartView({ chart, reference, threshold }: { chart: AskChart; reference?: ChartReference; threshold?: number }) {
   const theme = useChartTheme();
   const [first] = useState(() => {
     if (typeof window === "undefined") return true;
@@ -720,8 +982,10 @@ export function ChartView({ chart }: { chart: AskChart }) {
       series={chart.series}
       theme={theme}
       onTip={tip}
+      reference={reference}
+      threshold={threshold}
       width={narrow || W}
-      height={chart.spec?.horizontal && chart.labels.length > 10 ? Math.min(460, Math.max(H, 36 + chart.labels.length * 22)) : H}
+      height={chart.spec?.horizontal && chart.labels.length > 8 ? Math.min(520, Math.max(H, 40 + chart.labels.length * 28)) : H}
     />
   );
   const notes = chartNotes(chart, { includeAggregation: false });

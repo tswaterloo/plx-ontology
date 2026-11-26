@@ -28,16 +28,18 @@ export default function BriefPage() {
   const objectId = safeDecode(id);
   const { data: brief, error, retry, at } = useRead<Brief>(`/api/brief/${encodeURIComponent(type)}/${encodeURIComponent(objectId)}`, (signal) => getMeetingBrief(type, objectId, signal));
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col bg-bg">
       <Toolbar heading={!brief} title={brief?.title ?? "Brief"} parent={{ label: "Meetings", href: "/meetings" }} />
-      <div className="p-5">
+      <div className="mx-auto w-full max-w-[1160px] px-4 py-5 sm:px-6">
         <StoredAge at={at} className="pb-2" />
         {error ? (
           <LoadProblem message={plainError(error)} busy={noticeKind(error) === "busy"} onRetry={retry} />
         ) : brief ? (
-          <div className="space-y-4">
+          <div className="space-y-6">
             <BriefView brief={brief} />
-            <AddContext brief={brief} onSaved={retry} />
+            <div className="border-t border-border pt-5">
+              <AddContext brief={brief} onSaved={retry} />
+            </div>
           </div>
         ) : (
           <Pending page limit={null} label="Preparing the brief" />

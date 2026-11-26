@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from .autopilot_records import _addresses, _digest, _instant, _internal, _iso, _read, _types, _v
-from .autopilot_queue import SUPERSEDED_BY, HandlerTimeout, Queue, TASK_DONE, superseded
+from .autopilot_queue import POOL_PREFIX, SUPERSEDED_BY, HandlerTimeout, Queue, TASK_DONE, subject_of, superseded
 from .autopilot_events import (
     TEAMS_TYPES,
     _mail_events,
@@ -819,8 +819,114 @@ def _owner_mailed_in_thread(st: Any, queue: Queue, item: Mapping[str, Any],
 APPROVAL_PREFIX = "MCApproval:"
 
 
+_QC_HOLD_AUTOPILOTS = frozenset({"qc_hold", "lot_on_hold", "quality_hold"})
+
+
+def _reconcile_qc_hold_owners(
+    queue: Queue,
+    stamp: str,
+    *,
+    staff_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    roles: Optional[Mapping[str, Sequence[str]]] = None,
+) -> int:
+    """Reconcile open ``qc_hold`` queue items whose ``owner`` is a per-person id outside
+    the ``quality`` role pool (for example IT/software/executive staff): ensure one
+    canonical ``pool:quality`` item exists for the subject/lot and settle each misrouted
+    per-person row as ``superseded`` / ``rerouted_to_role_pool``."""
+    from . import autopilot_roster as roster
+
+    rows = list(staff_rows) if staff_rows is not None else roster._load_staff_rows()
+    non_op_ids: set[str] = set()
+    qa_ids: set[str] = set()
+    for row in rows:
+        pid = str(row.get("person_id") or "").strip().lower()
+        if not pid:
+            continue
+        dept = str(row.get("department") or "")
+        title = str(row.get("title") or "")
+        if roster.is_non_operational_staff(department=dept, title=title):
+            non_op_ids.add(pid)
+        elif roster.staff_matches_role("quality", department=dept, title=title):
+            qa_ids.add(pid)
+    if roles is not None:
+        for pid in roles.get("quality") or ():
+            pl = str(pid or "").strip().lower()
+            if pl and pl not in non_op_ids:
+                qa_ids.add(pl)
+    if not non_op_ids and not qa_ids:
+        return 0
+
+    open_items = queue.items()
+    qc_items = [
+        i for i in open_items
+        if i.get("autopilot") in _QC_HOLD_AUTOPILOTS
+        or (i.get("body") or {}).get("done_when") == "batch_released"
+    ]
+    if not qc_items:
+        return 0
+
+    pool_owner = POOL_PREFIX + "quality"
+
+    def _subj_key(it: Mapping[str, Any]) -> str:
+        sub = subject_of(it)
+        if sub:
+            return sub
+        hap = (it.get("body") or {}).get("happened") or {}
+        return str(hap.get("object_id") or it.get("event_id") or it.get("item_id") or "")
+
+    pool_by_subj: dict[str, str] = {}
+    for it in qc_items:
+        if str(it.get("owner") or "") == pool_owner:
+            pool_by_subj[_subj_key(it)] = str(it["item_id"])
+
+    rerouted: dict[str, str] = {}
+    to_add: list[dict[str, Any]] = []
+    for it in qc_items:
+        owner = str(it.get("owner") or "")
+        if not owner or owner.startswith(POOL_PREFIX):
+            continue
+        ol = owner.strip().lower()
+        misrouted = ol in non_op_ids or (bool(qa_ids) and ol not in qa_ids)
+        if not misrouted:
+            continue
+        key = _subj_key(it)
+        pool_id = pool_by_subj.get(key)
+        if not pool_id:
+            pool_id = "ap_" + _digest("pool_qc", f"{pool_owner}|{it['autopilot']}|{key}")[:16]
+            pool_by_subj[key] = pool_id
+            to_add.append({
+                "item_id": pool_id,
+                "event_id": it["event_id"],
+                "autopilot": it["autopilot"],
+                "owner": pool_owner,
+                "title": it["title"],
+                "body": it["body"],
+                "audiences": list(it.get("audiences") or ()),
+                "markings": list(it.get("markings") or ()),
+                "citations": list(it.get("citations") or ()),
+                "due_at": it.get("due_at"),
+                "created_at": it.get("created_at") or stamp,
+                "prepare_ms": it.get("prepare_ms"),
+                "latency_s": it.get("latency_s"),
+            })
+        rerouted[str(it["item_id"])] = pool_id
+
+    if not rerouted:
+        return 0
+    with queue.conn:
+        for new_item in to_add:
+            queue.add_item(new_item)
+        kept = dict(queue.meta(SUPERSEDED_BY) or {})
+        kept.update(rerouted)
+        queue.set_meta(SUPERSEDED_BY, kept)
+        for item_id in sorted(rerouted):
+            queue.settle_item(item_id, "superseded", "rerouted_to_role_pool", stamp)
+    return len(rerouted)
+
+
 def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
-           now: datetime, decided: Optional[Mapping[str, Mapping[str, Any]]] = None) -> Counter:
+           now: datetime, decided: Optional[Mapping[str, Mapping[str, Any]]] = None,
+           staff_rows: Optional[Sequence[Mapping[str, Any]]] = None) -> Counter:
     """Mark open items done from evidence (module doc). A check that fails leaves its item
     open; the failures are counted per rule, written to the queue's meta
     (``SETTLE_ERRORS``, the ``autopilot_settle_errors`` ops alarm reads it) and printed.
@@ -936,6 +1042,9 @@ def settle(st: Any, queue: Queue, registry: Mapping[str, Any], people: Any, *,
             with queue.conn:
                 queue.settle_item(item["item_id"], "done", reason, stamp)
             done[reason] += 1
+    rerouted_qc = _reconcile_qc_hold_owners(queue, stamp, staff_rows=staff_rows)
+    if rerouted_qc:
+        done["rerouted_to_role_pool"] += rerouted_qc
     # one open card per real-world thing: an older item about the subject a newer item of
     # the same owner is about (the same lot raised by another batch record or run) is set
     # aside as ``superseded`` (a state, never a delete; no verdict on what it prepared)

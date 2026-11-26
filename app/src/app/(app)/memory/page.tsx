@@ -91,7 +91,7 @@ function MemoryForm({ initial, onSaved, onCancel }: { initial?: MemoryItem; onSa
         data-testid="memory-text"
       />
       <div className="flex items-center gap-2">
-        <button type="button" className="h-8 rounded-lg bg-accent px-3 text-[13px] font-medium text-accent-fg cursor-pointer disabled:opacity-50" disabled={!text.trim() || busy} onClick={save} data-testid="memory-save">
+        <button type="button" className="h-8 rounded-lg bg-fg px-3 text-[13px] font-medium text-bg hover:opacity-90 cursor-pointer disabled:opacity-50" disabled={!text.trim() || busy} onClick={save} data-testid="memory-save">
           {initial ? "Save" : "Remember"}
         </button>
         {onCancel && (
@@ -201,7 +201,7 @@ function Memory() {
                 {record && (
                   <p className="mb-5 text-[13px]" data-testid="memory-record-filter">
                     {items.length ? `What you keep about ${recordName({ object_id: record })}.` : `Nothing kept about ${recordName({ object_id: record })} yet.`}{" "}
-                    <Link href="/memory" className="font-medium text-[color:var(--accent)] hover:underline">
+                    <Link href="/memory" className="font-medium text-fg underline decoration-border-strong underline-offset-2 hover:decoration-fg">
                       Everything
                     </Link>
                   </p>

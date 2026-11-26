@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const asked = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>>, fail: false, hold: false, push: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: asked.push, replace: vi.fn() }), usePathname: () => "/records", useSearchParams: () => new URLSearchParams("") }));
-const cell = (t: string, href?: string) => ({ text: t, href });
+const cell = (t: string, href?: string) => ({ text: t, href, hidden: false });
 const rowOf = (n: number) => [cell(`BC-${n}`, `/object/Batch/b${n}`), cell("Base"), { money: { amount: "1234567.5", currency: "CAD" } }, { number: "120000.25 kg" }, { day: "2020-03-05" }, {}];
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
@@ -44,7 +44,7 @@ describe("a Records list", () => {
     expect(within(row).getByText("$1,234,567.50 CAD")).toBeInTheDocument();
     expect(within(row).getByText("120,000.25 kg")).toBeInTheDocument();
     expect(within(row).getByText("5 Mar 2020")).toBeInTheDocument();
-    expect(within(row).getByLabelText("none")).toHaveTextContent("–");
+    expect(within(row).getByLabelText("none")).toHaveTextContent("—");
     await userEvent.click(within(row).getByText("Base"));
     expect(asked.push).toHaveBeenCalledWith("/object/Batch/b1");
     expect(screen.getByTestId("record-list-total")).toHaveTextContent("1 to 25 of 30 records");
@@ -103,16 +103,30 @@ describe("a Records list", () => {
     expect(asked.calls[0]).toMatchObject({ facets: true, offset: 0 });
   });
 
-  it("rounds order totals to 2 decimals, formats verdict jargon, and hides duplicate search box when controlled", async () => {
-    const { formatVerdict } = await import("./record-list");
-    expect(formatVerdict("neither")).toMatchObject({ label: "–" });
+  it("formats verdicts honestly (never labeling nothing_outstanding or stale as late), provides All/Open/Late quick filter, and hides duplicate search box when controlled", async () => {
+    const { formatStatusLabel, formatVerdict, isRowActivelyLate } = await import("./record-list");
+    expect(formatStatusLabel("open")).toBe("Open");
+    expect(formatStatusLabel("closed")).toBe("Closed");
+    expect(formatStatusLabel("cancelled")).toBe("Cancelled");
+    expect(formatVerdict("neither")).toMatchObject({ label: "—" });
+    expect(formatVerdict("nothing_outstanding")).toMatchObject({ label: "Closed" });
+    expect(formatVerdict("stale")).toMatchObject({ label: "Stale" });
     expect(formatVerdict("late (not counted)")).toMatchObject({ label: "Late (excluded)" });
     expect(formatVerdict("on_time")).toMatchObject({ label: "On time" });
     expect(formatVerdict("late")).toMatchObject({ label: "Late" });
 
+    expect(isRowActivelyLate([cell("Open"), cell("nothing_outstanding")], ["status", "verdict"])).toBe(false);
+    expect(isRowActivelyLate([cell("Open"), cell("stale")], ["status", "verdict"])).toBe(false);
+    expect(isRowActivelyLate([cell("Open"), cell("late (not counted)")], ["status", "verdict"])).toBe(false);
+    expect(isRowActivelyLate([cell("Closed"), cell("late")], ["status", "verdict"])).toBe(false);
+    expect(isRowActivelyLate([cell("Open"), cell("late")], ["status", "verdict"])).toBe(true);
+
     render(<RecordList view="batches" externalQuery="" />);
     await screen.findByRole("link", { name: "BC-1" });
     expect(screen.queryByRole("searchbox", { name: "Search this list" })).toBeNull();
+    expect(screen.getByTestId("record-quick-filter")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("quick-filter-open"));
+    await waitFor(() => expect(asked.calls.at(-1)).toMatchObject({ filters: { status: "Open" } }));
   });
 
   it("preserves active filter and page when leaving via a row click and restores it on remount", async () => {

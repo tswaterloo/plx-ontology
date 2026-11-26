@@ -34,6 +34,7 @@ const BY_CODE: Record<string, string> = {
   origin_refused: "This page isn't trusted by the Workbench. Open the Workbench from its usual link.",
   not_served: "That part of the Workbench is off on this server.",
   busy: "The server is busy. Try again in a minute.",
+  insight_filling: "This chart is still being prepared. Try again in a moment.",
   action_refused: "That action can't be done as it stands. Review it again to see what needs changing.",
   ask_not_served: "Ask is off on this server. Today and record pages still work.",
   invalid_measure_id: "The measure id must be lowercase letters, numbers, or underscores starting with a letter.",
@@ -74,6 +75,7 @@ const BY_STATUS: Record<number, string> = {
   404: BY_CODE.not_found,
   408: BY_CODE.timeout,
   422: BY_CODE.invalid_request,
+  425: BY_CODE.insight_filling,
   429: BY_CODE.rate_limited,
   502: BY_CODE.upstream_unavailable,
   503: BY_CODE.upstream_unavailable,
@@ -98,7 +100,7 @@ export type NoticeKind = "busy" | "off";
 
 export function noticeKind(err: unknown): NoticeKind | undefined {
   const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : undefined;
-  return code === "busy" ? "busy" : code === "ask_not_served" ? "off" : undefined;
+  return code === "busy" || code === "insight_filling" ? "busy" : code === "ask_not_served" ? "off" : undefined;
 }
 
 /** One plain sentence for any thrown value or stream error body. */

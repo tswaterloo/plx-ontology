@@ -236,6 +236,71 @@ class Sandbox(unittest.TestCase):
                              capture_output=True, text=True, timeout=30)
         self.assertEqual(got.stdout.split(), ["/x", str(os.getuid())])
 
+    def test_bwrap_args_skips_ephemeral_run_files_and_uses_ro_bind_try_under_run(self):
+        """Ephemeral files under /run (like pam_motd's /run/motd.dynamic.new) vanish between
+        os.listdir and bwrap exec: skip them and bind remaining /run entries with
+        --ro-bind-try so transient files never kill a Spark job."""
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(root)]))
+        run_dir = root / "run"
+        (run_dir / "systemd" / "resolve").mkdir(parents=True)
+        (run_dir / "systemd" / "resolve" / "stub-resolv.conf").write_text("nameserver 127.0.0.53\n")
+        for ephemeral in ("motd.dynamic", "motd.dynamic.new", "sshd.pid", "x.lock", "y.tmp",
+                          "utmp", "nologin"):
+            (run_dir / ephemeral).write_text("ephemeral")
+        pg_src = root / "pg-src"
+        pg_src.mkdir()
+        pg_dst = str(run_dir / "postgresql")   # does not exist -> expands /run
+        args = remote.bwrap_args([(str(pg_src), pg_dst, True)], root=str(root))
+        triples = [args[i:i + 3] for i in range(len(args) - 2)]
+        pairs = [args[i:i + 2] for i in range(len(args) - 1)]
+        self.assertIn(["--dir", str(run_dir)], pairs)
+        self.assertIn(["--ro-bind-try", str(run_dir / "systemd"), str(run_dir / "systemd")],
+                      triples)
+        for ephemeral in ("motd.dynamic", "motd.dynamic.new", "sshd.pid", "x.lock", "y.tmp",
+                          "utmp", "nologin"):
+            self.assertNotIn(str(run_dir / ephemeral), args, ephemeral)
+        self.assertIn(["--ro-bind", str(pg_src), pg_dst], triples)
+
+    def test_bwrap_args_expands_usr_local_bin_when_claude_missing_or_symlink(self):
+        """Binding /usr/local/bin/claude must expand /usr/local/bin with --dir when the host
+        path is absent, a dangling symlink, OR a valid symlink (s7d3d's node symlink), so
+        bwrap never fails with 'Can't create file at /usr/local/bin/claude'."""
+        for mode in ("missing", "valid_symlink", "dangling_symlink", "regular_file"):
+            with self.subTest(mode=mode):
+                root = Path(tempfile.mkdtemp())
+                self.addCleanup(lambda r=root: subprocess.run(["rm", "-rf", str(r)]))
+                bin_dir = root / "usr" / "local" / "bin"
+                bin_dir.mkdir(parents=True)
+                (bin_dir / "other-tool").write_text("bin")
+                src = root / "claude-bin"
+                src.write_text("#!/bin/sh\n")
+                dst = bin_dir / "claude"
+                if mode == "valid_symlink":
+                    real_target = root / "usr" / "local" / "lib" / "node-claude"
+                    real_target.parent.mkdir(parents=True)
+                    real_target.write_text("node")
+                    dst.symlink_to(real_target)
+                elif mode == "dangling_symlink":
+                    dst.symlink_to("/nonexistent/node/claude")
+                elif mode == "regular_file":
+                    dst.write_text("old")
+                args = remote.bwrap_args([(str(src), str(dst), True)], root=str(root))
+                pairs = [args[i:i + 2] for i in range(len(args) - 1)]
+                triples = [args[i:i + 3] for i in range(len(args) - 2)]
+                self.assertIn(["--ro-bind", str(src), str(dst)], triples)
+                if mode == "regular_file":
+                    # regular file on host can be bound directly without expanding /usr
+                    self.assertIn(["--ro-bind", str(root / "usr"), str(root / "usr")], triples)
+                else:
+                    self.assertIn(["--dir", str(bin_dir)], pairs)
+                    self.assertIn(["--ro-bind", str(bin_dir / "other-tool"),
+                                   str(bin_dir / "other-tool")], triples)
+                    # the host symlink for claude itself must NOT be re-created before binding
+                    self.assertFalse(
+                        any(t[0] == "--symlink" and t[2] == str(dst) for t in triples),
+                        mode)
+
 
 class ShipRefusals(unittest.TestCase):
     def test_state_secrets_and_code_are_never_shipped(self):

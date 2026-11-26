@@ -274,7 +274,9 @@ READ_POSTS = frozenset({"/api/ask", "/api/ask/files", "/api/ask/warm", "/api/mcp
 # Autopilot, the suggestion cards (made from the open alerts, never from the visit) and the
 # rest stay current.
 WRITE_SCREENS: dict[str, frozenset[str]] = {
-    "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home"})}
+    "/api/briefing/seen": frozenset({"briefing", "briefing_items", "home"}),
+    "/api/home/item-state": frozenset({"home_needs", "home", "briefing", "briefing_items"}),
+}
 # Renaming, pinning or deleting an Ask conversation changes none of the reader's screens.
 CHAT_WRITES = "/api/ask/chats/"
 # Explicitly stopping an Ask run changes none of the reader's screens.
@@ -1034,11 +1036,22 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                                   "elapsed_ms": payload.elapsed_ms})
                 if event == "answer":
                     answered = True
+                    stream_ms = int((time.perf_counter() - started) * 1000)
+                    if getattr(payload, "latency_ms", None) in (None, 0) and stream_ms > 0:
+                        try:
+                            payload = payload.model_copy(update={"latency_ms": stream_ms})
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if not getattr(payload, "outcome", None):
+                        try:
+                            payload = payload.model_copy(update={"outcome": "answered"})
+                        except Exception:  # noqa: BLE001
+                            pass
                     from . import answer_cost
                     spent = answer_cost.take(payload.answer_id)
                     notes.ask(who, payload, review={
                         "steps": steps[:40],
-                        "stream_ms": int((time.perf_counter() - started) * 1000),
+                        "stream_ms": stream_ms,
                         **({"cost": spent} if spent else {})})
                 emit(event, payload)
             if cancelled() and not answered:
@@ -1058,10 +1071,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
             failed = "not_found"
             emit("error", m.ErrorBody(code="not_found",
                                       message=MESSAGES["not_found"]))
-        except ValueError:
-            failed = "invalid_request"
-            emit("error", m.ErrorBody(code="invalid_request",
-                                      message=MESSAGES["invalid_request"]))
         except Exception as error:  # noqa: BLE001 - plain words, never a trace
             if cancelled():
                 emit("error", m.ErrorBody(
@@ -1135,10 +1144,6 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                     failed = "not_found"
                     yield sse("error", m.ErrorBody(code="not_found",
                                                    message=MESSAGES["not_found"]))
-                except ValueError:
-                    failed = "invalid_request"
-                    yield sse("error", m.ErrorBody(code="invalid_request",
-                                                   message=MESSAGES["invalid_request"]))
                 except Exception as error:  # noqa: BLE001 - plain words, never a trace
                     incident = _incident(error, "/api/ask")
                     failed = f"internal:{incident}"
@@ -1332,6 +1337,18 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
         and ranked server-side with items older than 90 days folded rather than dropped."""
         with first_partial():
             return backend.home_needs(who, feedback_store)
+
+    @app.post("/api/home/item-state", response_model=m.HomeItemStateResponse, tags=["home"],
+              responses={401: {"model": m.ErrorResponse}, 403: {"model": m.ErrorResponse},
+                         422: {"model": m.ErrorResponse}})
+    def home_item_state(body: m.HomeItemStateRequest,
+                        who: Reader = Depends(reader)) -> m.HomeItemStateResponse:
+        """Close/dismiss, snooze, or restore any Home Needs-you item for this reader and
+        immediately invalidate their cached Home Needs-you view."""
+        if getattr(getattr(who, "session", None), "view_as", False):
+            raise UserFacing("view_as_refused", va.READ_ONLY, 403)
+        from . import home_needs as hn
+        return hn.set_home_item_state(backend, who, body)
 
     @app.get("/api/sidebar", response_model=m.Sidebar, tags=["home"],
              responses={401: {"model": m.ErrorResponse}})
@@ -3449,6 +3466,12 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
                 turn["withheld"] = ("A source of this answer is no longer open to you. Ask "
                                     "again to see what you can open now.")
             elif isinstance(turn.get("answer"), dict):
+                if turn["answer"].get("outcome") is None:
+                    turn["answer"]["outcome"] = "answered"
+                if not isinstance(turn["answer"].get("latency_ms"), int):
+                    review = turn["answer"].get("_review")
+                    sms = review.get("stream_ms") if isinstance(review, dict) else None
+                    turn["answer"]["latency_ms"] = sms if isinstance(sms, int) else 0
                 turn["answer"].pop("_kept", None)
                 turn["answer"].pop("_cited", None)
                 turn["answer"].pop("_review", None)

@@ -1865,6 +1865,27 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/api/home/item-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Home Item State
+         * @description Close/dismiss, snooze, or restore any Home Needs-you item for this reader and
+         *     immediately invalidate their cached Home Needs-you view.
+         */
+        post: operations["home_item_state_api_home_item_state_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/home/needs": {
         parameters: {
             query?: never;
@@ -9823,6 +9844,50 @@ export type components = {
              * @description Set when the server could not read this page in time and serves the last page it read for this same reader instead: when that page was read (ISO). It is refreshed in the background.
              */
             stale_since?: string | null;
+        };
+        /**
+         * HomeItemStateRequest
+         * @description Universal per-reader Home item state update (close/dismiss, snooze, or restore).
+         */
+        HomeItemStateRequest: {
+            /** Item Id */
+            item_id: string;
+            /** Matter Id */
+            matter_id?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "closed" | "snoozed" | "open";
+            /**
+             * Until
+             * @description ISO timestamp when a snoozed item returns (defaults to +24h).
+             */
+            until?: string | null;
+        };
+        /**
+         * HomeItemStateResponse
+         * @description Result of a universal Home item state update.
+         */
+        HomeItemStateResponse: {
+            /** At */
+            at: string;
+            /** Item Id */
+            item_id: string;
+            /**
+             * Propagated
+             * @default false
+             */
+            propagated: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "closed" | "snoozed" | "open";
+            /** Until */
+            until?: string | null;
         };
         /**
          * HomeNeedFacet
@@ -21016,6 +21081,57 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    home_item_state_api_home_item_state_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HomeItemStateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HomeItemStateResponse"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -6,10 +6,11 @@
 // confirms every change on its own card.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, CircleAlert, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Bot, CheckCircle2, CircleAlert, Clock3, Filter, Pause, Pencil, Play, Plus, ShieldCheck, Square, Trash2, X, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StyledSelect } from "@/components/ui/controls";
+import { DotGridCanvas, type DotGridEdge, type DotGridNode } from "@/components/ui/dot-grid-canvas";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useProblem } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
@@ -32,11 +33,12 @@ import {
   type AssistWorkflowTemplate,
   type AssistWorkflowTriggerKind,
 } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { ApiError, plainError } from "@/lib/errors";
 import { formatDateTime } from "@/lib/format";
 
 const LIVE = new Set(["queued", "running", "stopping"]);
-const INPUT = "h-8 rounded-lg border border-border-strong bg-bg px-2.5 text-[13px] text-fg focus:border-accent focus:outline-none";
+const INPUT = "h-8 rounded-lg border border-border-strong bg-bg px-2.5 text-[13px] text-fg placeholder:text-muted focus:border-fg/35 focus:outline-none";
 const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] as const;
 type EventKind = "mail_from" | "teams_from" | "po_late" | "mc_question" | "qc_hold";
 
@@ -56,10 +58,138 @@ const JOB_STATUS_LABELS: Record<AssistJob["status"], string> = {
   queued: "Waiting to start",
   running: "Working",
   stopping: "Stopping",
-  finished: "Ready for review",
-  failed: "Could not be done",
+  finished: "Ready",
+  failed: "Blocked",
   stopped: "Stopped",
 };
+
+function WorkflowStatusBadge({ status, label }: { status: AssistWorkflow["status"]; label: string }) {
+  const textTone =
+    status === "active" ? "text-fg/85" : status === "paused" ? "text-risk" : "text-muted";
+  const dotTone =
+    status === "active" ? "bg-dot-ok" : status === "paused" ? "bg-dot-risk" : "bg-dot-neutral";
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium leading-4", textTone)}>
+      <span className={cn("size-1.5 shrink-0 rounded-full", dotTone)} aria-hidden />
+      <span>{label}</span>
+    </span>
+  );
+}
+
+export interface WorkflowPipelineSpec {
+  id: string;
+  name: string;
+  status: AssistWorkflow["status"] | "draft";
+  triggerKind: AssistWorkflowTriggerKind;
+  triggerSummary: string;
+  trigger?: Record<string, unknown>;
+  instruction?: string;
+  runsCount?: number;
+}
+
+function scopeSummaryOf(triggerKind: AssistWorkflowTriggerKind, trigger?: Record<string, unknown> | null): string {
+  const trig = trigger && typeof trigger === "object" ? trigger : {};
+  const parts: string[] = [];
+  if (typeof trig.sender === "string" && trig.sender.trim()) parts.push(`Sender: ${trig.sender.trim()}`);
+  if (typeof trig.subject === "string" && trig.subject.trim()) parts.push(`Subject: ${trig.subject.trim()}`);
+  if (typeof trig.supplier === "string" && trig.supplier.trim()) parts.push(`Supplier: ${trig.supplier.trim()}`);
+  if (typeof trig.product === "string" && trig.product.trim()) parts.push(`Product: ${trig.product.trim()}`);
+  if (parts.length > 0) return parts.join(" · ");
+  if (triggerKind === "event") {
+    const ev = typeof trig.event === "string" ? trig.event : "";
+    if (ev === "po_late") return "All open late purchase orders";
+    if (ev === "qc_hold") return "All batches entering QC hold";
+    if (ev === "mc_question") return "Incoming Mission Control questions";
+    return "Matching incoming messages";
+  }
+  if (triggerKind === "schedule") return "Records matching instruction scope";
+  return "Triggered manually on current records";
+}
+
+/** Pure: build interactive dot-grid canvas nodes and edges for a workflow pipeline. */
+export function buildWorkflowPipelineGraph(spec: WorkflowPipelineSpec): { nodes: DotGridNode[]; edges: DotGridEdge[] } {
+  const triggerKind = spec?.triggerKind ?? "manual";
+  const trigger = spec?.trigger ?? {};
+  const triggerIcon =
+    triggerKind === "event" ? (
+      <Zap className="size-3.5" aria-hidden />
+    ) : triggerKind === "schedule" ? (
+      <Clock3 className="size-3.5" aria-hidden />
+    ) : (
+      <Play className="size-3.5" aria-hidden />
+    );
+  const triggerBadge =
+    triggerKind === "event" ? "Event" : triggerKind === "schedule" ? "Schedule" : "Manual";
+  const scopeText = scopeSummaryOf(triggerKind, trigger);
+  const instr = (spec?.instruction ?? "").trim();
+  const actionSummary =
+    instr.length > 96
+      ? `${instr.slice(0, 93)}...`
+      : instr || "Prepare drafts and checks";
+
+  const nodes: DotGridNode[] = [
+    {
+      id: "trigger",
+      x: 24,
+      y: 78,
+      width: 224,
+      height: 112,
+      kindLabel: "Trigger",
+      title: spec?.triggerSummary || "On demand",
+      description: triggerKind === "event" ? "Listens for live operational events." : triggerKind === "schedule" ? "Runs on the configured ET schedule." : "Runs whenever you press Run now.",
+      badge: triggerBadge,
+      tone: "accent",
+      icon: triggerIcon,
+    },
+    {
+      id: "scope",
+      x: 344,
+      y: 78,
+      width: 224,
+      height: 112,
+      kindLabel: "Scope & Filters",
+      title: scopeText,
+      description: "Reads only records your account is permitted to open.",
+      badge: "Filtered",
+      tone: "neutral",
+      icon: <Filter className="size-3.5" aria-hidden />,
+    },
+    {
+      id: "action",
+      x: 664,
+      y: 78,
+      width: 236,
+      height: 112,
+      kindLabel: "Assist Action",
+      title: "Draft and check",
+      description: actionSummary,
+      badge: spec.runsCount ? `${spec.runsCount} runs` : "Drafts",
+      tone: spec.status === "paused" ? "risk" : "ok",
+      icon: <Bot className="size-3.5" aria-hidden />,
+    },
+    {
+      id: "approval",
+      x: 996,
+      y: 78,
+      width: 224,
+      height: 112,
+      kindLabel: "Approval Gate",
+      title: "Human confirmation",
+      description: "Every email or system write waits for your review and confirm click.",
+      badge: "Required",
+      tone: "risk",
+      icon: <ShieldCheck className="size-3.5" aria-hidden />,
+    },
+  ];
+
+  const edges: DotGridEdge[] = [
+    { id: "e-trigger-scope", from: "trigger", to: "scope", label: "fires", active: spec.status === "active" },
+    { id: "e-scope-action", from: "scope", to: "action", label: "matches", active: spec.status === "active" },
+    { id: "e-action-approval", from: "action", to: "approval", label: "prepares", active: spec.status === "active" },
+  ];
+
+  return { nodes, edges };
+}
 
 function useAssistWorkflows() {
   const [data, setData] = useState<AssistWorkflows | null>(null);
@@ -93,7 +223,7 @@ function useAssistWorkflows() {
       alive.current = false;
     };
   }, [load]);
-  const hasLiveRun = (data?.workflows ?? []).some((w) => w.runs.some((r) => r.job && LIVE.has(r.job.status)));
+  const hasLiveRun = (data?.workflows ?? []).some((w) => (w.runs ?? []).some((r) => r.job && LIVE.has(r.job.status)));
   useEffect(() => {
     if (!hasLiveRun) return;
     const t = setInterval(() => void load(), 4000);
@@ -143,7 +273,7 @@ function useAssistWorkflows() {
             ...prev,
             workflows: prev.workflows.map((w) => ({
               ...w,
-              runs: w.runs.map((r) => (r.job_id === job.job_id ? { ...r, job } : r)),
+              runs: (w.runs ?? []).map((r) => (r.job_id === job.job_id ? { ...r, job } : r)),
             })),
           }
         : prev,
@@ -158,10 +288,14 @@ function CreateWorkflowPanel({
   templates,
   routines,
   onCreated,
+  composerRef,
+  onDraftPreview,
 }: {
   templates: AssistWorkflowTemplate[];
   routines: AssistMinedRoutine[];
   onCreated: (wf: AssistWorkflow) => void;
+  composerRef?: React.RefObject<HTMLTextAreaElement | null>;
+  onDraftPreview?: (spec: WorkflowPipelineSpec | null) => void;
 }) {
   const [mode, setMode] = useState<CreateMode>("plain");
   const [plain, setPlain] = useState("");
@@ -169,13 +303,14 @@ function CreateWorkflowPanel({
   const [triggerKind, setTriggerKind] = useState<AssistWorkflowTriggerKind | "auto">("auto");
   const [cadence, setCadence] = useState("weekly");
   const [weekday, setWeekday] = useState("monday");
+  const [day, setDay] = useState(1);
   const [hour, setHour] = useState(8);
-  const [eventKind, setEventKind] = useState<"mail_from" | "teams_from" | "po_late" | "mc_question" | "qc_hold">("mail_from");
+  const [eventKind, setEventKind] = useState<EventKind>("mail_from");
   const [sender, setSender] = useState("");
   const [subject, setSubject] = useState("");
   const [supplier, setSupplier] = useState("");
   const [product, setProduct] = useState("");
-  const [tplParams, setTplParams] = useState<Record<string, { sender?: string; supplier?: string; product?: string }>>({});
+  const [tplParams, setTplParams] = useState<Record<string, { sender?: string; subject?: string; supplier?: string; product?: string }>>({});
   const [busy, setBusy] = useState(false);
   const [, setError, problem] = useProblem();
 
@@ -183,7 +318,17 @@ function CreateWorkflowPanel({
     if (!plain.trim()) return;
     setError(null);
     try {
-      setPreview(await parseAssistWorkflow(plain.trim()));
+      const parsed = await parseAssistWorkflow(plain.trim());
+      setPreview(parsed);
+      onDraftPreview?.({
+        id: "draft-preview",
+        name: parsed.name || "Draft workflow",
+        status: "draft",
+        triggerKind: parsed.trigger_kind ?? "manual",
+        triggerSummary: parsed.trigger_summary ?? "",
+        trigger: parsed.trigger && typeof parsed.trigger === "object" ? parsed.trigger : {},
+        instruction: parsed.instruction ?? "",
+      });
     } catch (e) {
       setError(plainError(e));
     }
@@ -195,7 +340,7 @@ function CreateWorkflowPanel({
     if (triggerKind === "schedule") {
       if (cadence === "hourly") return { trigger_kind: "schedule", trigger: { cadence: "hourly", every_hours: 1 } };
       if (cadence === "weekly") return { trigger_kind: "schedule", trigger: { cadence: "weekly", weekday, hour, minute: 0 } };
-      if (cadence === "monthly") return { trigger_kind: "schedule", trigger: { cadence: "monthly", day: 1, hour, minute: 0 } };
+      if (cadence === "monthly") return { trigger_kind: "schedule", trigger: { cadence: "monthly", day: Math.min(28, Math.max(1, day || 1)), hour, minute: 0 } };
       return { trigger_kind: "schedule", trigger: { cadence, hour, minute: 0 } };
     }
     if (eventKind === "mail_from" || eventKind === "teams_from") {
@@ -210,8 +355,14 @@ function CreateWorkflowPanel({
     return { trigger_kind: "event", trigger: { event: eventKind } };
   };
 
+  const missingEventFilter =
+    triggerKind === "event" &&
+    (eventKind === "mail_from" || eventKind === "teams_from") &&
+    !sender.trim() &&
+    !subject.trim();
+
   const createPlain = async () => {
-    if (!plain.trim()) return;
+    if (!plain.trim() || missingEventFilter) return;
     setBusy(true);
     setError(null);
     try {
@@ -220,6 +371,10 @@ function CreateWorkflowPanel({
       setPlain("");
       setPreview(null);
       setTriggerKind("auto");
+      setSender("");
+      setSubject("");
+      setSupplier("");
+      setProduct("");
     } catch (e) {
       setError(plainError(e));
     } finally {
@@ -228,14 +383,26 @@ function CreateWorkflowPanel({
   };
 
   const createFromTemplate = async (tpl: AssistWorkflowTemplate) => {
+    const extra = tplParams[tpl.template_id] ?? {};
+    const tplTrigger = tpl.trigger && typeof tpl.trigger === "object" ? tpl.trigger : {};
+    const isMessageSenderTemplate =
+      tplTrigger.event === "mail_from" ||
+      tplTrigger.event === "teams_from" ||
+      tpl.template_id === "mail-from-sender" ||
+      tpl.template_id === "teams-from-sender";
+    if (isMessageSenderTemplate && !(extra.sender ?? "").trim() && !(extra.subject ?? "").trim()) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const extra = tplParams[tpl.template_id] ?? {};
-      const trigger: Record<string, unknown> = { ...tpl.trigger };
-      if ((tpl.trigger.event === "mail_from" || tpl.trigger.event === "teams_from") && extra.sender) trigger.sender = extra.sender.trim();
-      if (tpl.trigger.event === "po_late" && extra.supplier) trigger.supplier = extra.supplier.trim();
-      if (tpl.trigger.event === "qc_hold" && extra.product) trigger.product = extra.product.trim();
+      const trigger: Record<string, unknown> = { ...tplTrigger };
+      if (isMessageSenderTemplate) {
+        if (extra.sender?.trim()) trigger.sender = extra.sender.trim();
+        if (extra.subject?.trim()) trigger.subject = extra.subject.trim();
+      }
+      if (tplTrigger.event === "po_late" && extra.supplier?.trim()) trigger.supplier = extra.supplier.trim();
+      if (tplTrigger.event === "qc_hold" && extra.product?.trim()) trigger.product = extra.product.trim();
       const wf = await createAssistWorkflow({ template_id: tpl.template_id, trigger });
       onCreated(wf);
     } catch (e) {
@@ -259,10 +426,10 @@ function CreateWorkflowPanel({
   };
 
   return (
-    <section className="mb-8 max-w-4xl space-y-3 border-b border-border pb-6" aria-label="Create a workflow" data-testid="create-workflow">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-[14px] font-medium">Set up a workflow</h2>
-        <div className="inline-flex rounded-lg border border-border bg-surface p-0.5 text-[12px]" role="tablist" aria-label="How to create a workflow">
+    <section className="mb-8 space-y-4 border-b border-border pb-7" aria-label="Create a workflow" data-testid="create-workflow">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-[16px] font-semibold tracking-tight text-fg">Set up a workflow</h2>
+        <div className="inline-flex rounded-lg border border-border bg-surface p-0.5 text-[12.5px]" role="tablist" aria-label="How to create a workflow">
           {(
             [
               ["plain", "Plain language"],
@@ -276,7 +443,10 @@ function CreateWorkflowPanel({
               role="tab"
               aria-selected={mode === id}
               onClick={() => (setMode(id), setError(null))}
-              className={`cursor-pointer rounded-md px-3 py-1 transition-colors ${mode === id ? "bg-bg font-medium text-fg shadow-sm" : "text-muted hover:text-fg"}`}
+              className={cn(
+                "cursor-pointer rounded-md px-3 py-1 transition-colors",
+                mode === id ? "bg-bg font-medium text-fg shadow-sm" : "text-muted hover:text-fg",
+              )}
             >
               {label}
             </button>
@@ -285,11 +455,12 @@ function CreateWorkflowPanel({
       </div>
 
       {mode === "plain" && (
-        <div className="space-y-2.5" data-testid="workflow-plain-form">
-          <label htmlFor="workflow-plain-text" className="block text-[12px] text-muted">
+        <div className="space-y-3 rounded-xl border border-border bg-surface p-4" data-testid="workflow-plain-form">
+          <label htmlFor="workflow-plain-text" className="block text-[13px] text-muted">
             Describe when it should run and what Assist should prepare. Nothing sends or changes without your confirmation.
           </label>
           <textarea
+            ref={composerRef}
             id="workflow-plain-text"
             rows={3}
             value={plain}
@@ -299,10 +470,10 @@ function CreateWorkflowPanel({
               if (preview) setPreview(null);
             }}
             placeholder='For example: "every Monday 8 AM send me late POs by supplier", "when mail arrives from croda.com, draft a reply", or "when a PO goes late, draft a supplier chase"'
-            className="w-full resize-none rounded-lg border border-border-strong bg-bg px-3 py-2 text-[13.5px] leading-5 text-fg placeholder:text-faint focus:border-accent focus:outline-none"
+            className="w-full resize-none rounded-lg border border-border-strong bg-bg px-3.5 py-2.5 text-[14px] leading-[1.6] text-fg placeholder:text-muted focus:border-fg/35 focus:outline-none"
           />
-          <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span className="text-muted">Trigger:</span>
+          <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+            <span className="font-medium text-muted">Trigger:</span>
             <StyledSelect
               ariaLabel="Trigger:"
               value={triggerKind}
@@ -338,6 +509,17 @@ function CreateWorkflowPanel({
                     options={WEEKDAYS.map((d) => ({ value: d, label: d[0].toUpperCase() + d.slice(1) }))}
                   />
                 )}
+                {cadence === "monthly" && (
+                  <StyledSelect
+                    ariaLabel="Schedule monthly day"
+                    value={String(day)}
+                    onChange={(v) => setDay(Number(v))}
+                    options={Array.from({ length: 28 }, (_, i) => ({
+                      value: String(i + 1),
+                      label: `Day ${i + 1}`,
+                    }))}
+                  />
+                )}
                 {cadence !== "hourly" && (
                   <StyledSelect
                     ariaLabel="Schedule hour"
@@ -357,7 +539,7 @@ function CreateWorkflowPanel({
                 <StyledSelect
                   ariaLabel="Event kind"
                   value={eventKind}
-                  onChange={(v) => setEventKind(v as typeof eventKind)}
+                  onChange={(v) => setEventKind(v as EventKind)}
                   options={[
                     { value: "mail_from", label: "New mail from sender" },
                     { value: "teams_from", label: "New Teams message from sender" },
@@ -383,17 +565,28 @@ function CreateWorkflowPanel({
           </div>
 
           {preview && triggerKind === "auto" && (
-            <p className="text-[12px] text-muted" data-testid="workflow-parse-preview">
+            <p className="border-t border-border pt-2.5 text-[13px] leading-relaxed text-muted" data-testid="workflow-parse-preview">
               Parsed trigger: <span className="font-medium text-fg">{preview.trigger_summary}</span> · Prepares: {preview.instruction}
             </p>
           )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" disabled={busy || !plain.trim()} onClick={() => void createPlain()}>
-              Save workflow
-            </Button>
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={busy || !plain.trim() || missingEventFilter}
+              onClick={() => void createPlain()}
+              className="inline-flex h-8 items-center rounded-lg bg-fg px-3.5 text-[13px] font-medium text-bg transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+            >
+              {busy ? "Saving..." : "Save workflow"}
+            </button>
             {triggerKind === "auto" && (
-              <Button size="sm" variant="outline" disabled={busy || !plain.trim()} onClick={() => void checkPreview()}>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+                disabled={busy || !plain.trim()}
+                onClick={() => void checkPreview()}
+              >
                 Preview trigger
               </Button>
             )}
@@ -402,27 +595,45 @@ function CreateWorkflowPanel({
       )}
 
       {mode === "template" && (
-        <ul className="divide-y divide-border" data-testid="workflow-templates">
+        <ul className="divide-y divide-border border-t border-border" data-testid="workflow-templates">
           {templates.map((tpl) => {
             const p = tplParams[tpl.template_id] ?? {};
-            const needsSender = tpl.trigger.event === "mail_from" || tpl.trigger.event === "teams_from";
-            const allowsSupplier = tpl.trigger.event === "po_late";
-            const allowsProduct = tpl.trigger.event === "qc_hold";
+            const tplTrigger = tpl.trigger && typeof tpl.trigger === "object" ? tpl.trigger : {};
+            const needsSender =
+              tplTrigger.event === "mail_from" ||
+              tplTrigger.event === "teams_from" ||
+              tpl.template_id === "mail-from-sender" ||
+              tpl.template_id === "teams-from-sender";
+            const allowsSupplier = tplTrigger.event === "po_late";
+            const allowsProduct = tplTrigger.event === "qc_hold";
+            const missingRequiredFilter = needsSender && !(p.sender ?? "").trim() && !(p.subject ?? "").trim();
             return (
-              <li key={tpl.template_id} className="flex flex-wrap items-start justify-between gap-3 py-3" data-testid="workflow-template-row">
+              <li key={tpl.template_id} className="flex flex-wrap items-start justify-between gap-3 py-3.5" data-testid="workflow-template-row">
                 <div className="min-w-0 flex-1 space-y-1">
-                  <p className="text-[13px] font-medium">
+                  <p className="text-[14px] font-medium text-fg">
                     {tpl.name} <span className="font-normal text-muted">· {tpl.trigger_summary}</span>
                   </p>
-                  <p className="text-[12px] text-muted">{tpl.description}</p>
+                  <p className="text-[13px] leading-relaxed text-muted">{tpl.description}</p>
                   {needsSender && (
-                    <input
-                      aria-label={`Sender for ${tpl.name}`}
-                      placeholder={tpl.trigger.event === "teams_from" ? "Sender name (required)" : "Sender email or domain (required)"}
-                      value={p.sender ?? ""}
-                      onChange={(e) => setTplParams((s) => ({ ...s, [tpl.template_id]: { ...p, sender: e.target.value } }))}
-                      className={`${INPUT} mt-1 w-64`}
-                    />
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        aria-label={`Sender for ${tpl.name}`}
+                        placeholder={tplTrigger.event === "teams_from" || tpl.template_id === "teams-from-sender" ? "Sender name" : "Sender email or domain"}
+                        value={p.sender ?? ""}
+                        onChange={(e) => setTplParams((s) => ({ ...s, [tpl.template_id]: { ...p, sender: e.target.value } }))}
+                        className={`${INPUT} w-56`}
+                      />
+                      <input
+                        aria-label={`Subject for ${tpl.name}`}
+                        placeholder={tplTrigger.event === "teams_from" || tpl.template_id === "teams-from-sender" ? "Topic or keywords" : "Subject contains"}
+                        value={p.subject ?? ""}
+                        onChange={(e) => setTplParams((s) => ({ ...s, [tpl.template_id]: { ...p, subject: e.target.value } }))}
+                        className={`${INPUT} w-56`}
+                      />
+                      {missingRequiredFilter && (
+                        <span className="text-[11.5px] text-faint">Enter a sender or subject to enable</span>
+                      )}
+                    </div>
                   )}
                   {allowsSupplier && (
                     <input
@@ -430,7 +641,7 @@ function CreateWorkflowPanel({
                       placeholder="Supplier name (optional)"
                       value={p.supplier ?? ""}
                       onChange={(e) => setTplParams((s) => ({ ...s, [tpl.template_id]: { ...p, supplier: e.target.value } }))}
-                      className={`${INPUT} mt-1 w-64`}
+                      className={`${INPUT} mt-1.5 w-64`}
                     />
                   )}
                   {allowsProduct && (
@@ -439,18 +650,45 @@ function CreateWorkflowPanel({
                       placeholder="Product or batch (optional)"
                       value={p.product ?? ""}
                       onChange={(e) => setTplParams((s) => ({ ...s, [tpl.template_id]: { ...p, product: e.target.value } }))}
-                      className={`${INPUT} mt-1 w-64`}
+                      className={`${INPUT} mt-1.5 w-64`}
                     />
                   )}
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy || (needsSender && !(p.sender ?? "").trim())}
-                  onClick={() => void createFromTemplate(tpl)}
-                >
-                  Use template
-                </Button>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 rounded-lg px-2.5 text-[12.5px] text-muted hover:bg-surface-2 hover:text-fg"
+                    onClick={() =>
+                      onDraftPreview?.({
+                        id: `tpl:${tpl.template_id}`,
+                        name: tpl.name ?? "",
+                        status: "draft",
+                        triggerKind: tpl.trigger_kind ?? "manual",
+                        triggerSummary: tpl.trigger_summary ?? "",
+                        trigger: {
+                          ...tplTrigger,
+                          ...(p.sender?.trim() ? { sender: p.sender.trim() } : {}),
+                          ...(p.subject?.trim() ? { subject: p.subject.trim() } : {}),
+                          ...(p.supplier?.trim() ? { supplier: p.supplier.trim() } : {}),
+                          ...(p.product?.trim() ? { product: p.product.trim() } : {}),
+                        },
+                        instruction: tpl.instruction || tpl.description || tpl.name || "",
+                      })
+                    }
+                  >
+                    Preview map
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 rounded-lg px-3 text-[13px] font-medium"
+                    disabled={busy || missingRequiredFilter}
+                    onClick={() => void createFromTemplate(tpl)}
+                  >
+                    Use template
+                  </Button>
+                </div>
               </li>
             );
           })}
@@ -460,25 +698,31 @@ function CreateWorkflowPanel({
       {mode === "routine" && (
         <div data-testid="workflow-routines-picker">
           {routines.length === 0 ? (
-            <p className="text-[12px] text-muted">
+            <p className="text-[13px] text-muted">
               No mined routines are on your account yet.
             </p>
           ) : (
-            <ul className="divide-y divide-border">
+            <ul className="divide-y divide-border border-t border-border">
               {routines.map((r) => (
-                <li key={r.routine_id} className="flex flex-wrap items-start justify-between gap-3 py-3" data-testid="mined-routine-row">
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <p className="text-[13px] font-medium">
+                <li key={r.routine_id} className="flex flex-wrap items-start justify-between gap-3 py-3.5" data-testid="mined-routine-row">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="text-[14px] font-medium text-fg">
                       {r.suggested_name} <span className="font-normal text-muted">· {r.suggested_trigger_summary}</span>
                     </p>
-                    {r.description && <p className="text-[12px] text-muted">{r.description}</p>}
-                    <p className="text-[12px] text-muted">
-                      Observed {String(r.mined.acts ?? 0)} acts
-                      {r.mined.days != null ? ` over ${String(r.mined.days)} days` : ""}
-                      {r.mined.support != null ? ` · support ${Math.round(Number(r.mined.support) * 100)}%` : ""}
+                    {r.description && <p className="text-[13px] text-muted">{r.description}</p>}
+                    <p className="text-[12.5px] text-muted">
+                      Observed {String(r.mined?.acts ?? 0)} acts
+                      {r.mined?.days != null ? ` over ${String(r.mined.days)} days` : ""}
+                      {r.mined?.support != null ? ` · support ${Math.round(Number(r.mined.support) * 100)}%` : ""}
                     </p>
                   </div>
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void createFromRoutine(r)}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 rounded-lg px-3 text-[13px] font-medium text-fg hover:bg-surface-2"
+                    disabled={busy}
+                    onClick={() => void createFromRoutine(r)}
+                  >
                     Turn into workflow
                   </Button>
                 </li>
@@ -495,57 +739,64 @@ function CreateWorkflowPanel({
 
 function WorkflowCard({
   wf,
+  selected,
+  onSelect,
   onWorkflow,
   onDelete,
   onJob,
   onFeedback,
 }: {
   wf: AssistWorkflow;
+  selected?: boolean;
+  onSelect?: () => void;
   onWorkflow: (w: AssistWorkflow) => void;
   onDelete: (w: AssistWorkflow) => void;
   onJob: (j: AssistJob) => void;
   onFeedback: (message: string) => void;
 }) {
+  const wfTrigger = wf.trigger && typeof wf.trigger === "object" ? wf.trigger : {};
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(wf.name);
-  const [editInstruction, setEditInstruction] = useState(wf.instruction);
-  const [editTriggerKind, setEditTriggerKind] = useState<AssistWorkflowTriggerKind>(wf.trigger_kind);
-  const [editCadence, setEditCadence] = useState(String(wf.trigger.cadence ?? "weekly"));
-  const [editWeekday, setEditWeekday] = useState(String(wf.trigger.weekday ?? "monday"));
-  const [editDay, setEditDay] = useState(Number(wf.trigger.day ?? 1));
-  const [editHour, setEditHour] = useState(Number(wf.trigger.hour ?? 8));
+  const [editName, setEditName] = useState(wf.name ?? "");
+  const [editInstruction, setEditInstruction] = useState(wf.instruction ?? wf.name ?? "");
+  const [editTriggerKind, setEditTriggerKind] = useState<AssistWorkflowTriggerKind>(wf.trigger_kind ?? "manual");
+  const [editCadence, setEditCadence] = useState(String(wfTrigger.cadence ?? "weekly"));
+  const [editWeekday, setEditWeekday] = useState(String(wfTrigger.weekday ?? "monday"));
+  const [editDay, setEditDay] = useState(Number(wfTrigger.day ?? 1));
+  const [editHour, setEditHour] = useState(Number(wfTrigger.hour ?? 8));
   const [editEventKind, setEditEventKind] = useState<EventKind>(
-    (wf.trigger.event as EventKind | undefined) ?? "mail_from",
+    (wfTrigger.event as EventKind | undefined) ?? "mail_from",
   );
-  const [editSender, setEditSender] = useState(String(wf.trigger.sender ?? ""));
-  const [editSubject, setEditSubject] = useState(String(wf.trigger.subject ?? ""));
-  const [editSupplier, setEditSupplier] = useState(String(wf.trigger.supplier ?? ""));
-  const [editProduct, setEditProduct] = useState(String(wf.trigger.product ?? ""));
-  const [openRun, setOpenRun] = useState<string | null>(wf.runs[0]?.job_id ?? null);
+  const [editSender, setEditSender] = useState(String(wfTrigger.sender ?? ""));
+  const [editSubject, setEditSubject] = useState(String(wfTrigger.subject ?? ""));
+  const [editSupplier, setEditSupplier] = useState(String(wfTrigger.supplier ?? ""));
+  const [editProduct, setEditProduct] = useState(String(wfTrigger.product ?? ""));
+  const [openRun, setOpenRun] = useState<string | null>((wf.runs ?? [])[0]?.job_id ?? null);
   const [, setError, problem] = useProblem();
 
   const startEditing = () => {
-    setEditName(wf.name);
-    setEditInstruction(wf.instruction);
-    setEditTriggerKind(wf.trigger_kind);
-    setEditCadence(String(wf.trigger.cadence ?? "weekly"));
-    setEditWeekday(String(wf.trigger.weekday ?? "monday"));
-    setEditDay(Number(wf.trigger.day ?? 1));
-    setEditHour(Number(wf.trigger.hour ?? 8));
-    setEditEventKind((wf.trigger.event as EventKind | undefined) ?? "mail_from");
-    setEditSender(String(wf.trigger.sender ?? ""));
-    setEditSubject(String(wf.trigger.subject ?? ""));
-    setEditSupplier(String(wf.trigger.supplier ?? ""));
-    setEditProduct(String(wf.trigger.product ?? ""));
+    const trig = wf.trigger && typeof wf.trigger === "object" ? wf.trigger : {};
+    setEditName(wf.name ?? "");
+    setEditInstruction(wf.instruction ?? wf.name ?? "");
+    setEditTriggerKind(wf.trigger_kind ?? "manual");
+    setEditCadence(String(trig.cadence ?? "weekly"));
+    setEditWeekday(String(trig.weekday ?? "monday"));
+    setEditDay(Number(trig.day ?? 1));
+    setEditHour(Number(trig.hour ?? 8));
+    setEditEventKind((trig.event as EventKind | undefined) ?? "mail_from");
+    setEditSender(String(trig.sender ?? ""));
+    setEditSubject(String(trig.subject ?? ""));
+    setEditSupplier(String(trig.supplier ?? ""));
+    setEditProduct(String(trig.product ?? ""));
     setError(null);
     setEditing(true);
   };
 
   const buildEditedTrigger = (): Record<string, unknown> => {
+    const trig = wf.trigger && typeof wf.trigger === "object" ? wf.trigger : {};
     if (editTriggerKind === "manual") return {};
     if (editTriggerKind === "schedule") {
-      if (editCadence === "hourly") return { cadence: "hourly", every_hours: Number(wf.trigger.every_hours ?? 1) || 1 };
+      if (editCadence === "hourly") return { cadence: "hourly", every_hours: Number(trig.every_hours ?? 1) || 1 };
       if (editCadence === "weekly") return { cadence: "weekly", weekday: editWeekday, hour: editHour, minute: 0 };
       if (editCadence === "monthly") return { cadence: "monthly", day: Math.min(28, Math.max(1, editDay || 1)), hour: editHour, minute: 0 };
       return { cadence: editCadence, hour: editHour, minute: 0 };
@@ -567,13 +818,14 @@ function WorkflowCard({
   };
 
   const saveEdit = async () => {
-    if (!editInstruction.trim()) return;
+    const trimmedInstr = (editInstruction ?? "").trim();
+    if (!trimmedInstr) return;
     setBusy(true);
     setError(null);
     try {
       const updated = await updateAssistWorkflow(wf.workflow_id, {
-        name: editName.trim() || editInstruction.trim(),
-        instruction: editInstruction.trim(),
+        name: (editName ?? "").trim() || trimmedInstr,
+        instruction: trimmedInstr,
         trigger_kind: editTriggerKind,
         trigger: buildEditedTrigger(),
       });
@@ -628,30 +880,66 @@ function WorkflowCard({
       : STATUS_LABELS[wf.status];
 
   return (
-    <article className="max-w-[52rem] space-y-2.5 border-b border-border pb-5" data-testid="assist-workflow" aria-label={wf.name}>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="text-[14px] font-medium">{wf.name}</h3>
-          <p className="text-[12px] text-muted" data-testid="workflow-meta">
-            {statusText} · {wf.trigger_summary} · {SOURCE_LABELS[wf.source_kind]}
-            {wf.next_run_at && wf.status === "active" ? ` · next ${formatDateTime(wf.next_run_at)}` : ""}
+    <article
+      className={cn(
+        "space-y-3 py-4 transition-colors",
+        selected && "border-l-2 border-l-accent pl-4",
+      )}
+      data-testid="assist-workflow"
+      aria-label={wf.name}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <button
+            type="button"
+            onClick={onSelect}
+            className="text-left text-[15.5px] font-semibold tracking-tight text-fg hover:text-accent cursor-pointer"
+          >
+            {wf.name}
+          </button>
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-muted" data-testid="workflow-meta">
+            <WorkflowStatusBadge status={wf.status} label={statusText} />
+            <span>{wf.trigger_summary}</span>
+            <span aria-hidden>·</span>
+            <span>{SOURCE_LABELS[wf.source_kind]}</span>
+            {wf.next_run_at && wf.status === "active" && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="num">next {formatDateTime(wf.next_run_at)}</span>
+              </>
+            )}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+
+        <div className="flex flex-wrap items-center gap-1">
           {wf.status !== "stopped" && (
-            <Button size="sm" disabled={busy} onClick={() => void runNow()}>
-              Run now
-            </Button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runNow()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-fg px-3 text-[13px] font-medium text-bg transition-all hover:opacity-90 active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+            >
+              <Play className="size-3" aria-hidden />
+              <span>Run now</span>
+            </button>
           )}
           {wf.status !== "stopped" && !editing && (
-            <Button size="sm" variant="outline" disabled={busy} onClick={startEditing}>
-              Edit
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+              disabled={busy}
+              onClick={startEditing}
+            >
+              <Pencil className="size-3.5" aria-hidden />
+              <span>Edit</span>
             </Button>
           )}
           {wf.status === "active" && (
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
               disabled={busy}
               onClick={() =>
                 void actOptimistic(
@@ -661,13 +949,15 @@ function WorkflowCard({
                 )
               }
             >
-              Pause
+              <Pause className="size-3.5" aria-hidden />
+              <span>Pause</span>
             </Button>
           )}
           {wf.status === "paused" && (
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
               disabled={busy}
               onClick={() =>
                 void actOptimistic(
@@ -677,13 +967,15 @@ function WorkflowCard({
                 )
               }
             >
-              Resume
+              <Play className="size-3.5" aria-hidden />
+              <span>Resume</span>
             </Button>
           )}
           {wf.status !== "stopped" && (
             <Button
               size="sm"
-              variant="outline"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
               disabled={busy}
               onClick={() =>
                 void actOptimistic(
@@ -693,19 +985,27 @@ function WorkflowCard({
                 )
               }
             >
-              Stop
+              <Square className="size-3" aria-hidden />
+              <span>Stop</span>
             </Button>
           )}
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => onDelete(wf)}>
-            Delete
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-late"
+            disabled={busy}
+            onClick={() => onDelete(wf)}
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            <span>Delete</span>
           </Button>
         </div>
       </div>
 
       {editing ? (
-        <div className="space-y-2.5 rounded-lg border border-border bg-surface p-3" data-testid="workflow-edit-form">
+        <div className="space-y-3 rounded-xl border border-border bg-surface p-4" data-testid="workflow-edit-form">
           <div className="space-y-1">
-            <label htmlFor={`wf-name-${wf.workflow_id}`} className="block text-[12px] text-muted">
+            <label htmlFor={`wf-name-${wf.workflow_id}`} className="block text-[12.5px] font-medium text-muted">
               Name
             </label>
             <input
@@ -718,7 +1018,7 @@ function WorkflowCard({
             />
           </div>
           <div className="space-y-1">
-            <label htmlFor={`wf-instr-${wf.workflow_id}`} className="block text-[12px] text-muted">
+            <label htmlFor={`wf-instr-${wf.workflow_id}`} className="block text-[12.5px] font-medium text-muted">
               Instruction
             </label>
             <textarea
@@ -728,11 +1028,11 @@ function WorkflowCard({
               value={editInstruction}
               disabled={busy}
               onChange={(e) => setEditInstruction(e.target.value)}
-              className="w-full resize-none rounded-lg border border-border-strong bg-bg px-3 py-2 text-[13px] leading-5 text-fg focus:border-accent focus:outline-none"
+              className="w-full resize-none rounded-lg border border-border-strong bg-bg px-3 py-2 text-[14px] leading-[1.6] text-fg focus:border-fg/35 focus:outline-none"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            <span className="text-muted">Trigger:</span>
+          <div className="flex flex-wrap items-center gap-2 text-[12.5px]">
+            <span className="font-medium text-muted">Trigger:</span>
             <StyledSelect
               ariaLabel="Edit trigger"
               value={editTriggerKind}
@@ -843,54 +1143,61 @@ function WorkflowCard({
               </>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
               disabled={
                 busy ||
-                !editInstruction.trim() ||
+                !(editInstruction ?? "").trim() ||
                 (editTriggerKind === "event" &&
                   (editEventKind === "mail_from" || editEventKind === "teams_from") &&
                   !editSender.trim() &&
                   !editSubject.trim())
               }
               onClick={() => void saveEdit()}
+              className="inline-flex h-8 items-center rounded-lg bg-fg px-3.5 text-[13px] font-medium text-bg transition-all hover:opacity-90 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
             >
               Save changes
-            </Button>
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditing(false)}>
+            </button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 rounded-lg px-2.5 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+              disabled={busy}
+              onClick={() => setEditing(false)}
+            >
               Cancel
             </Button>
           </div>
         </div>
       ) : (
-        <p className="text-[13px]">{wf.instruction}</p>
+        <p className="text-[14px] leading-[1.65] text-fg">{wf.instruction ?? wf.name ?? ""}</p>
       )}
 
       {wf.backoff_until && wf.status === "active" && (
-        <p className="text-[12px] text-risk" data-testid="workflow-backoff">
+        <p className="border-l-2 border-l-risk/60 pl-3.5 py-0.5 text-[13px] leading-relaxed text-muted" data-testid="workflow-backoff">
           Waiting after {wf.consecutive_failures} failed {wf.consecutive_failures === 1 ? "run" : "runs"} so it does not spin; next automatic try after {formatDateTime(wf.backoff_until)}.
         </p>
       )}
       {wf.last_error && (
-        <p className="text-[12px] text-risk" data-testid="workflow-error">
+        <p className="border-l-2 border-l-late/60 pl-3.5 py-0.5 text-[13px] leading-relaxed text-muted" data-testid="workflow-error">
           Last failure: {wf.last_error}
         </p>
       )}
 
-      {wf.runs.length > 0 && (
+      {(wf.runs ?? []).length > 0 && (
         <div className="space-y-2 pt-1" data-testid="workflow-runs">
-          <p className="text-[12px] text-muted">
-            {wf.runs.length} {wf.runs.length === 1 ? "run" : "runs"}
+          <p className="text-[12.5px] text-muted">
+            {(wf.runs ?? []).length} {(wf.runs ?? []).length === 1 ? "run" : "runs"}
           </p>
           <ul className="divide-y divide-border border-t border-border">
-            {wf.runs.map((r) => {
+            {(wf.runs ?? []).map((r) => {
               const expanded = openRun === r.job_id;
               return (
-                <li key={r.job_id} className="py-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
+                <li key={r.job_id} className="py-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
                     <span>
-                      <span className="font-medium">{r.trigger_note || (r.kind === "run_now" ? "Run on demand" : "Triggered")}</span>
+                      <span className="font-medium text-fg">{r.trigger_note || (r.kind === "run_now" ? "Run on demand" : "Triggered")}</span>
                       <span className="text-muted"> · {formatDateTime(r.triggered_at)}</span>
                       {r.job && (
                         <span className="text-muted">
@@ -904,14 +1211,14 @@ function WorkflowCard({
                       <button
                         type="button"
                         onClick={() => setOpenRun(expanded ? null : r.job_id)}
-                        className="cursor-pointer text-muted underline underline-offset-2 hover:text-fg"
+                        className="cursor-pointer rounded-md px-2 py-0.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg"
                       >
                         {expanded ? "Hide run" : "Review pieces"}
                       </button>
                     )}
                   </div>
                   {expanded && r.job && (
-                    <div className="mt-3 pl-3 border-l-2 border-border">
+                    <div className="mt-4 border-l border-border pl-4">
                       <JobCard job={r.job} onJob={onJob} onFeedback={onFeedback} />
                     </div>
                   )}
@@ -927,12 +1234,16 @@ function WorkflowCard({
   );
 }
 
-/** The Workflows tab: create from plain language, templates or mined routines; manage & review runs. */
+/** The Workflows tab: visual dot-grid pipeline canvas, composer, and live workflow management. */
 export function AssistWorkflowsView() {
   const { data, error, errorStatus, errorCode, addWorkflow, replaceWorkflow, removeWorkflow, restoreWorkflow, replaceJob } = useAssistWorkflows();
   const [toast, setToast] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
+  const [draftSpec, setDraftSpec] = useState<WorkflowPipelineSpec | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>("trigger");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   const showToast = useCallback((message: string) => {
     setActionError(null);
@@ -950,6 +1261,8 @@ export function AssistWorkflowsView() {
   const handleCreated = useCallback(
     (wf: AssistWorkflow) => {
       addWorkflow(wf);
+      setDraftSpec(null);
+      setSelectedWorkflowId(wf.workflow_id);
       showToast("Workflow saved.");
     },
     [addWorkflow, showToast],
@@ -958,6 +1271,7 @@ export function AssistWorkflowsView() {
   const handleDelete = useCallback(
     async (wf: AssistWorkflow) => {
       const removed = removeWorkflow(wf.workflow_id);
+      if (selectedWorkflowId === wf.workflow_id) setSelectedWorkflowId(null);
       showToast("Workflow deleted.");
       try {
         await deleteAssistWorkflow(wf.workflow_id);
@@ -968,15 +1282,59 @@ export function AssistWorkflowsView() {
         setActionError(plainError(e));
       }
     },
-    [removeWorkflow, restoreWorkflow, showToast],
+    [removeWorkflow, restoreWorkflow, selectedWorkflowId, showToast],
+  );
+
+  const workflows = useMemo(() => data?.workflows ?? [], [data?.workflows]);
+  const activeWorkflow = useMemo(
+    () => workflows.find((w) => w.workflow_id === selectedWorkflowId) ?? workflows[0] ?? null,
+    [workflows, selectedWorkflowId],
+  );
+
+  const canvasSpec = useMemo<WorkflowPipelineSpec | null>(() => {
+    if (draftSpec) return draftSpec;
+    if (activeWorkflow) {
+      return {
+        id: activeWorkflow.workflow_id,
+        name: activeWorkflow.name ?? "",
+        status: activeWorkflow.status ?? "active",
+        triggerKind: activeWorkflow.trigger_kind ?? "manual",
+        triggerSummary: activeWorkflow.trigger_summary ?? "",
+        trigger: activeWorkflow.trigger && typeof activeWorkflow.trigger === "object" ? activeWorkflow.trigger : {},
+        instruction: activeWorkflow.instruction ?? activeWorkflow.name ?? "",
+        runsCount: (activeWorkflow.runs ?? []).length,
+      };
+    }
+    const firstTpl = data?.templates?.[0];
+    if (firstTpl) {
+      return {
+        id: `tpl:${firstTpl.template_id}`,
+        name: firstTpl.name ?? "",
+        status: "draft",
+        triggerKind: firstTpl.trigger_kind ?? "manual",
+        triggerSummary: firstTpl.trigger_summary ?? "",
+        trigger: firstTpl.trigger && typeof firstTpl.trigger === "object" ? firstTpl.trigger : {},
+        instruction: firstTpl.instruction || firstTpl.description || firstTpl.name || "",
+      };
+    }
+    return null;
+  }, [activeWorkflow, data?.templates, draftSpec]);
+
+  const pipelineGraph = useMemo(
+    () => (canvasSpec ? buildWorkflowPipelineGraph(canvasSpec) : { nodes: [], edges: [] }),
+    [canvasSpec],
+  );
+  const inspectedNode = useMemo(
+    () => pipelineGraph.nodes.find((n) => n.id === selectedNodeId) ?? pipelineGraph.nodes[0] ?? null,
+    [pipelineGraph.nodes, selectedNodeId],
   );
 
   if (!data && !error) return <Pending page label="Reading your workflows" />;
   if (!data && error && errorStatus === 403) {
     return (
-      <div data-testid="assist-workflows-view">
+      <div className="mx-auto w-full max-w-[1040px]" data-testid="assist-workflows-view">
         <p
-          className="max-w-[44rem] rounded-md border border-border bg-surface px-4 py-3 text-[13px] text-muted"
+          className="rounded-xl border border-border bg-surface px-4 py-3 text-[13.5px] leading-relaxed text-muted"
           role={errorCode === "canary_route_refused" ? "status" : "alert"}
           data-testid="assist-workflows-restricted"
         >
@@ -986,23 +1344,23 @@ export function AssistWorkflowsView() {
     );
   }
   return (
-    <div data-testid="assist-workflows-view">
-      {error && <p className="mb-4 text-[13px] text-risk">{error}</p>}
+    <div className="mx-auto w-full max-w-[1040px] pb-10" data-testid="assist-workflows-view">
+      {error && <p className="mb-4 border-l-2 border-l-risk/60 pl-3.5 text-[13.5px] text-muted">{error}</p>}
       {toast && (
         <div
           role="status"
           data-testid="workflow-toast"
-          className="mb-4 flex max-w-4xl items-center justify-between gap-2 rounded-lg border border-ok-line bg-ok-soft px-3.5 py-2 text-[13px] font-medium text-ok"
+          className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-[13px] font-medium text-fg"
         >
           <span className="inline-flex items-center gap-2">
-            <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+            <CheckCircle2 className="size-4 shrink-0 text-ok" aria-hidden />
             {toast}
           </span>
           <button
             type="button"
             aria-label="Dismiss message"
             onClick={() => setToast(null)}
-            className="cursor-pointer rounded p-0.5 text-ok/80 hover:text-ok"
+            className="cursor-pointer rounded-md p-1 text-muted hover:bg-surface-2 hover:text-fg"
           >
             <X className="size-3.5" aria-hidden />
           </button>
@@ -1012,44 +1370,132 @@ export function AssistWorkflowsView() {
         <div
           role="alert"
           data-testid="workflow-action-error"
-          className="mb-4 flex max-w-4xl items-center justify-between gap-2 rounded-lg border border-late-line bg-late-soft px-3.5 py-2 text-[13px] text-late"
+          className="mb-4 flex items-center justify-between gap-2 rounded-xl border border-border bg-surface px-4 py-2.5 text-[13px] text-fg"
         >
           <span className="inline-flex items-center gap-2">
-            <CircleAlert className="size-4 shrink-0" aria-hidden />
+            <CircleAlert className="size-4 shrink-0 text-late" aria-hidden />
             {actionError}
           </span>
           <button
             type="button"
             aria-label="Dismiss error"
             onClick={() => setActionError(null)}
-            className="cursor-pointer rounded p-0.5 text-late/80 hover:text-late"
+            className="cursor-pointer rounded-md p-1 text-muted hover:bg-surface-2 hover:text-fg"
           >
             <X className="size-3.5" aria-hidden />
           </button>
         </div>
       )}
+
+      {/* Interactive dotted grid Visual Workflow Pipeline Canvas */}
+      <section
+        className="mb-7 space-y-3"
+        aria-label="Workflow visual pipeline"
+        data-testid="workflow-dot-grid-section"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-0.5">
+            <h2 className="text-[15px] font-semibold tracking-tight text-fg">
+              Visual workflow pipeline
+            </h2>
+            <p className="text-[12.5px] text-muted">
+              {canvasSpec
+                ? `${draftSpec ? "Previewing draft: " : "Selected workflow: "}${canvasSpec.name}`
+                : "Select any workflow or preview a draft below to inspect its trigger, filters, action, and approval gate."}
+            </p>
+          </div>
+          {draftSpec && (
+            <button
+              type="button"
+              onClick={() => setDraftSpec(null)}
+              className="rounded-md border border-border bg-surface px-2.5 py-1 text-[12px] font-medium text-muted hover:border-border-strong hover:text-fg cursor-pointer"
+            >
+              Exit draft preview
+            </button>
+          )}
+        </div>
+
+        <DotGridCanvas
+          nodes={pipelineGraph.nodes}
+          edges={pipelineGraph.edges}
+          selectedId={selectedNodeId}
+          onSelectNode={setSelectedNodeId}
+          height={290}
+          emptyMessage="Describe a workflow below or choose a template to visualize its pipeline."
+          ariaLabel="Assist workflow pipeline canvas"
+        />
+
+        {inspectedNode && (
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3.5 py-2.5 text-[12.5px]"
+            data-testid="workflow-node-inspector"
+          >
+            <div className="min-w-0 flex-1">
+              <span className="font-semibold uppercase tracking-wide text-accent-text">{inspectedNode.kindLabel}</span>
+              <span className="mx-2 text-faint" aria-hidden>·</span>
+              <span className="font-medium text-fg">{inspectedNode.title}</span>
+              {inspectedNode.description && (
+                <span className="ml-2 text-muted">{inspectedNode.description}</span>
+              )}
+            </div>
+            {inspectedNode.badge && (
+              <span className="shrink-0 rounded-md border border-border-strong bg-bg px-2 py-0.5 text-[11.5px] font-medium text-muted">
+                {inspectedNode.badge}
+              </span>
+            )}
+          </div>
+        )}
+      </section>
+
       <CreateWorkflowPanel
         templates={data?.templates ?? []}
         routines={data?.routines ?? []}
         onCreated={handleCreated}
+        composerRef={composerRef}
+        onDraftPreview={(spec) => {
+          setDraftSpec(spec);
+          setSelectedNodeId("trigger");
+        }}
       />
-      {(data?.workflows ?? []).length === 0 ? (
+
+      {workflows.length === 0 ? (
         <EmptyState
           title="No workflow set up yet."
           line='Describe one in plain language above, pick a template, or turn one of your mined routines into a workflow.'
         />
       ) : (
-        <div className="space-y-6">
-          {(data?.workflows ?? []).map((w) => (
-            <WorkflowCard
-              key={w.workflow_id}
-              wf={w}
-              onWorkflow={replaceWorkflow}
-              onDelete={(wf) => void handleDelete(wf)}
-              onJob={replaceJob}
-              onFeedback={showToast}
-            />
-          ))}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-[12.5px] font-semibold uppercase tracking-wide text-faint">
+              Your workflows ({workflows.length})
+            </h2>
+            <button
+              type="button"
+              onClick={() => composerRef.current?.focus()}
+              className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-surface px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2 cursor-pointer"
+            >
+              <Plus className="size-3.5" aria-hidden />
+              <span>New workflow</span>
+            </button>
+          </div>
+          <div className="divide-y divide-border border-y border-border">
+            {workflows.map((w) => (
+              <WorkflowCard
+                key={w.workflow_id}
+                wf={w}
+                selected={!draftSpec && activeWorkflow?.workflow_id === w.workflow_id}
+                onSelect={() => {
+                  setDraftSpec(null);
+                  setSelectedWorkflowId(w.workflow_id);
+                  setSelectedNodeId("trigger");
+                }}
+                onWorkflow={replaceWorkflow}
+                onDelete={(wf) => void handleDelete(wf)}
+                onJob={replaceJob}
+                onFeedback={showToast}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -1080,36 +1526,42 @@ export function MinedRoutinesSection() {
   if (!data && errorStatus === 403) return null;
   const routines = data?.routines ?? [];
   return (
-    <section className="mb-8 max-w-[52rem]" data-testid="mined-routines-section">
+    <section className="mb-8 max-w-[820px]" data-testid="mined-routines-section">
       <div className="mb-2 flex items-baseline justify-between gap-2">
-        <h2 className="text-[13px] font-medium">Mined routines from your past work</h2>
-        <Link href="/assist?show=workflows" className="text-[12px] text-muted underline underline-offset-2 hover:text-fg">
+        <h2 className="text-[14px] font-semibold text-fg">Mined routines from your past work</h2>
+        <Link href="/assist?show=workflows" className="text-[12.5px] text-muted underline underline-offset-2 hover:text-fg">
           Open Workflows
         </Link>
       </div>
-      {error && <p className="mb-2 text-[12px] text-risk">{error}</p>}
+      {error && <p className="mb-2 text-[13px] text-muted">{error}</p>}
       {routines.length === 0 ? (
-        <p className="text-[12px] text-muted">No mined routines are on your account yet.</p>
+        <p className="text-[13px] text-muted">No mined routines are on your account yet.</p>
       ) : (
-        <ul className="divide-y divide-border">
+        <ul className="divide-y divide-border border-t border-border">
           {routines.map((r) => (
-            <li key={r.routine_id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-[13px]" data-testid="routines-tab-mined-row">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">
+            <li key={r.routine_id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-[13.5px]" data-testid="routines-tab-mined-row">
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="font-medium text-fg">
                   {r.suggested_name} <span className="font-normal text-muted">· {r.suggested_trigger_summary}</span>
                 </p>
-                {r.description && <p className="text-[12px] text-muted">{r.description}</p>}
+                {r.description && <p className="text-[12.5px] text-muted">{r.description}</p>}
                 <p className="text-[12px] text-muted">
-                  Observed {String(r.mined.acts ?? 0)} acts
-                  {r.mined.days != null ? ` over ${String(r.mined.days)} days` : ""}
+                  Observed {String(r.mined?.acts ?? 0)} acts
+                  {r.mined?.days != null ? ` over ${String(r.mined.days)} days` : ""}
                 </p>
               </div>
               {created[r.routine_id] ? (
-                <Link href="/assist?show=workflows" className="text-[12px] text-ok underline underline-offset-2">
+                <Link href="/assist?show=workflows" className="text-[12.5px] font-medium text-ok underline underline-offset-2">
                   Workflow created. Open it
                 </Link>
               ) : (
-                <Button size="sm" variant="outline" disabled={busyId === r.routine_id} onClick={() => void make(r)}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-[13px] text-muted hover:bg-surface-2 hover:text-fg"
+                  disabled={busyId === r.routine_id}
+                  onClick={() => void make(r)}
+                >
                   Turn into workflow
                 </Button>
               )}

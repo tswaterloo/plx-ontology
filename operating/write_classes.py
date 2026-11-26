@@ -62,9 +62,11 @@ SEED: tuple[Row, ...] = tuple(
             "a task; its due date commits nobody outside")
     + _rows("calendar", ["event_create", "event_update", "event_respond"], "A",
             "B when any attendee is outside the company", "external_attendee")
-    + _rows("sharepoint", ["list_item_create", "list_item_update", "file_upload"], "A",
+    + _rows("sharepoint", ["list_item_create", "list_item_update", "file_upload",
+                           "create_folder"], "A",
             "reversible")
-    + _rows("sharepoint", ["file_replace"], "B", "overwrites a document")
+    + _rows("sharepoint", ["file_replace", "upload_document", "put_file"], "B",
+            "overwrites a document")
     + _rows("graph", ["send_email", "chat_message", "channel_message"], "A",
             "B when the text holds any date or number token, or any reader is outside the "
             "company; live send stays Vince only regardless", "message_has_figures")

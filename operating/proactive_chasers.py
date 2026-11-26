@@ -111,8 +111,9 @@ PUBLIC_MAIL = frozenset({"gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
                          "icloud.com", "aol.com", "msn.com", "yahoo.ca", "hotmail.ca",
                          "me.com", "protonmail.com", "shaw.ca", "rogers.com", "sympatico.ca"})
 AUTOMATED = re.compile(r"(?:^|[._+-])(?:no[._-]?reply|do[._-]?not[._-]?reply|notifications?|"
-                       r"notify|mailer-daemon|postmaster|bounces?|alerts?|wordpress)"
-                       r"(?:[._+-]|@)", re.I)
+                       r"notify|mailer-daemon|postmaster|bounces?|alerts?|wordpress|"
+                       r"password[._-]?expiry)(?:[._+-]|@)|"
+                       r"^(?:maccount@microsoft\.com|quarantine@messaging\.microsoft\.com)$", re.I)
 READY_WORDS = ("ready", "picked", "packed", "staged")
 SETTLED_MENTION = ("verified", "reviewed", "corroborated")
 
@@ -385,6 +386,10 @@ class _Chases:
                 return None
             when = _instant(_words(entry, "sent_at", "received_at"))
             body = _words(entry, "body_preview") or ""
+            from .assist_readings import is_automated_system_alert
+            if is_automated_system_alert(sender=sender, subject=subject, message=body):
+                self.skipped["automated_sender"] += 1
+                return None
             dedupe = (_words(entry, "internet_message_id") or oid).strip().casefold()
         if when is None:
             self.skipped["message_undated"] += 1

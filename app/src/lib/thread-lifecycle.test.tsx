@@ -4,14 +4,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AskEvent } from "./types";
 
 const seen: AbortSignal[] = [];
+const sentReqs: Record<string, unknown>[] = [];
 const stoppedIds: string[] = [];
 const attachedIds: string[] = [];
 let pushEvent: ((ev: AskEvent) => void) | null = null;
 let finishStream: (() => void) | null = null;
 
 vi.mock("./api", () => ({
-  ask: (_req: unknown, signal: AbortSignal) => {
+  ask: (req: Record<string, unknown>, signal: AbortSignal) => {
     seen.push(signal);
+    sentReqs.push(req);
     return (async function* () {
       const queue: AskEvent[] = [];
       let wake: (() => void) | null = null;
@@ -74,6 +76,7 @@ import { resetThreadStoreForTests, useAskRunning, useThread } from "./thread";
 describe("useThread persistent lifecycle", () => {
   beforeEach(() => {
     seen.length = 0;
+    sentReqs.length = 0;
     stoppedIds.length = 0;
     attachedIds.length = 0;
     pushEvent = null;
@@ -168,5 +171,95 @@ describe("useThread persistent lifecycle", () => {
     expect(result.current.turns).toHaveLength(1);
     expect(result.current.turns[0].phase).toBe("done");
     expect(result.current.turns[0].answer?.direct_answer).toBe("Resumed answer after reload.");
+  });
+
+  it("queues follow-ups in the stream, supports removeQueued, and auto-dispatches the next queued follow-up when the current turn finishes", async () => {
+    const { result } = renderHook(() => useThread());
+
+    act(() => {
+      void result.current.run("Which POs are late?", undefined, undefined, [], {}, {
+        promptPrefix: "Focus on Purchasing:",
+        spaceLabel: "Purchasing",
+      });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(result.current.busy).toBe(true);
+    expect(result.current.turns[0].question).toBe("Which POs are late?");
+    expect(result.current.turns[0].spaceLabel).toBe("Purchasing");
+    expect(sentReqs[0].question).toBe("Focus on Purchasing:\nWhich POs are late?");
+
+    // Queue two follow-ups while busy, then remove the second one
+    act(() => {
+      result.current.queue("Break down by supplier");
+      result.current.queue("Discard this one");
+    });
+    expect(result.current.queued).toHaveLength(2);
+    expect(result.current.queued[0].question).toBe("Break down by supplier");
+
+    act(() => {
+      result.current.removeQueued(result.current.queued[1].id);
+    });
+    expect(result.current.queued).toHaveLength(1);
+
+    // Finish the first turn: the queued follow-up automatically starts!
+    await act(async () => {
+      pushEvent?.({
+        event: "answer",
+        data: {
+          answer_id: "a1",
+          question: "Which POs are late?",
+          conversation_id: result.current.conversationId!,
+          outcome: "answered",
+          latency_ms: 10,
+          access_label: null,
+          direct_answer: "3 POs are late.",
+          facts: [],
+          not_found: [],
+          hidden: { count: 0, by_owner: [] },
+          conflicts: [],
+          freshness: {},
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+
+    expect(result.current.queued).toHaveLength(0);
+    expect(result.current.turns).toHaveLength(2);
+    expect(result.current.turns[1].question).toBe("Break down by supplier");
+    expect(result.current.turns[1].phase).toBe("thinking");
+    expect(seen).toHaveLength(2);
+
+    // Steer immediately stops the active second turn and starts the steering turn
+    act(() => {
+      void result.current.steer("Actually only show overdue CAD orders");
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 15));
+    });
+    expect(seen[1].aborted).toBe(true);
+    expect(result.current.turns).toHaveLength(3);
+    expect(result.current.turns[1].phase).toBe("error");
+    expect(result.current.turns[1].error).toContain("Stopped");
+    expect(result.current.turns[2].question).toBe("Actually only show overdue CAD orders");
+    expect(result.current.turns[2].phase).toBe("thinking");
+
+    // Promote a queued card via sendQueuedNow
+    act(() => {
+      result.current.queue("Now show top 5 vendors");
+    });
+    const qid = result.current.queued[0].id;
+    act(() => {
+      void result.current.sendQueuedNow(qid);
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 15));
+    });
+    expect(result.current.queued).toHaveLength(0);
+    expect(seen[2].aborted).toBe(true);
+    expect(result.current.turns[3].question).toBe("Now show top 5 vendors");
+
+    finishStream?.();
   });
 });

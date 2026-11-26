@@ -221,6 +221,16 @@ Changed:
 - Fast door-guarded meeting briefs from mail, Teams, and open records when no transcripts exist (P2-C2D)
 - Expose product category on sales invoice measures and classify payables via Sage AP distribution sets (P2-A4)
 
+## Update 2026-11-26
+Changed:
+- Fix Insights cold-425 priority promotion and filter stale/automated Teams/Planner alerts on Home
+- Upgrade theme to Vercel Geist neutral carbon palette and Tremor jewel chart aesthetics
+- Fix Spark bwrap symlink and ephemeral /run crashes, business_views circular import, Entra ask_canary skip, and daily_changes temp_file_limit
+- Transform Insights into customizable 12-col Bento grid with drag-to-reorder, resize, and Genie Benchmarks tab
+- Redesign Home with Bento KPI strip, card-backed sections, Split and Customize views, dedupe, and plain-English copy
+- Filter automated IT alerts for staff mailboxes, dedupe Vince same-event promise+conversation pairs, fix Split View titles and KPI counts, and add Assist Suggestions and Memory tabs
+- Fix hard20 root causes, eliminate 5-12s sync ask_cover drag, fix silent caps and h09 228s SQL stall, and populate live freshness banner
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

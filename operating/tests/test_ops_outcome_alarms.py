@@ -145,8 +145,10 @@ class Transport:
     """The Workbench API, injected: records each request, answers from a script."""
 
     def __init__(self, answer=None, *, me=200, login_cookie="plx_session=s1; Path=/api",
+                 login_status=200, auth_config=None,
                  ask_status=200, error=None, steps=("understanding", "answering")):
         self.calls, self.answer, self.me, self.login_cookie = [], answer, me, login_cookie
+        self.login_status, self.auth_config = login_status, auth_config
         self.bodies = []
         self.ask_status, self.error, self.steps = ask_status, error, steps
 
@@ -156,8 +158,12 @@ class Transport:
         self.bodies.append(body)
         if path == "/api/me":
             return self.me, {}, iter(())
+        if path == "/api/auth/config":
+            if self.auth_config is None:
+                return 200, {}, iter((b'{"mode": "dev", "dev_login": true}',))
+            return 200, {}, iter((json.dumps(self.auth_config).encode(),))
         if path == "/api/auth/dev-login":
-            return 200, {"set-cookie": self.login_cookie}, iter(())
+            return self.login_status, {"set-cookie": self.login_cookie}, iter(())
         lines = []
         for step in self.steps:
             lines += [b"event: status\n", f'data: {{"step": "{step}"}}\n'.encode(), b"\n"]
@@ -291,6 +297,28 @@ class AskCanaryTest(Base):
         status = self.run_pass(Fake(system=system))
         self.assertEqual(self.check(status, "ask_canary")["state"], "breach")
 
+    def test_entra_mode_skips_cleanly_without_minting_or_false_alarm(self):
+        # Entra SSO mode (dev_login=false): skip before minting a ticket and report clean ok
+        t = Transport(self.answer("Teal Blue"),
+                      auth_config={"mode": "entra", "dev_login": False, "sign_in": "microsoft"})
+        status = self.ask(t)
+        run = status["runs"][0]
+        self.assertEqual((run["ok"], run["skipped"], run["verdict"]),
+                         (True, True, "skipped:entra_mode"))
+        self.assertEqual(self.mints, 0)
+        self.assertNotIn("/api/auth/dev-login", [p for _m, p, _h in t.calls])
+        c = ops_alarms.canary_check(self.root, NOW, T, True)
+        self.assertEqual(c["state"], "ok")
+        self.assertIn("Entra SSO mode", c["detail"])
+        # Fallback: if /api/auth/config wasn't decisive and dev-login returns 404, also skip
+        t404 = Transport(self.answer("Teal Blue"), login_status=404,
+                         auth_config={"mode": "dev", "dev_login": True})
+        run404 = self.ask(t404, 20)["runs"][0]
+        self.assertEqual((run404["ok"], run404["skipped"], run404["verdict"]),
+                         (True, True, "skipped:entra_mode"))
+        c2 = ops_alarms.canary_check(self.root, NOW + timedelta(minutes=20), T, True)
+        self.assertEqual(c2["state"], "ok")
+
 
     def test_the_canary_mints_its_own_link_and_never_writes_the_owners(self):
         from unittest import mock
@@ -343,6 +371,7 @@ class CanarySenderTest(unittest.TestCase):
     def test_only_the_three_canary_routes_on_the_loopback_api_are_ever_requested(self):
         from operating import canary_sender as c
         self.assertTrue(c.allowed("GET", c.API_BASE + "me"))
+        self.assertTrue(c.allowed("GET", c.API_BASE + "auth/config"))
         self.assertTrue(c.allowed("POST", c.API_BASE + "ask"))
         self.assertTrue(c.allowed("POST", c.API_BASE + "auth/dev-login"))
         for method, url in (("POST", c.API_BASE + "me"), ("GET", c.API_BASE + "ask"),

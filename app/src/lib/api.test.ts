@@ -651,4 +651,31 @@ describe("getInsight polls a tile that is not stored yet", () => {
     expect(seen).toEqual(["2026-11-24T10:00:00Z"]);
     expect((await got).read_at).toBe("2026-11-24T10:05:00Z");
   });
+
+  it("backs off politely on 425 insight_filling up to 90s visible time, notifies onFilling, and surfaces a calm busy error after 90s", async () => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    const times: number[] = [];
+    const t0 = Date.now();
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      times.push(Date.now() - t0);
+      return filling();
+    }));
+    let fillingCount = 0;
+    const onStored = Object.assign(() => undefined, { onFilling: () => { fillingCount += 1; } });
+    const pending = getInsight("cold", undefined, false, onStored).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(100_000);
+    const err = await pending;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(425);
+    expect(err.code).toBe("insight_filling");
+    expect(fillingCount).toBeGreaterThan(10);
+    // First intervals back off 1.5s -> 2.0s -> 2.5s -> 3.0s
+    expect(times[1] - times[0]).toBe(1500);
+    expect(times[2] - times[1]).toBe(2000);
+    expect(times[3] - times[2]).toBe(2500);
+    expect(times[4] - times[3]).toBe(3000);
+    // Kept retrying past 70s and stopped cleanly around 90s
+    expect(times[times.length - 1]).toBeGreaterThanOrEqual(90_000);
+    expect(times[times.length - 1]).toBeLessThan(96_000);
+  });
 });
