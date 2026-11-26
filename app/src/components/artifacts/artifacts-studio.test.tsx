@@ -11,12 +11,16 @@ const apiMocks = vi.hoisted(() => ({
   getAskChats: vi.fn(),
   getInsights: vi.fn(),
   getAssistJobs: vi.fn(),
+  getSharePointFolders: vi.fn(),
+  uploadArtifactToSharePoint: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
   getAskChats: apiMocks.getAskChats,
   getInsights: apiMocks.getInsights,
   getAssistJobs: apiMocks.getAssistJobs,
+  getSharePointFolders: apiMocks.getSharePointFolders,
+  uploadArtifactToSharePoint: apiMocks.uploadArtifactToSharePoint,
 }));
 
 vi.mock("@/components/ui/toolbar", () => ({
@@ -38,19 +42,42 @@ import {
   buildCreationPrompt,
   inferChatArtifactType,
   isDeliverableChat,
-  LOCAL_ARTIFACTS_KEY,
   PINNED_IDS_KEY,
   STUDIO_FORMATS,
 } from "./artifacts-studio";
 
+const MOCK_SP_FOLDERS = {
+  folders: [
+    {
+      path: "CM Operations Files/2026 Reports",
+      label: "2026 Reports",
+      drive_id: "b!drive-ops",
+      parent_id: "folder-1",
+      site: "Operations",
+      file_count: 24,
+      source: "postgres",
+    },
+    {
+      path: "Shared Documents/Finance",
+      label: "Finance",
+      drive_id: "b!drive-fin",
+      parent_id: "root",
+      site: "Company Library",
+      file_count: 8,
+      source: "postgres",
+    },
+  ],
+};
+
 describe("ArtifactsStudio", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.removeItem(LOCAL_ARTIFACTS_KEY);
+    window.localStorage.removeItem("plx.artifacts.local.v1");
     window.localStorage.removeItem(PINNED_IDS_KEY);
+    apiMocks.getSharePointFolders.mockResolvedValue(MOCK_SP_FOLDERS);
   });
 
-  it("shows only real deliverables by default (saved insights, prepared assist jobs, deliverable chats) and hides random Q&A threads behind an opt-in toggle", async () => {
+  it("renders the 5 editorial visual preview cards and shows only real deliverables by default", async () => {
     apiMocks.getAskChats.mockResolvedValue({
       chats: [
         {
@@ -129,29 +156,39 @@ describe("ArtifactsStudio", () => {
     render(<ArtifactsStudio />);
 
     expect(screen.getByTestId("create-deliverable-studio")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-format-sheets")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-format-docs")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-format-slides")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-format-charts")).toBeInTheDocument();
-    expect(screen.getByTestId("studio-format-custom")).toBeInTheDocument();
+    expect(screen.getByTestId("deliverable-showcase")).toBeInTheDocument();
+
+    // All 5 bespoke SVG editorial preview cards render
+    for (const id of ["sheets", "docs", "slides", "charts", "custom"] as const) {
+      const card = screen.getByTestId(`showcase-card-${id}`);
+      expect(card).toBeInTheDocument();
+      expect(card.querySelector("svg")).not.toBeNull();
+    }
+
+    // Clicking a showcase card selects that format directly (no redundant second format bar)
+    expect(screen.queryByTestId("artifact-format-pills")).toBeNull();
+    fireEvent.click(screen.getByTestId("showcase-card-docs"));
+    expect(screen.getByTestId("showcase-card-docs")).toHaveAttribute("data-selected", "true");
+    expect(screen.getByTestId("showcase-card-docs")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("studio-active-format")).toHaveTextContent("Word Brief / SOP");
 
     // 4 real deliverables: 2 deliverable chats + 1 saved insight + 1 assist job with prepared piece
-    // Excludes unsaved catalog insight ("Late purchase orders by week"), empty assist job, and random Q&A chat
     const cards = await screen.findAllByTestId("artifact-card");
     expect(cards).toHaveLength(4);
+    expect(cards[0].querySelector("svg")).not.toBeNull();
     expect(screen.queryByText("Late purchase orders by week")).toBeNull();
     expect(screen.queryByText("Who emailed about box 14?")).toBeNull();
     expect(screen.queryByText("Nothing prepared")).toBeNull();
 
-    // Opting into Ask threads reveals the random Q&A thread
+    // Opting into Ask threads reveals the random Q&A thread (cleaned via cleanChatTitle)
     fireEvent.click(screen.getByTestId("artifacts-include-threads"));
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(5);
-    expect(screen.getByText("Who emailed about box 14?")).toBeInTheDocument();
+    expect(screen.getByText("Who Emailed About Box 14")).toBeInTheDocument();
 
     // Search filters live
     fireEvent.change(screen.getByTestId("artifacts-search"), { target: { value: "landed cost" } });
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(1);
-    expect(screen.getByText("Open PO landed cost Excel tracker")).toBeInTheDocument();
+    expect(screen.getByText("Open PO Landed Cost Excel Tracker")).toBeInTheDocument();
 
     // Switch to List view
     fireEvent.click(screen.getByTestId("artifacts-view-list"));
@@ -159,7 +196,7 @@ describe("ArtifactsStudio", () => {
     expect(screen.getAllByTestId("artifact-row")).toHaveLength(1);
   });
 
-  it("creates a deliverable from the prompt-first studio, supports SharePoint folder, pins locally, and routes to Ask", async () => {
+  it("routes directly to Ask with real SharePoint folder context without creating fake localStorage stubs", async () => {
     apiMocks.getAskChats.mockResolvedValue({ chats: [] });
     apiMocks.getInsights.mockResolvedValue({ items: [] });
     apiMocks.getAssistJobs.mockResolvedValue({ status: "ok", reason: "", jobs: [] });
@@ -167,13 +204,17 @@ describe("ArtifactsStudio", () => {
     render(<ArtifactsStudio />);
     await screen.findByTestId("artifacts-empty");
 
-    fireEvent.click(screen.getByTestId("studio-format-slides"));
+    fireEvent.click(screen.getByTestId("showcase-card-slides"));
     fireEvent.change(screen.getByTestId("artifact-domain-select"), { target: { value: "Finance" } });
     fireEvent.change(screen.getByTestId("artifact-prompt-input"), {
       target: { value: "Q4 Margin Review comparing Q3 vs Q4 by customer" },
     });
     fireEvent.click(screen.getByTestId("artifact-sharepoint-toggle"));
-    expect(screen.getByTestId("artifact-sharepoint-folder")).toHaveValue("Shared Documents/Finance");
+
+    // Known SharePoint folders fetched from backend appear as clickable chips
+    expect(await screen.findByText("CM Operations Files/2026 Reports")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("CM Operations Files/2026 Reports"));
+    expect(screen.getByTestId("artifact-sharepoint-folder")).toHaveValue("CM Operations Files/2026 Reports");
 
     fireEvent.click(screen.getByTestId("artifact-create-submit"));
 
@@ -184,18 +225,75 @@ describe("ArtifactsStudio", () => {
     expect(decoded).toContain(
       "Create a PowerPoint presentation (.pptx) summarizing Q4 Margin Review comparing Q3 vs Q4 by customer (Finance team)",
     );
-    expect(decoded).toContain('Prepare a SharePoint upload draft for folder "Shared Documents/Finance"');
+    expect(decoded).toContain('Prepare a SharePoint upload draft for folder "CM Operations Files/2026 Reports"');
 
-    const stored = JSON.parse(window.localStorage.getItem(LOCAL_ARTIFACTS_KEY) ?? "[]");
-    expect(stored).toHaveLength(1);
-    expect(stored[0].title).toBe("Q4 Margin Review comparing Q3 vs Q4 by customer");
-    expect(stored[0].type).toBe("Slides");
+    // No fake localStorage entries written
+    expect(window.localStorage.getItem("plx.artifacts.local.v1")).toBeNull();
+  });
+
+  it("opens Save to SharePoint popover on a gallery card and queues a durable approval draft", async () => {
+    apiMocks.getAskChats.mockResolvedValue({
+      chats: [
+        {
+          conversation_id: "c-sheet-9",
+          title: "Open PO Landed Cost Tracker.xlsx",
+          last_at: "2026-11-25T14:00:00Z",
+          named: true,
+          pinned: false,
+          questions: 2,
+          running: false,
+        },
+      ],
+    });
+    apiMocks.getInsights.mockResolvedValue({ items: [] });
+    apiMocks.getAssistJobs.mockResolvedValue({ status: "ok", reason: "", jobs: [] });
+    apiMocks.uploadArtifactToSharePoint.mockResolvedValue({
+      status: "approval_queued",
+      draft_id: "sp_abc123456789",
+      upload_id: "up_abc123456789",
+      file_id: "f_0123456789abcdef01234567",
+      folder_path: "CM Operations Files/2026 Reports",
+      create_folder_if_missing: true,
+      filename: "Open PO Landed Cost Tracker.xlsx",
+      size_bytes: 6420,
+      download_url: "/api/instruct/files/f_0123456789abcdef01234567",
+      assist_url: "/assist",
+      message: 'Prepared Open PO Landed Cost Tracker.xlsx for SharePoint folder "CM Operations Files/2026 Reports".',
+    });
+
+    render(<ArtifactsStudio />);
+    await screen.findAllByTestId("artifact-card");
+
+    fireEvent.click(screen.getByTestId("artifact-save-sharepoint"));
+    expect(screen.getByTestId("sharepoint-upload-popover")).toBeInTheDocument();
+    expect(screen.getByTestId("sp-upload-folder-input")).toHaveValue("CM Operations Files/2026 Reports");
+
+    fireEvent.click(screen.getByTestId("sp-upload-submit"));
+
+    await waitFor(() => expect(apiMocks.uploadArtifactToSharePoint).toHaveBeenCalledTimes(1));
+    expect(apiMocks.uploadArtifactToSharePoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Open PO Landed Cost Tracker.xlsx",
+        format: "xlsx",
+        folder_path: "CM Operations Files/2026 Reports",
+        create_folder_if_missing: true,
+      }),
+    );
+
+    expect(await screen.findByTestId("sp-upload-result")).toBeInTheDocument();
+    expect(screen.getByText("Queued for SharePoint approval")).toBeInTheDocument();
+    expect(screen.getByTestId("sp-upload-download")).toHaveAttribute(
+      "href",
+      "/api/instruct/files/f_0123456789abcdef01234567",
+    );
+    expect(screen.getByTestId("sp-upload-approve-assist")).toHaveAttribute("href", "/assist");
   });
 
   it("gracefully renders starter state when all API endpoints fail", async () => {
     apiMocks.getAskChats.mockRejectedValue(new Error("offline"));
     apiMocks.getInsights.mockRejectedValue(new Error("offline"));
     apiMocks.getAssistJobs.mockRejectedValue(new Error("offline"));
+    apiMocks.getSharePointFolders.mockRejectedValue(new Error("offline"));
 
     render(<ArtifactsStudio />);
     expect(await screen.findByTestId("artifacts-empty")).toBeInTheDocument();
@@ -249,5 +347,27 @@ describe("ArtifactsStudio", () => {
 
     fireEvent.click(screen.getByTestId("artifacts-format-sheet"));
     expect(screen.getAllByTestId("artifact-card")).toHaveLength(5);
+  });
+
+  it("cleans raw Ask deliverable prompts into crisp titles via cleanChatTitle", async () => {
+    apiMocks.getAskChats.mockResolvedValue({
+      chats: [
+        {
+          conversation_id: "c-soapbox",
+          title: "chart and give me all info about soapbox shipments",
+          last_at: "2026-11-25T14:00:00Z",
+          named: false,
+          pinned: false,
+          questions: 2,
+          running: false,
+        },
+      ],
+    });
+    apiMocks.getInsights.mockResolvedValue({ items: [] });
+    apiMocks.getAssistJobs.mockResolvedValue({ status: "ok", reason: "", jobs: [] });
+
+    render(<ArtifactsStudio />);
+    await screen.findAllByTestId("artifact-card");
+    expect(screen.getByText("Soapbox Shipments Overview")).toBeInTheDocument();
   });
 });

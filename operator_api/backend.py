@@ -2049,7 +2049,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             if not tests:
                 break
             items = [i for i in items if i["object_id"] not in tests]
-        groups = ps.wanted(items)
+        groups = ps.wanted(items, top=max(ps.TOP, 36))
         heads = [g[0] for g in groups]
         labels = {**labels, **briefing_labels(view, [h for h in heads
                                                      if h["object_id"] not in labels],
@@ -2062,23 +2062,40 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                 draft = (gap.get("follow_up") or {}).get("draft")
                 if gap.get("object_id") in pos and isinstance(draft, Mapping):
                     drafts[gap["object_id"]] = draft
-        trails: dict[str, Any] = {}
+        trails: dict[str, Any] = self._precomputed_po_trails(view, pos, labels) if pos else {}
         with view._request():
-            deadline = time.monotonic() + SUGGESTION_TRAIL_SECONDS
+            # Fast pass: check precomputed plan_section_door rows without live et.po_trail
             for head in heads:
-                if head.get("object_type") != "PurchaseOrder":
+                oid = head["object_id"]
+                if head.get("object_type") != "PurchaseOrder" or oid in trails:
                     continue
-                left = deadline - time.monotonic()
-                if left <= 1.0:
-                    note_cut()   # a card left without its trail: not complete
-                    break
                 trail = briefing_trail(
-                    self, view, head, labels.get(head["object_id"]),
-                    seconds=min(left, BRIEFING_TRAIL_SECONDS),
+                    self, view, head, labels.get(oid),
+                    seconds=1.0,
+                    allow_live=False,
+                )
+                if trail is not None:
+                    trails[oid] = trail.model_dump(mode="json")
+            # Bounded live fallback: never block /api/suggestions for 45s; cap at 3 POs / 3s total
+            live_deadline = time.monotonic() + 3.0
+            live_done = 0
+            for head in heads[:ps.TOP]:
+                oid = head["object_id"]
+                if head.get("object_type") != "PurchaseOrder" or oid in trails:
+                    continue
+                if live_done >= 3:
+                    break
+                left = live_deadline - time.monotonic()
+                if left <= 0.25:
+                    break
+                live_done += 1
+                trail = briefing_trail(
+                    self, view, head, labels.get(oid),
+                    seconds=min(left, 1.5),
                     allow_live=True,
                 )
                 if trail is not None:
-                    trails[head["object_id"]] = trail.model_dump(mode="json")
+                    trails[oid] = trail.model_dump(mode="json")
         supplier_contacts = self._supplier_contacts_for_pos(view, pos) if pos else {}
         built = ps.build(
             items, labels=labels, trails=trails, late_drafts=drafts,
@@ -2092,10 +2109,104 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
             as_of=self.freshness().as_of or found.get("as_of"),
             complete=bool(found.get("complete")))
 
+    def _precomputed_po_trails(
+        self,
+        view: Any,
+        pos: Sequence[str],
+        labels: Mapping[str, str],
+    ) -> dict[str, dict[str, Any]]:
+        """Batch-read precomputed ``po_trail`` payloads from ``biz.plan_section_items``
+        (regardless of whether ``built_at`` is older than 24h), strictly verifying reader
+        access on cited ``comm_handles`` and mapping through ``trail.Mapper``."""
+        if not pos or not getattr(self, "pg_dsn", None) or not callable(getattr(self, "pg", None)):
+            return {}
+        access = getattr(view, "access", None)
+        decide = getattr(access, "decide", None)
+        if not callable(decide):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        try:
+            with self.pg().connection() as conn:
+                if conn.execute("SELECT to_regclass('biz.plan_section_items') IS NULL").fetchone()[0]:
+                    return {}
+                rows = conn.execute(
+                    "SELECT record_id, payload::text, comm_handles, built_at "
+                    "FROM biz.plan_section_items "
+                    "WHERE section = 'trail' AND record_id = ANY(%s)",
+                    (list(dict.fromkeys(pos)),),
+                ).fetchall()
+        except Exception:  # noqa: BLE001 - best-effort fast path; falls back cleanly
+            return {}
+        if not rows:
+            return {}
+        from . import trail as trail_mod
+        with view._request():
+            all_comm = sorted({
+                str(h) for _rid, _pt, handles, _ba in rows
+                for h in (handles or ()) if isinstance(h, str) and h
+            })
+            decided_comm = decide(all_comm) if all_comm else {}
+            mapper = trail_mod.Mapper(
+                self, view, object_url=object_url, open_url=open_url,
+                host_schemes=HOST_READ_SCHEMES,
+            )
+            for rid, payload_text, comm_handles, built_at in rows:
+                oid = str(rid or "")
+                if not oid or oid in out:
+                    continue
+                handles = [str(h) for h in (comm_handles or ()) if isinstance(h, str) and h]
+                if any(decided_comm.get(h) is not None for h in handles):
+                    continue
+                try:
+                    payload = json.loads(payload_text) if isinstance(payload_text, str) else payload_text
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(payload, Mapping) or payload.get("family") != "po_trail":
+                    continue
+                raw = payload.get("raw")
+                if not isinstance(raw, Mapping):
+                    continue
+                raw_copy = {**raw, "label": labels.get(oid) or raw.get("label")}
+                raw_copy["may_hide"] = bool(raw_copy.get("may_hide")) or not mapper.reads_all
+                try:
+                    po_model = mapper.po(raw_copy)
+                except Exception:  # noqa: BLE001
+                    continue
+                built_iso = built_at.isoformat() if hasattr(built_at, "isoformat") else (
+                    str(built_at) if built_at else None
+                )
+                ev = m.EvidenceTrail(
+                    kind="purchase_order",
+                    title=f"Evidence for {po_model.subject.label}"[:200],
+                    trails=[po_model],
+                    hidden_steps=po_model.hidden_steps,
+                    hidden_message=trail_mod.hidden_words(
+                        po_model.hidden_steps,
+                        bool(po_model.may_hide_more) and not mapper.reads_all,
+                    ),
+                ).model_dump(mode="json")
+                if built_iso:
+                    ev["built_at"] = built_iso
+                out[oid] = ev
+        return out
+
+    @staticmethod
+    def _norm_supplier_name(name: Any) -> str:
+        text = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+        if not text:
+            return ""
+        parts = text.split()
+        suffixes = {"inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co", "company"}
+        while len(parts) > 1 and parts[-1] in suffixes:
+            parts.pop()
+        return " ".join(parts)
+
     def _supplier_contacts_for_pos(self, view: Any, pos: Sequence[str]) -> dict[str, dict[str, Any]]:
         """Fallback supplier contact addresses for purchase-order suggestion cards: checks
-        ``biz.suppliers.email`` first, then the most recent non-bulk inbound ``biz.emails``
-        sender for that supplier (strictly checked against reader access and people exclusion)."""
+        ``biz.suppliers.email`` first, then another ``biz.suppliers`` row with the same
+        normalized name that carries an email, then the most recent non-bulk inbound
+        ``biz.emails`` sender for that supplier (strictly checked against reader access
+        and people exclusion)."""
         if not pos or not getattr(self, "pg_dsn", None) or not callable(getattr(self, "pg", None)):
             return {}
         grant = getattr(getattr(view, "access", None), "grant", None)
@@ -2133,6 +2244,7 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                     "WHERE o.object_id = ANY(%s)",
                     (list(pos),),
                 ).fetchall()
+                missing_by_name: dict[str, list[tuple[str, str, str]]] = {}
                 missing_suppliers: dict[str, list[tuple[str, str]]] = {}
                 for oid, sup_name, sup_handle, sup_email in rows:
                     if oid in out:
@@ -2151,10 +2263,64 @@ class WorkspaceBackend(WarmMixin, AskMixin, ServingMixin, ScreensMixin,
                                 continue
                         except Exception:  # noqa: BLE001
                             pass
+                    norm_name = self._norm_supplier_name(sup_name)
+                    if norm_name:
+                        missing_by_name.setdefault(norm_name, []).append(
+                            (str(oid), str(sup_name or "").strip(), str(sup_handle or ""))
+                        )
                     if sup_handle:
                         missing_suppliers.setdefault(str(sup_handle), []).append(
                             (str(oid), str(sup_name or "").strip())
                         )
+                # Middle fallback: match another biz.suppliers row with the same normalized name
+                # that carries an email (covers duplicate supplier master records across ERPs).
+                extra_sup_handles: dict[str, list[tuple[str, str]]] = {}
+                if missing_by_name:
+                    all_sups = conn.execute(
+                        "SELECT handle, name, email FROM biz.suppliers "
+                        "WHERE name IS NOT NULL AND trim(name) <> ''"
+                    ).fetchall()
+                    email_by_norm: dict[str, tuple[str, str, str]] = {}
+                    handles_by_norm: dict[str, list[str]] = {}
+                    for sh, sname, semail in all_sups or ():
+                        norm = self._norm_supplier_name(sname)
+                        if norm not in missing_by_name:
+                            continue
+                        if sh:
+                            handles_by_norm.setdefault(norm, []).append(str(sh))
+                        addr = str(semail or "").strip().lower()
+                        if addr and "@" in addr and norm not in email_by_norm:
+                            try:
+                                if not people.is_excluded(addr):
+                                    email_by_norm[norm] = (addr, str(sh or ""), str(sname or "").strip())
+                            except Exception:  # noqa: BLE001
+                                pass
+                    for norm, entries in missing_by_name.items():
+                        hit = email_by_norm.get(norm)
+                        if hit:
+                            addr, sh, sname = hit
+                            for oid, orig_name, _orig_sh in entries:
+                                if oid not in out:
+                                    out[oid] = {
+                                        "name": orig_name or sname or None,
+                                        "address": addr,
+                                        "basis": "Supplier email address on a matching supplier record.",
+                                        "source": {"handle": sh, "label": orig_name or sname or "Supplier",
+                                                   "system": "Supplier", "open_url": None} if sh else None,
+                                    }
+                        else:
+                            for twin_sh in handles_by_norm.get(norm, ()):
+                                for oid, orig_name, _orig_sh in entries:
+                                    if oid not in out:
+                                        extra_sup_handles.setdefault(twin_sh, []).append((oid, orig_name))
+                for sh, entries in extra_sup_handles.items():
+                    missing_suppliers.setdefault(sh, []).extend(entries)
+                # Keep only supplier handles that still have unresolved POs
+                missing_suppliers = {
+                    sh: [(oid, sn) for oid, sn in entries if oid not in out]
+                    for sh, entries in missing_suppliers.items()
+                }
+                missing_suppliers = {sh: entries for sh, entries in missing_suppliers.items() if entries}
                 if missing_suppliers and conn.execute(
                         "SELECT to_regclass('biz.emails') IS NOT NULL").fetchone()[0]:
                     sup_handles = sorted(missing_suppliers)

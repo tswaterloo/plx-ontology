@@ -32576,7 +32576,7 @@
     },
     "/api/autopilot/drafts": {
       "get": {
-        "description": "Your open work, newest first: each item kept true against its source; the last\n14 days unless ``all_ages`` (``older`` says how many more).",
+        "description": "Your open work, newest first: each item kept true against its source; the last\n14 days unless ``all_ages`` (``older`` says how many more). Pass\n``include_approvals=true`` or ``kind=approvals`` to inspect Mission Control\napprovals.",
         "operationId": "assist_list_api_autopilot_drafts_get",
         "parameters": [
           {
@@ -32587,6 +32587,32 @@
               "default": false,
               "title": "All Ages",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_approvals",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Approvals",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
             }
           }
         ],

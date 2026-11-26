@@ -34,7 +34,7 @@ const PAGE = {
   status: { state: "read", text: "Read", sources: [] }, freshness: {}, complete: true,
 };
 
-function serve(routes: (url: string) => Response) {
+function serve(routes: (url: string) => Response | Promise<Response>) {
   const f = vi.fn(async (url: string) => routes(String(url)));
   vi.stubGlobal("fetch", f);
   return f;
@@ -79,6 +79,42 @@ describe("one page per record", () => {
     render(<FriendlyRecord kind="po" />);
     expect(await screen.findByTestId("detail-stats")).toHaveTextContent("0.00");
     expect(screen.queryByText("Total (sum of lines)")).toBeNull();
+  });
+
+  it("renders fast ERP door immediately while /api/object is still loading and enables lazy sections", async () => {
+    serve((url) => {
+      if (url.startsWith("/api/suggest")) {
+        return new Response(
+          JSON.stringify({
+            query: "PO100523",
+            source: "business",
+            took_ms: 4,
+            suggestions: [
+              {
+                object_id: PO_ID,
+                type: "PurchaseOrder",
+                label: "PO100523",
+                sublabel: "Purchase order · BC",
+                match: "exact",
+                score: 1,
+                open_url: "/order?kind=purchase_order&h=po-h-1",
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("/api/biz/page")) {
+        return new Response(JSON.stringify(door), { status: 200 });
+      }
+      // Keep /api/object pending to prove instant ERP door rendering
+      return new Promise<Response>(() => {});
+    });
+    params = { ref: "PO100523" };
+    render(<FriendlyRecord kind="po" />);
+    expect(await screen.findByTestId("door-instant-view")).toBeInTheDocument();
+    expect(screen.getByTestId("object-title")).toHaveTextContent("PO100523");
+    expect(screen.getByTestId("door-enriching")).toBeInTheDocument();
   });
 });
 

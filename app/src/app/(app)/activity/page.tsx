@@ -162,14 +162,18 @@ function Summary({ rows }: { rows: ActionLogRow[] }) {
     <section className="space-y-3" aria-label="Last 7 days" data-testid="activity-summary">
       <h2 className="text-[12.5px] font-medium text-muted">Last 7 days</h2>
       {shown.length > 0 && (
-        <dl className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
-          {shown.map(([label, n]) => (
+        <dl className="grid grid-cols-2 divide-y divide-border border-y border-border sm:grid-cols-3 lg:grid-cols-6 lg:divide-x lg:divide-y-0">
+          {shown.map(([label, n], idx) => (
             <div
               key={label}
-              className="rounded-xl border border-border bg-surface px-4 py-3 tabular-nums"
+              className={cn(
+                "py-3.5 tabular-nums",
+                idx === 0 ? "pr-4 lg:pr-5" : "lg:px-5",
+                idx === shown.length - 1 && "lg:pr-0",
+              )}
             >
               <dt className="truncate text-[12px] font-medium leading-4 text-muted">{label}</dt>
-              <dd className="mt-1 text-[22px] leading-7 font-semibold tracking-[-0.02em] text-fg">{n}</dd>
+              <dd className="mt-1 text-[24px] leading-7 font-semibold tracking-[-0.02em] text-fg">{n}</dd>
             </div>
           ))}
         </dl>
@@ -348,9 +352,9 @@ export default function ActivityPage() {
                 <section
                   key={d.key}
                   aria-label={d.label}
-                  className="overflow-hidden rounded-xl border border-border bg-surface"
+                  className="border-y border-border"
                 >
-                  <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+                  <div className="flex items-center justify-between border-b border-border/70 bg-bg-subtle/60 px-4 py-2">
                     <h2 className="text-[12.5px] font-semibold text-fg">
                       {d.label}{" "}
                       <span className="ml-1 font-normal num text-muted">{d.rows.length}</span>

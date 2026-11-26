@@ -275,6 +275,51 @@ class AccuracyAndRanking(unittest.TestCase):
         self.assertIn("supplier's attention", no_days["headline"])
         self.assertNotIn("vendor", no_days["headline"].lower())
 
+    def test_excludes_test_pos_prioritizes_recent_contactable_and_uses_clean_copy(self):
+        test_po = {
+            "rank": 1, "id": "a-test", "event_type": "po_late",
+            "object_id": "PurchaseOrder:bc.prod:INVOICETEST", "object_type": "PurchaseOrder",
+            "summary": "PO INVOICETEST is overdue", "days": 5, "citations": [H],
+            "next_action": {"text": "Ask.", "rule": "po_late"},
+        }
+        old_orphan = {
+            "rank": 2, "id": "a-old", "event_type": "po_late",
+            "object_id": "PurchaseOrder:t:106001", "object_type": "PurchaseOrder",
+            "summary": "PO 106001 is overdue", "days": 150, "citations": [H],
+            "next_action": {"text": "Ask.", "rule": "po_late"},
+        }
+        recent_contactable = {
+            "rank": 3, "id": "a-recent", "event_type": "po_late",
+            "object_id": "PurchaseOrder:t:200010", "object_type": "PurchaseOrder",
+            "summary": "PO 200010 is overdue", "days": 8, "citations": [H],
+            "next_action": {"text": "Ask.", "rule": "po_late"},
+        }
+        out = ps.build(
+            [test_po, old_orphan, recent_contactable],
+            labels={
+                "PurchaseOrder:bc.prod:INVOICETEST": "PO INVOICETEST",
+                "PurchaseOrder:t:106001": "PO 106001",
+                "PurchaseOrder:t:200010": "PO 200010",
+            },
+            trails={},
+            late_drafts={},
+            supplier_contacts={
+                "PurchaseOrder:t:200010": {
+                    "name": "Nordic Oils", "address": "orders@nordic.example",
+                    "basis": "Supplier email address on record.",
+                }
+            },
+        )
+        self.assertEqual(out["collapsed"].get("test_po"), 1)
+        ids = [c["subject"]["object_id"] for c in out["suggestions"]]
+        self.assertEqual(ids, ["PurchaseOrder:t:200010", "PurchaseOrder:t:106001"])
+        # Clean operator wording when trail has not been checked yet
+        eta_text = out["suggestions"][0]["eta"]["text"]
+        conf_why = out["suggestions"][0]["confidence"]["why"]
+        self.assertNotIn("not read in time", eta_text.lower())
+        self.assertIn("awaiting email trail check", eta_text.lower())
+        self.assertIn("based on erp due date", conf_why.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

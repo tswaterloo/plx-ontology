@@ -1,33 +1,33 @@
 "use client";
 
 import {
-  AlertTriangle,
+  ArrowLeft,
   ArrowUpRight,
   Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CircleAlert,
   Clock3,
   Copy,
-  FileText,
   Mail,
   RefreshCw,
   Repeat,
-  ShieldCheck,
+  Search,
+  Send,
   Sparkles,
-  UserRound,
+  Trash2,
+  X,
 } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { CardActions } from "@/components/card-actions";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActionDialog } from "@/components/card-actions";
 import { collapsedLine, draftText, etaBadge, suggestionHeadline } from "@/components/proactive-suggestions";
 import { SourceChip } from "@/components/source-chip";
 import { Button } from "@/components/ui/button";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { Pending } from "@/components/ui/skeleton";
 import { WritePanel } from "@/components/write-panel";
-import { actionChip, isPutAway } from "@/lib/actions";
+import { actionChip, isPutAway, splitAddresses, type Preset } from "@/lib/actions";
 import {
   createAssistWorkflow,
   getActionStates,
@@ -39,7 +39,7 @@ import { cn } from "@/lib/cn";
 import { plainError } from "@/lib/errors";
 import { formatMoney, objectHref, plural, readable, safeHref } from "@/lib/format";
 import type { Status } from "@/lib/status";
-import type { ActionResult, ProactiveSuggestion, SuggestionDraft, Suggestions } from "@/lib/types";
+import type { ActionResult, CardActionOffer, ProactiveSuggestion, SuggestionDraft, Suggestions } from "@/lib/types";
 
 const SERVER_NOTE =
   "Nothing is sent until you review a draft and confirm it yourself; it then goes from your own mailbox, or is recorded as a dry run while sending is not enabled.";
@@ -88,107 +88,104 @@ function extractDaysLate(headline: string): string | null {
   return m ? `${m[1]}d late` : null;
 }
 
+function hasMailVerification(s: ProactiveSuggestion): boolean {
+  if (s.eta?.in_mail) return true;
+  return (s.reasoning ?? []).some((r) => /mail|email|teams/i.test(r.source?.system ?? ""));
+}
+
 function evidenceBadgeOf(s: ProactiveSuggestion): { label: string; status: Status } {
-  if (s.confidence?.level === "high") return { label: "Strong evidence", status: "ok" };
-  if (s.confidence?.level === "medium") return { label: "Check before acting", status: "risk" };
-  return { label: "Weak evidence", status: "neutral" };
+  if (s.confidence?.level === "high") {
+    return { label: hasMailVerification(s) ? "Mail verified" : "Verified", status: "ok" };
+  }
+  if (s.confidence?.level === "medium") {
+    return { label: hasMailVerification(s) ? "Mail verified" : "ERP due date", status: "risk" };
+  }
+  return { label: "From ERP schedule", status: "neutral" };
 }
 
-function formatDraftTo(to: SuggestionDraft["to"] | string | string[] | null | undefined): string {
-  if (!to) return "No address on record";
-  if (typeof to === "string") return to.trim() || "No address on record";
-  if (Array.isArray(to)) return to.filter(Boolean).join(", ") || "No address on record";
-  if (to.address) return to.name ? `${to.name} <${to.address}>` : to.address;
-  return to.name || "No address on record";
+function resolveDraftRecipient(to: SuggestionDraft["to"] | string | string[] | null | undefined): {
+  display: string | null;
+  email: string;
+  name: string | null;
+  hasAddress: boolean;
+} {
+  if (!to) return { display: null, email: "", name: null, hasAddress: false };
+  if (typeof to === "string") {
+    const trimmed = to.trim();
+    return { display: trimmed || null, email: trimmed.includes("@") ? trimmed : "", name: trimmed || null, hasAddress: trimmed.includes("@") };
+  }
+  if (Array.isArray(to)) {
+    const list = to.map((x) => String(x ?? "").trim()).filter(Boolean);
+    const emails = list.filter((x) => x.includes("@"));
+    return {
+      display: list.length ? list.join(", ") : null,
+      email: emails.join(", "),
+      name: list[0] ?? null,
+      hasAddress: emails.length > 0,
+    };
+  }
+  if (to.address?.trim()) {
+    const addr = to.address.trim();
+    return {
+      display: to.name ? `${to.name} <${addr}>` : addr,
+      email: addr,
+      name: to.name?.trim() || addr,
+      hasAddress: true,
+    };
+  }
+  return { display: to.name?.trim() || null, email: "", name: to.name?.trim() || null, hasAddress: false };
 }
 
-function DraftPreview({ draft }: { draft: SuggestionDraft }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard?.writeText(draftText(draft)).then(
-      () => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      },
-      () => undefined,
-    );
-  };
-  const title =
-    draft.audience === "vendor"
-      ? "Draft to the supplier"
-      : draft.audience === "customer"
-        ? "Draft to the customer"
-        : "Internal note";
-  const toLabel = formatDraftTo(draft?.to as SuggestionDraft["to"] | string | string[] | null | undefined);
-
-  return (
-    <div className="overflow-hidden rounded-lg border border-border bg-bg" data-testid="suggestion-draft">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-bg-subtle px-3.5 py-2">
-        <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-fg">
-          <Mail className="size-3.5 text-muted" aria-hidden />
-          {title}
-          <span className="font-normal text-faint">(not sent)</span>
-        </span>
-        <button
-          type="button"
-          onClick={copy}
-          data-testid="copy-draft"
-          className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[11.5px] font-medium text-muted hover:border-border-strong hover:text-fg cursor-pointer"
-        >
-          {copied ? <Check className="size-3 text-ok" aria-hidden /> : <Copy className="size-3" aria-hidden />}
-          <span>{copied ? "Copied" : "Copy draft"}</span>
-        </button>
-      </div>
-      <div className="space-y-1.5 border-b border-border px-3.5 py-2.5 text-[12.5px]">
-        <div className="flex items-baseline gap-3">
-          <span className="w-12 shrink-0 text-faint">To</span>
-          <span className="min-w-0 flex-1 break-words text-fg" data-testid="draft-to">
-            {toLabel}
-          </span>
-        </div>
-        <div className="flex items-baseline gap-3">
-          <span className="w-12 shrink-0 text-faint">Subject</span>
-          <span className="min-w-0 flex-1 font-medium text-fg">{draft.subject ?? ""}</span>
-        </div>
-      </div>
-      <pre className="max-h-[220px] overflow-y-auto px-3.5 py-3 font-sans text-[13px] leading-[1.6] break-words whitespace-pre-wrap text-fg/95">
-        {draft.body ?? ""}
-      </pre>
-      {(draft.facts ?? []).length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-bg-subtle px-3.5 py-2 text-[11.5px]">
-          <span className="text-faint">Figures from</span>
-          {(draft.facts ?? []).slice(0, 5).map((f, n) =>
-            f?.source ? (
-              <SourceChip key={`${f.source.handle ?? "src"}-${n}`} source={f.source} record={readable(f.value ?? "")} />
-            ) : null,
-          )}
-        </div>
-      )}
-    </div>
-  );
+function isReadyToSend(s: ProactiveSuggestion): boolean {
+  if (!s.draft) return false;
+  if (s.draft.audience === "internal") return true;
+  const { hasAddress } = resolveDraftRecipient(s.draft.to as SuggestionDraft["to"] | string | string[] | null | undefined);
+  return hasAddress;
 }
 
-function SuggestionActionCard({
+function supplierNameOf(s: ProactiveSuggestion): string {
+  const recipient = resolveDraftRecipient(s.draft?.to as SuggestionDraft["to"] | string | string[] | null | undefined);
+  if (recipient.name) return recipient.name;
+  if (s.subject?.label) return s.subject.label;
+  return "Follow-up";
+}
+
+/** Right-pane Interactive Draft Studio for the selected suggestion. */
+function SuggestionDraftStudio({
   s,
-  defaultDraftOpen,
   state,
   onDone,
+  onLocalDismiss,
   workflowId,
   creating,
   creatingAny,
   onMakeWorkflow,
+  focusToSignal,
 }: {
   s: ProactiveSuggestion;
-  defaultDraftOpen: boolean;
   state?: ActionResult | null;
   onDone: (r: ActionResult) => void;
+  onLocalDismiss: (id: string) => void;
   workflowId?: string;
   creating: boolean;
   creatingAny: boolean;
   onMakeWorkflow: () => void;
+  focusToSignal: number;
 }) {
-  const [draftOpen, setDraftOpen] = useState(defaultDraftOpen);
+  const recipient = resolveDraftRecipient(s.draft?.to as SuggestionDraft["to"] | string | string[] | null | undefined);
+  const [draftTo, setDraftTo] = useState(recipient.email);
+  const [draftSubject, setDraftSubject] = useState(s.draft?.subject ?? "");
+  const [draftBody, setDraftBody] = useState(s.draft?.body ?? "");
+  const [copied, setCopied] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [activeOffer, setActiveOffer] = useState<CardActionOffer | null>(null);
+  const toInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (focusToSignal > 0) {
+      toInputRef.current?.focus();
+    }
+  }, [focusToSignal]);
 
   const headline = suggestionHeadline(s);
   const href =
@@ -202,150 +199,367 @@ function SuggestionActionCard({
     s.impact?.amount && !s.impact.amount_suspect
       ? formatMoney(s.impact.amount.amount, s.impact.amount.currency)
       : null;
-  const rawTo = s.draft?.to as SuggestionDraft["to"] | string | string[] | null | undefined;
-  const contactLabel = !rawTo
-    ? null
-    : typeof rawTo === "string"
-      ? rawTo.trim() || null
-      : Array.isArray(rawTo)
-        ? rawTo.filter(Boolean).join(", ") || null
-        : rawTo.name || rawTo.address || null;
   const impactOrders = s.impact?.orders ?? [];
   const etaWords = s.eta ? readable(s.eta.text).trim() : "";
   const reasons = (s.reasoning ?? []).filter((r) => !etaWords || !readable(r.text).includes(etaWords));
   const hasEvidence = Boolean(s.eta || reasons.length > 0 || (s.missing ?? []).length > 0 || s.confidence?.why);
 
+  const isInternal = s.draft?.audience === "internal";
+  const effectiveEmails = splitAddresses(draftTo);
+  const needsEmail = Boolean(s.draft && !isInternal && effectiveEmails.length === 0);
+  const toPlaceholder =
+    s.draft?.audience === "customer" ? "Add customer email to send" : "Add supplier email to send";
+  const draftHeading =
+    s.draft?.audience === "vendor"
+      ? "Draft to the supplier"
+      : s.draft?.audience === "customer"
+        ? "Draft to the customer"
+        : "Internal note";
+
+  const offers = s.actions ?? [];
+  const sendOffer = offers.find((o) => o.kind === "send_email" || o.kind === "reply_in_thread") ?? null;
+  const dismissOffer = offers.find((o) => o.kind === "dismiss") ?? null;
+  const snoozeOffer = offers.find((o) => o.kind === "snooze") ?? null;
+  const extraOffers = offers.filter(
+    (o) => o.kind !== "send_email" && o.kind !== "reply_in_thread" && o.kind !== "dismiss" && o.kind !== "snooze",
+  );
+
+  const preset: Preset | undefined = useMemo(() => {
+    const addresses = splitAddresses(draftTo);
+    return addresses.length > 0 ? { to: addresses } : undefined;
+  }, [draftTo]);
+
+  const copyLiveDraft = () => {
+    const existingTo =
+      s.draft?.to && typeof s.draft.to === "object" && !Array.isArray(s.draft.to) ? s.draft.to : null;
+    const text = s.draft
+      ? draftText({
+          ...s.draft,
+          to: draftTo.trim()
+            ? {
+                ...(existingTo ?? { basis: "" }),
+                address: draftTo.trim(),
+              }
+            : s.draft.to,
+          subject: draftSubject,
+          body: draftBody,
+        })
+      : `${headline}\n\n${s.action?.text ?? ""}`;
+    navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => undefined,
+    );
+  };
+
   return (
-    <article
-      data-testid="suggestion"
-      className="py-5 transition-colors"
-    >
-      {/* Header row: entity title + quiet typographic metadata */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <Link
-              href={href}
-              data-testid="suggestion-headline"
-              className="text-[15px] font-semibold tracking-[-0.01em] text-fg hover:text-accent hover:underline"
-            >
-              {headline}
-            </Link>
-            {lateTag && (
-              <span className="num text-[12px] font-medium text-late">
-                {lateTag}
+    <div className="space-y-6" data-testid="suggestion-detail-studio">
+      {/* Context Header */}
+      <header className="space-y-3 border-b border-border pb-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              <Link
+                href={href}
+                className="text-[18px] font-semibold leading-[1.35] tracking-[-0.02em] text-fg hover:text-accent hover:underline"
+              >
+                {headline}
+              </Link>
+              {lateTag && <span className="num text-[12.5px] font-medium text-late">{lateTag}</span>}
+              {amount && <span className="num text-[13px] font-semibold text-fg">{amount}</span>}
+            </div>
+            {s.action?.text && (
+              <p className="max-w-[68ch] text-[14px] leading-[1.6] text-muted">{s.action.text}</p>
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            {chip && (
+              <span
+                data-testid="action-state"
+                title={chip.title}
+                className={cn("inline-flex items-center gap-1.5 text-[12px] font-medium", statusTextClass(chip.status))}
+              >
+                <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(chip.status))} aria-hidden />
+                <span>{chip.label}</span>
               </span>
             )}
-            {eta && (
+            <Link
+              href={href}
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2"
+            >
+              <span>Open record</span>
+              <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
+            </Link>
+          </div>
+        </div>
+
+        {/* Context Metadata Strip: ERP due date / Mail verification / Order linkage */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12.5px] text-muted">
+          <span
+            data-testid="suggestion-evidence-pill"
+            className={cn(
+              "inline-flex items-center gap-1.5 font-medium",
+              evidence.status === "ok" ? "text-ok" : evidence.status === "risk" ? "text-risk" : "text-muted",
+            )}
+          >
+            <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(evidence.status))} aria-hidden />
+            <span>{evidence.label}</span>
+          </span>
+
+          {eta && (
+            <>
+              <span className="text-border-strong" aria-hidden>
+                ·
+              </span>
               <span
                 data-testid="suggestion-eta"
                 className={cn(
-                  "text-[12px] font-medium",
+                  "font-medium",
                   eta.status === "late" ? "text-late" : eta.status === "ok" ? "text-ok" : eta.status === "risk" ? "text-risk" : "text-muted",
                 )}
               >
                 {eta.label}
               </span>
-            )}
-            <span
-              className={cn(
-                "text-[12px] font-medium",
-                evidence.status === "ok" ? "text-fg/75" : evidence.status === "risk" ? "text-risk" : "text-faint",
-              )}
-            >
-              {evidence.label}
-            </span>
-          </div>
+            </>
+          )}
 
-          {s.action?.text && (
-            <p className="text-[13.5px] leading-[1.55] text-fg/90">{s.action.text}</p>
-          )}
-        </div>
-
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          {amount && (
-            <span className="num text-[13px] font-semibold text-fg">
-              {amount}
-            </span>
-          )}
-          {chip && (
-            <span
-              data-testid="action-state"
-              title={chip.title}
-              className={cn(
-                "inline-flex items-center gap-1.5 text-[12px] font-medium",
-                statusTextClass(chip.status),
-              )}
-            >
-              <span className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(chip.status))} aria-hidden />
-              <span>{chip.label}</span>
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Contact + affected downstream orders metadata */}
-      {(contactLabel || impactOrders.length > 0) && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-muted">
-          {contactLabel && (
-            <span className="inline-flex items-center gap-1.5">
-              <UserRound className="size-3.5 text-faint" aria-hidden />
-              <span className="text-fg/85">{contactLabel}</span>
-            </span>
-          )}
           {impactOrders.length > 0 && (
-            <span className="inline-flex flex-wrap items-center gap-1">
-              <span className="text-faint">Holds up</span>
-              {impactOrders.map((o, idx) => (
-                <span key={o.object_id}>
-                  {idx > 0 && ", "}
-                  <Link
-                    href={safeHref(o.open_url) ?? objectHref(o.type, o.object_id)}
-                    className="font-medium text-accent hover:underline"
-                  >
-                    {o.label}
-                  </Link>
-                </span>
-              ))}
+            <>
+              <span className="text-border-strong" aria-hidden>
+                ·
+              </span>
+              <span className="inline-flex flex-wrap items-center gap-1">
+                <span className="text-faint">Holds up</span>
+                {impactOrders.map((o, idx) => (
+                  <span key={o.object_id}>
+                    {idx > 0 && ", "}
+                    <Link
+                      href={safeHref(o.open_url) ?? objectHref(o.type, o.object_id)}
+                      className="font-medium text-accent hover:underline"
+                    >
+                      {o.label}
+                    </Link>
+                  </span>
+                ))}
+              </span>
+            </>
+          )}
+        </div>
+      </header>
+
+      {/* Interactive Draft Studio Surface (#14161b elevated email card) */}
+      <section
+        className="overflow-hidden rounded-xl border border-border/80 bg-surface dark:bg-[#14161b]"
+        aria-label="Draft studio"
+        data-testid="suggestion-draft"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/80 px-4 py-2.5">
+          <div className="inline-flex items-center gap-2 text-[12.5px] font-medium text-fg">
+            <Mail className="size-3.5 text-muted" aria-hidden />
+            <span>{s.draft ? draftHeading : "Follow-up summary"}</span>
+            <span className="font-normal text-faint">(not sent)</span>
+          </div>
+          {needsEmail && (
+            <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-risk">
+              <span className="size-1.5 rounded-full bg-dot-risk" aria-hidden />
+              <span>Needs email</span>
             </span>
           )}
         </div>
-      )}
 
-      {/* Collapsible draft and evidence toggles */}
-      {(s.draft || hasEvidence) && (
-        <div className="mt-2.5 space-y-2.5">
-          <div className="flex flex-wrap items-center gap-3 text-[12px]">
+        {s.draft ? (
+          <>
+            <div className="divide-y divide-border/70 border-b border-border/80 text-[13px]">
+              <div className="flex items-center gap-3 px-4 py-2" data-testid="draft-to">
+                <label htmlFor={`studio-to-${s.id}`} className="w-14 shrink-0 text-[12px] font-medium text-faint">
+                  To
+                </label>
+                {isInternal ? (
+                  <span className="min-w-0 flex-1 text-fg">{recipient.display ?? "Internal team"}</span>
+                ) : (
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    {recipient.name && !recipient.hasAddress && (
+                      <span className="shrink-0 text-[12.5px] text-muted">{recipient.name}</span>
+                    )}
+                    <input
+                      ref={toInputRef}
+                      id={`studio-to-${s.id}`}
+                      type="email"
+                      value={draftTo}
+                      onChange={(e) => setDraftTo(e.target.value)}
+                      placeholder={toPlaceholder}
+                      aria-label={toPlaceholder}
+                      data-testid="draft-to-input"
+                      className="h-7 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 text-[13px] text-fg transition-colors hover:border-border focus:border-border-strong focus:bg-bg focus:outline-none placeholder:text-faint"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 px-4 py-2">
+                <label htmlFor={`studio-subject-${s.id}`} className="w-14 shrink-0 text-[12px] font-medium text-faint">
+                  Subject
+                </label>
+                <input
+                  id={`studio-subject-${s.id}`}
+                  type="text"
+                  value={draftSubject}
+                  onChange={(e) => setDraftSubject(e.target.value)}
+                  data-testid="draft-subject-input"
+                  className="h-7 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-fg transition-colors hover:border-border focus:border-border-strong focus:bg-bg focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="px-4 py-3.5">
+              <label htmlFor={`studio-body-${s.id}`} className="sr-only">
+                Draft message body
+              </label>
+              <textarea
+                id={`studio-body-${s.id}`}
+                value={draftBody}
+                onChange={(e) => setDraftBody(e.target.value)}
+                rows={8}
+                data-testid="draft-body-input"
+                className="w-full resize-y bg-transparent font-sans text-[13.5px] leading-[1.65] text-fg focus:outline-none"
+              />
+            </div>
+
+            {(s.draft.facts ?? []).length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 border-t border-border/70 px-4 py-2 text-[11.5px]">
+                <span className="text-faint">Figures from</span>
+                {(s.draft.facts ?? []).slice(0, 5).map((f, n) =>
+                  f?.source ? (
+                    <SourceChip key={`${f.source.handle ?? "src"}-${n}`} source={f.source} record={readable(f.value ?? "")} />
+                  ) : null,
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="px-4 py-5 text-[13.5px] leading-[1.6] text-muted">
+            No outgoing draft is prepared for this item yet. Open the record to inspect details or turn it into a recurring workflow.
+          </div>
+        )}
+
+        {/* Unmistakable Bottom Action Bar: Send email, Copy draft, Turn into workflow, Dismiss */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/80 bg-bg-subtle/60 dark:bg-[#111318] px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
             {s.draft && (
               <button
                 type="button"
-                aria-expanded={draftOpen}
-                onClick={() => setDraftOpen((v) => !v)}
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                disabled={needsEmail && !sendOffer}
+                onClick={() => {
+                  if (sendOffer) {
+                    setActiveOffer(sendOffer);
+                  } else if (needsEmail) {
+                    toInputRef.current?.focus();
+                  } else {
+                    copyLiveDraft();
+                  }
+                }}
+                data-testid="suggestion-send-email"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-3.5 text-[12.5px] font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40 cursor-pointer"
               >
-                {draftOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-                <FileText className="size-3.5" aria-hidden />
-                <span>{draftOpen ? "Hide draft preview" : "Preview draft"}</span>
+                <Send className="size-3.5" aria-hidden />
+                <span>Send email</span>
               </button>
             )}
-            {hasEvidence && (
+
+            <button
+              type="button"
+              onClick={copyLiveDraft}
+              data-testid="copy-draft"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2 cursor-pointer"
+            >
+              {copied ? <Check className="size-3.5 text-ok" aria-hidden /> : <Copy className="size-3.5 text-muted" aria-hidden />}
+              <span>{copied ? "Copied" : "Copy draft"}</span>
+            </button>
+
+            {workflowId ? (
+              <span
+                className="inline-flex items-center gap-1.5 px-1 text-[12.5px] font-medium text-ok"
+                data-testid="suggestion-workflow-created"
+              >
+                <CheckCircle2 className="size-3.5" aria-hidden />
+                <span>Added as workflow</span>
+                <Link href="/assist?show=workflows" className="text-accent underline underline-offset-2">
+                  Open
+                </Link>
+              </span>
+            ) : (
               <button
                 type="button"
-                aria-expanded={evidenceOpen}
-                onClick={() => setEvidenceOpen((v) => !v)}
-                data-testid="suggestion-toggle"
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                disabled={creating || creatingAny}
+                onClick={onMakeWorkflow}
+                data-testid="suggestion-make-workflow"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2 disabled:opacity-50 cursor-pointer"
               >
-                {evidenceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
-                <span>Evidence and checks</span>
+                <Repeat className="size-3.5 text-muted" aria-hidden />
+                <span>{creating ? "Saving..." : "Turn into workflow"}</span>
               </button>
             )}
+
+            {snoozeOffer && (
+              <button
+                type="button"
+                onClick={() => setActiveOffer(snoozeOffer)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+              >
+                <Clock3 className="size-3.5" aria-hidden />
+                <span>{snoozeOffer.label}</span>
+              </button>
+            )}
+
+            {extraOffers.map((o) => (
+              <button
+                key={o.kind}
+                type="button"
+                onClick={() => setActiveOffer(o)}
+                className="inline-flex h-8 items-center rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+              >
+                {o.label}
+              </button>
+            ))}
           </div>
 
-          {s.draft && draftOpen && <DraftPreview draft={s.draft} />}
+          <button
+            type="button"
+            onClick={() => {
+              if (dismissOffer) setActiveOffer(dismissOffer);
+              else onLocalDismiss(s.id);
+            }}
+            data-testid="suggestion-dismiss"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-late cursor-pointer"
+          >
+            <Trash2 className="size-3.5" aria-hidden />
+            <span>Dismiss</span>
+          </button>
+        </div>
+      </section>
 
-          {evidenceOpen && hasEvidence && (
-            <div className="space-y-2.5 border-l-2 border-border-strong pl-4 py-1 text-[12.5px]" data-testid="suggestion-detail">
+      {/* Collapsible Evidence & Checks */}
+      {hasEvidence && (
+        <section className="space-y-2.5">
+          <button
+            type="button"
+            aria-expanded={evidenceOpen}
+            onClick={() => setEvidenceOpen((v) => !v)}
+            data-testid="suggestion-toggle"
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+          >
+            {evidenceOpen ? <ChevronDown className="size-3.5" aria-hidden /> : <ChevronRight className="size-3.5" aria-hidden />}
+            <span>Evidence and checks</span>
+          </button>
+
+          {evidenceOpen && (
+            <div
+              className="space-y-3 rounded-xl border border-border bg-surface/50 p-4 text-[13px]"
+              data-testid="suggestion-detail"
+            >
               <WritePanel match={[s.id, s.subject?.object_id ?? ""]} />
               {s.eta && (
                 <p className="leading-5 text-fg">
@@ -359,7 +573,7 @@ function SuggestionActionCard({
                 </p>
               )}
               {reasons.length > 0 && (
-                <ul className="space-y-1 text-fg/90" data-testid="suggestion-reasoning">
+                <ul className="space-y-1.5 text-fg/90" data-testid="suggestion-reasoning">
                   {reasons.map((r, idx) => (
                     <li key={idx}>
                       {readable(r.text).replace(/^ETA confirmed\? (?:yes|no|possibly|unknown)\.\s*/i, "")}
@@ -380,7 +594,7 @@ function SuggestionActionCard({
               )}
               {(s.missing ?? []).length > 0 && (
                 <div data-testid="suggestion-missing">
-                  <p className="mb-1 text-[11.5px] font-medium uppercase tracking-wide text-faint">Not on record</p>
+                  <p className="mb-1 text-[12px] font-medium text-faint">Not on record</p>
                   <ul className="list-disc space-y-0.5 pl-4 text-muted">
                     {(s.missing ?? []).map((m, idx) => (
                       <li key={idx}>{m}</li>
@@ -390,60 +604,46 @@ function SuggestionActionCard({
               )}
             </div>
           )}
-        </div>
+        </section>
       )}
 
-      {/* Clean 1-click action bar */}
-      <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <CardActions card={s} onDone={onDone} state={state} />
-          <Link
-            href={href}
-            className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
-          >
-            <span>Open record</span>
-            <ArrowUpRight className="size-3" aria-hidden />
-          </Link>
-        </div>
+      <p className="text-[12px] leading-relaxed text-faint">{SERVER_NOTE}</p>
 
-        {workflowId ? (
-          <span
-            className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ok"
-            data-testid="suggestion-workflow-created"
-          >
-            <CheckCircle2 className="size-3.5" aria-hidden />
-            Added as workflow
-            <Link href="/assist?show=workflows" className="text-accent underline underline-offset-2">
-              Open in Workflows
-            </Link>
-          </span>
-        ) : (
-          <button
-            type="button"
-            disabled={creating || creatingAny}
-            onClick={onMakeWorkflow}
-            data-testid="suggestion-make-workflow"
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border-strong px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-hover disabled:opacity-50 cursor-pointer"
-          >
-            <Repeat className="size-3.5 text-muted" aria-hidden />
-            <span>{creating ? "Saving workflow..." : "Turn into workflow"}</span>
-          </button>
-        )}
-      </div>
-    </article>
+      {activeOffer && (
+        <ActionDialog
+          card={s}
+          offer={activeOffer}
+          state={state}
+          preset={activeOffer.kind === "send_email" ? preset : undefined}
+          onClose={() => setActiveOffer(null)}
+          onDone={(r) => {
+            setActiveOffer(null);
+            onDone(r);
+          }}
+        />
+      )}
+    </div>
   );
 }
 
 /**
- * Proactive Suggestions tab in /assist:
- * - Surfaces everything the ontology spotted in /api/suggestions as structured actionable cards.
- * - Lets users act directly (Review & send, Snooze, Dismiss) or turn any item into a workflow.
+ * Ground-Up 38% / 62% Split-Pane Suggestions Triage:
+ * - Compact top control strip: follow-up count, Liquid Glass Ready to send | All switcher, search.
+ * - Left recessed triage rail (#121418): PO/record ref, supplier, urgency, quiet Ready to send / Needs email state.
+ * - Right Draft Studio (#0d0e11 + elevated #14161b email card): full context, live editable To:/Subject:/Body,
+ *   and unmistakable Send email, Copy draft, Turn into workflow, and Dismiss controls.
  */
 export function AssistSuggestionsView() {
   const [data, setData] = useState<Suggestions | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [states, setStates] = useState<Record<string, ActionResult>>({});
+  const [localDismissed, setLocalDismissed] = useState<Set<string>>(() => new Set());
   const [putAway, setPutAway] = useState(false);
+  const [viewFilter, setViewFilter] = useState<"ready" | "all" | null>(null);
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [focusToSignal, setFocusToSignal] = useState(0);
   const [routines, setRoutines] = useState<AssistMinedRoutine[]>([]);
   const [creatingId, setCreatingId] = useState<string | null>(null);
   const [createdIds, setCreatedIds] = useState<Record<string, string>>({});
@@ -470,6 +670,10 @@ export function AssistSuggestionsView() {
 
   const onActionDone = useCallback((r: ActionResult) => {
     setStates((prev) => ({ ...prev, [r.card_id]: r }));
+  }, []);
+
+  const onLocalDismiss = useCallback((id: string) => {
+    setLocalDismissed((prev) => new Set(prev).add(id));
   }, []);
 
   const turnSuggestionIntoWorkflow = async (s: ProactiveSuggestion) => {
@@ -504,237 +708,415 @@ export function AssistSuggestionsView() {
   };
 
   const every = useMemo(() => data?.items ?? [], [data]);
-  const away = useMemo(() => every.filter((s) => isPutAway(states[s.id])), [every, states]);
-  const visible = useMemo(
-    () => (putAway ? every : every.filter((s) => !isPutAway(states[s.id]))),
-    [every, putAway, states],
+  const away = useMemo(
+    () => every.filter((s) => isPutAway(states[s.id]) || localDismissed.has(s.id)),
+    [every, states, localDismissed],
   );
-  const readyDrafts = useMemo(() => visible.filter((s) => !!s.draft).length, [visible]);
+  const visible = useMemo(
+    () => (putAway ? every : every.filter((s) => !isPutAway(states[s.id]) && !localDismissed.has(s.id))),
+    [every, putAway, states, localDismissed],
+  );
+  const readyItems = useMemo(() => visible.filter(isReadyToSend), [visible]);
+  const effectiveFilter: "ready" | "all" = viewFilter ?? (readyItems.length > 0 ? "ready" : "all");
+
+  const displayed = useMemo(() => {
+    const base = effectiveFilter === "ready" ? readyItems : visible;
+    const q = search.trim().toLowerCase();
+    if (!q) return base;
+    return base.filter((s) => {
+      const head = suggestionHeadline(s);
+      const supplier = supplierNameOf(s);
+      const text = `${head} ${supplier} ${s.action?.text ?? ""} ${s.draft?.subject ?? ""}`.toLowerCase();
+      return text.includes(q);
+    });
+  }, [effectiveFilter, readyItems, visible, search]);
+
+  useEffect(() => {
+    if (displayed.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !displayed.some((s) => s.id === selectedId)) {
+      setSelectedId(displayed[0].id);
+    }
+  }, [displayed, selectedId]);
+
+  const activeSuggestion = useMemo(
+    () => displayed.find((s) => s.id === selectedId) ?? displayed[0] ?? null,
+    [displayed, selectedId],
+  );
+
   const extra = collapsedLine(data?.collapsed);
   const suggestionsReady = Boolean(
     data && (data.status === "read" || data.status === ("ok" as string) || every.length > 0),
   );
 
   return (
-    <div className="mx-auto w-full max-w-[960px] space-y-6 pb-10" data-testid="assist-suggestions-view">
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <h2 className="text-[19px] font-semibold tracking-tight text-fg">
-            Proactive suggestions
-          </h2>
-          <p className="text-[14px] leading-[1.6] text-muted">
-            Follow-ups spotted across orders, suppliers, and messages. Review and send a draft here, or turn any item into a scheduled workflow.
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2.5 text-[12.5px] text-muted">
-          {suggestionsReady && (
-            <span className="num inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-fg">
-              <span>
-                <strong>{visible.length}</strong> open
-              </span>
-              {readyDrafts > 0 && (
-                <>
-                  <span className="h-3 w-px bg-border" aria-hidden />
-                  <span className="text-muted">{readyDrafts} with drafts</span>
-                </>
-              )}
-            </span>
-          )}
-          <Link
-            href="/assist?show=workflows"
-            className="inline-flex h-8 items-center gap-1 rounded-lg border border-border bg-surface px-3 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2"
-          >
-            <span>View workflows</span>
-            <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
-          </Link>
-        </div>
-      </header>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg" data-testid="assist-suggestions-view">
+      {/* Compact Top Control Bar */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2.5 border-b border-border bg-bg px-4 py-2 lg:px-5">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="num text-[13px] font-medium text-fg">
+            {readyItems.length > 0
+              ? `${readyItems.length} ${readyItems.length === 1 ? "follow-up" : "follow-ups"} ready`
+              : `${visible.length} ${visible.length === 1 ? "follow-up" : "follow-ups"} open`}
+          </span>
 
-      <StaleNote since={data?.stale_since} />
+          <div
+            role="group"
+            aria-label="Filter suggestions"
+            data-testid="suggestions-filter-toggle"
+            className="liquid-glass-pill inline-flex items-center gap-0.5 rounded-lg p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={effectiveFilter === "ready"}
+              onClick={() => setViewFilter("ready")}
+              data-testid="suggestions-filter-ready"
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors cursor-pointer",
+                effectiveFilter === "ready" ? "liquid-glass-active" : "text-muted hover:text-fg",
+              )}
+            >
+              <span>Ready to send</span>
+              <span className="num text-[11px] opacity-75">{readyItems.length}</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={effectiveFilter === "all"}
+              onClick={() => setViewFilter("all")}
+              data-testid="suggestions-filter-all"
+              className={cn(
+                "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors cursor-pointer",
+                effectiveFilter === "all" ? "liquid-glass-active" : "text-muted hover:text-fg",
+              )}
+            >
+              <span>All</span>
+              <span className="num text-[11px] opacity-75">{visible.length}</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative w-56 max-w-full">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint" aria-hidden />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search suggestions..."
+              aria-label="Search suggestions"
+              className="h-8 w-full rounded-md border border-border bg-surface pl-8 pr-7 text-[12.5px] text-fg placeholder:text-faint focus:border-border-strong focus:outline-none"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted hover:text-fg"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            )}
+          </div>
+
+          {away.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setPutAway((v) => !v)}
+              className="h-8 rounded-md px-2 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+              data-testid="assist-suggestions-put-away"
+            >
+              {putAway ? "Hide" : "Show"} {away.length} handled
+            </button>
+          )}
+        </div>
+      </div>
+
+      <StaleNote since={data?.stale_since} className="shrink-0 px-4 py-1.5 lg:px-5" />
 
       {workflowError && (
-        <div role="alert" className="border-l-2 border-l-late pl-3.5 py-1 text-[13px] text-late">
+        <div role="alert" className="shrink-0 border-b border-border bg-surface px-4 py-2 text-[13px] text-late lg:px-5">
           {workflowError}
         </div>
       )}
 
       {error ? (
-        <LoadProblem message={error} onRetry={load} />
+        <div className="p-6">
+          <LoadProblem message={error} onRetry={load} />
+        </div>
       ) : !data ? (
-        <Pending label="Reading proactive suggestions" />
+        <div className="p-6">
+          <Pending label="Reading proactive suggestions" />
+        </div>
       ) : !suggestionsReady ? (
-        <div
-          className="rounded-xl border border-border bg-surface px-6 py-12 text-center"
-          data-testid="assist-suggestions-not-ready"
-        >
+        <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center" data-testid="assist-suggestions-not-ready">
           <Sparkles className="mx-auto mb-3 size-5 text-muted" aria-hidden />
-          <h3 className="text-[15px] font-semibold tracking-[-0.01em] text-fg">
-            Suggestions are not ready yet
-          </h3>
-          <p className="mx-auto mt-1.5 max-w-[48ch] text-[13.5px] leading-relaxed text-muted">
-            Assist scans your orders, supplier threads, and open alerts on a schedule. While the next pass runs, check your queue or create a recurring workflow.
+          <h2 className="text-[15px] font-semibold text-fg">Suggestions are not ready yet</h2>
+          <p className="mx-auto mt-1.5 max-w-[46ch] text-[13.5px] leading-relaxed text-muted">
+            Assist scans orders, supplier threads, and open alerts on a schedule. Refresh or create a recurring workflow.
           </p>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
             <Button size="sm" variant="secondary" onClick={load}>
               <RefreshCw className="size-3.5" aria-hidden />
-              <span>Refresh suggestions</span>
+              <span>Refresh</span>
             </Button>
             <Link
-              href="/assist"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border-strong bg-bg px-3 text-[13px] font-medium text-fg transition-colors hover:bg-hover"
-            >
-              <span>Open Assist queue</span>
-            </Link>
-            <Link
               href="/assist?show=workflows"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-opacity hover:opacity-90"
+              className="inline-flex h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-opacity hover:opacity-90"
             >
-              <span>Create workflow</span>
+              Create workflow
             </Link>
           </div>
         </div>
-      ) : visible.length === 0 ? (
-        <div className="rounded-xl border border-border bg-surface px-6 py-12 text-center" data-testid="assist-suggestions-empty">
+      ) : visible.length === 0 && routines.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 py-16 text-center" data-testid="assist-suggestions-empty">
           <Sparkles className="mx-auto mb-2.5 size-5 text-muted" aria-hidden />
           <p className="text-[15px] font-medium text-fg">
             {away.length > 0 ? "You have handled every current suggestion." : "No proactive suggestions right now."}
           </p>
           <p className="mx-auto mt-1.5 max-w-[46ch] text-[13.5px] text-muted">
-            When orders slip, supplier confirmations go quiet, or records need a follow-up, they appear here as structured cards with drafts ready to review.
+            When orders slip or supplier threads go quiet, follow-up drafts appear here ready for review.
           </p>
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
             {away.length > 0 && (
               <Button size="sm" variant="secondary" onClick={() => setPutAway(true)}>
-                Show {away.length} done, snoozed or dismissed
+                Show {away.length} handled
               </Button>
             )}
             <Link
               href="/assist?show=workflows"
-              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-opacity hover:opacity-90"
+              className="inline-flex h-8 items-center rounded-md bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-opacity hover:opacity-90"
             >
-              Create a recurring workflow
+              Create a workflow
             </Link>
           </div>
         </div>
       ) : (
-        <section
-          className="space-y-3"
-          aria-label="Spotted opportunities and follow-ups"
+        /* 38% / 62% Split Triage matching Inbox craft */
+        <div
+          className="grid h-[calc(100dvh-148px)] min-h-[560px] flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(340px,38%)_1fr]"
           data-testid="assist-suggestions-list"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-[12.5px] font-semibold uppercase tracking-wide text-faint">
-              Spotted for you ({visible.length})
-            </h3>
-            <div className="flex items-center gap-3 text-[12.5px]">
-              {away.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setPutAway((v) => !v)}
-                  className="text-muted hover:text-fg cursor-pointer"
-                  data-testid="assist-suggestions-put-away"
-                >
-                  {putAway ? "Hide" : "Show"} {away.length} done, snoozed or dismissed
-                </button>
-              )}
-              {data.more > 0 && (
-                <Link href="/?show=alerts" className="text-accent hover:underline">
-                  {plural(data.more, "more record")} in Alerts
-                </Link>
+          {/* Left Triage Rail */}
+          <aside
+            aria-label="Suggestions list"
+            className={cn(
+              "min-h-0 flex-col overflow-y-auto border-b border-border bg-list dark:bg-[#121418] lg:flex lg:border-r lg:border-b-0",
+              mobileDetailOpen && activeSuggestion ? "hidden lg:flex" : "flex",
+            )}
+          >
+            {displayed.length === 0 ? (
+              <div className="px-4 py-12 text-center text-[13px] text-muted" data-testid="suggestions-ready-empty">
+                <p>No drafts match this filter right now.</p>
+                {effectiveFilter === "ready" && visible.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setViewFilter("all")}
+                    className="mt-2 font-medium text-accent hover:underline cursor-pointer"
+                  >
+                    Show all {visible.length} suggestions
+                  </button>
+                )}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/70">
+                {displayed.map((s) => {
+                  const isSelected = activeSuggestion?.id === s.id;
+                  const headline = suggestionHeadline(s);
+                  const supplier = supplierNameOf(s);
+                  const lateTag = extractDaysLate(headline);
+                  const ready = isReadyToSend(s);
+                  const evidence = evidenceBadgeOf(s);
+                  const recipient = resolveDraftRecipient(s.draft?.to as SuggestionDraft["to"] | string | string[] | null | undefined);
+                  const missingEmail = Boolean(s.draft && s.draft.audience !== "internal" && !recipient.hasAddress);
+                  const missingEmailText = s.draft?.audience === "customer" ? "Needs customer email" : "Needs supplier email";
+
+                  return (
+                    <li key={s.id} data-testid="suggestion">
+                      <div
+                        className={cn(
+                          "transition-colors",
+                          isSelected ? "bg-row-on dark:bg-[#1b1e25]" : "hover:bg-hover",
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedId(s.id);
+                            setMobileDetailOpen(true);
+                          }}
+                          aria-current={isSelected ? "true" : undefined}
+                          className="w-full px-3.5 py-3 text-left cursor-pointer"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[12px]">
+                            <span className="min-w-0 truncate font-medium text-fg/80">{supplier}</span>
+                            {lateTag ? (
+                              <span className="num shrink-0 font-medium text-late">{lateTag}</span>
+                            ) : (
+                              <span className="shrink-0 text-[11.5px] text-faint">{evidence.label}</span>
+                            )}
+                          </div>
+
+                          <p
+                            data-testid="suggestion-headline"
+                            className="mt-1 truncate text-[13.5px] font-semibold leading-snug text-fg"
+                          >
+                            {headline}
+                          </p>
+
+                          <div className="mt-1.5 flex items-center justify-between gap-2 text-[12px]">
+                            <span className="min-w-0 flex-1 truncate text-muted">
+                              {s.action?.text || evidence.label}
+                            </span>
+                            <span
+                              className={cn(
+                                "inline-flex shrink-0 items-center gap-1.5 text-[11.5px] font-medium",
+                                ready ? "text-ok" : "text-risk",
+                              )}
+                            >
+                              <span
+                                className={cn("size-1.5 shrink-0 rounded-full", ready ? "bg-dot-ok" : "bg-dot-risk")}
+                                aria-hidden
+                              />
+                              <span>{ready ? "Ready to send" : "Needs email"}</span>
+                            </span>
+                          </div>
+                        </button>
+
+                        {missingEmail && (
+                          <div className="flex items-center justify-between gap-2 px-3.5 pb-2.5 text-[11.5px]">
+                            <span className="text-faint">{evidence.label}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedId(s.id);
+                                setMobileDetailOpen(true);
+                                setFocusToSignal((n) => n + 1);
+                              }}
+                              data-testid="suggestion-needs-email"
+                              className="font-medium text-accent hover:underline cursor-pointer"
+                            >
+                              {missingEmailText}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {/* Quiet footer summary + spotted recurring patterns */}
+            {(extra || data.more > 0) && (
+              <div className="border-t border-border px-3.5 py-3 text-[12px] leading-relaxed text-faint">
+                {extra && <p>{extra}</p>}
+                {data.more > 0 && (
+                  <Link href="/?show=alerts" className="mt-1 inline-block font-medium text-accent hover:underline">
+                    {plural(data.more, "more record")} in Alerts
+                  </Link>
+                )}
+              </div>
+            )}
+
+            {routines.length > 0 && (
+              <section
+                className="border-t border-border px-3.5 py-3.5"
+                aria-label="Spotted recurring work"
+                data-testid="assist-mined-routines"
+              >
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted">
+                    <Clock3 className="size-3.5" aria-hidden />
+                    <span>Recurring habits ({routines.length})</span>
+                  </span>
+                  <Link href="/assist?show=workflows" className="text-[11.5px] font-medium text-accent hover:underline">
+                    Workflows
+                  </Link>
+                </div>
+                <ul className="space-y-2">
+                  {routines.map((r) => {
+                    const wfId = createdIds[r.routine_id];
+                    const isBusy = creatingId === r.routine_id;
+                    return (
+                      <li
+                        key={r.routine_id}
+                        className="rounded-lg border border-border bg-bg dark:bg-[#0d0e11] p-2.5 text-[12.5px]"
+                      >
+                        <p className="font-medium text-fg">{r.suggested_name || r.description}</p>
+                        <p className="mt-0.5 text-[11.5px] text-muted">{r.suggested_trigger_summary}</p>
+                        <div className="mt-2">
+                          {wfId ? (
+                            <Link
+                              href="/assist?show=workflows"
+                              className="inline-flex items-center gap-1 text-[12px] font-medium text-ok hover:underline"
+                            >
+                              <CheckCircle2 className="size-3.5" aria-hidden />
+                              <span>Active in Workflows</span>
+                            </Link>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isBusy || creatingId !== null}
+                              onClick={() => void turnRoutineIntoWorkflow(r)}
+                              data-testid="routine-make-workflow"
+                              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-surface-2 disabled:opacity-50 cursor-pointer"
+                            >
+                              <Repeat className="size-3" aria-hidden />
+                              <span>{isBusy ? "Saving..." : "Turn into workflow"}</span>
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
+          </aside>
+
+          {/* Right Interactive Draft Studio (#0d0e11 in dark) */}
+          <section
+            aria-label="Selected suggestion draft studio"
+            className={cn(
+              "min-h-0 min-w-0 overflow-y-auto bg-bg dark:bg-[#0d0e11] px-5 py-5 lg:block lg:px-7 lg:py-6",
+              mobileDetailOpen && activeSuggestion ? "block" : "hidden lg:block",
+            )}
+          >
+            <div className="mb-4 border-b border-border pb-3 lg:hidden">
+              <button
+                type="button"
+                onClick={() => setMobileDetailOpen(false)}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium text-muted transition-colors hover:text-fg cursor-pointer"
+              >
+                <ArrowLeft className="size-3.5" aria-hidden />
+                <span>Back to suggestions</span>
+              </button>
+            </div>
+
+            <div className="max-w-3xl">
+              {activeSuggestion ? (
+                <SuggestionDraftStudio
+                  key={activeSuggestion.id}
+                  s={activeSuggestion}
+                  state={states[activeSuggestion.id]}
+                  onDone={onActionDone}
+                  onLocalDismiss={onLocalDismiss}
+                  workflowId={createdIds[activeSuggestion.id]}
+                  creating={creatingId === activeSuggestion.id}
+                  creatingAny={creatingId !== null}
+                  onMakeWorkflow={() => void turnSuggestionIntoWorkflow(activeSuggestion)}
+                  focusToSignal={focusToSignal}
+                />
+              ) : (
+                <div className="py-16 text-center text-[13.5px] text-muted">
+                  Select a suggestion from the list to review and edit its draft.
+                </div>
               )}
             </div>
-          </div>
-
-          <div className="divide-y divide-border border-y border-border">
-            {visible.map((s, idx) => (
-              <SuggestionActionCard
-                key={s.id}
-                s={s}
-                defaultDraftOpen={idx === 0}
-                state={states[s.id]}
-                onDone={onActionDone}
-                workflowId={createdIds[s.id]}
-                creating={creatingId === s.id}
-                creatingAny={creatingId !== null}
-                onMakeWorkflow={() => void turnSuggestionIntoWorkflow(s)}
-              />
-            ))}
-          </div>
-
-          <div className="space-y-1 pt-2 text-[12.5px] leading-relaxed text-faint">
-            {extra && <p>{extra}</p>}
-            <p>{SERVER_NOTE}</p>
-          </div>
-        </section>
-      )}
-
-      {routines.length > 0 && (
-        <section
-          className="space-y-3 border-t border-border pt-6"
-          aria-label="Spotted recurring work"
-          data-testid="assist-mined-routines"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Clock3 className="size-3.5 text-muted" aria-hidden />
-              <h3 className="text-[12.5px] font-semibold uppercase tracking-wide text-faint">
-                Recurring work spotted from your habits ({routines.length})
-              </h3>
-            </div>
-            <Link href="/assist?show=workflows" className="text-[12.5px] font-medium text-accent hover:underline">
-              Manage all workflows
-            </Link>
-          </div>
-          <ul className="divide-y divide-border border-y border-border">
-            {routines.map((r) => {
-              const wfId = createdIds[r.routine_id];
-              const isBusy = creatingId === r.routine_id;
-              return (
-                <li
-                  key={r.routine_id}
-                  className="flex flex-wrap items-center justify-between gap-3 py-3.5"
-                >
-                  <div className="min-w-0 flex-1 space-y-0.5">
-                    <p className="text-[14px] font-medium text-fg">{r.suggested_name || r.description}</p>
-                    <p className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12.5px] text-muted">
-                      <span>{r.suggested_trigger_summary}</span>
-                      {r.description && r.suggested_name && r.description !== r.suggested_name && (
-                        <>
-                          <span className="h-3 w-px bg-border" aria-hidden />
-                          <span>{r.description}</span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                  <div className="shrink-0">
-                    {wfId ? (
-                      <Link
-                        href="/assist?show=workflows"
-                        className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-ok hover:underline"
-                      >
-                        <CheckCircle2 className="size-3.5" aria-hidden />
-                        Active in Workflows
-                      </Link>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        className="h-7 rounded-md px-2.5 text-[12px]"
-                        loading={isBusy}
-                        disabled={creatingId !== null}
-                        onClick={() => void turnRoutineIntoWorkflow(r)}
-                        data-testid="routine-make-workflow"
-                      >
-                        <Repeat className="size-3.5" aria-hidden />
-                        <span>Turn into workflow</span>
-                      </Button>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+          </section>
+        </div>
       )}
     </div>
   );

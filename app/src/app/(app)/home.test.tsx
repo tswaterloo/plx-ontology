@@ -216,9 +216,9 @@ describe("Unified Needs-you list and inline filters", () => {
   it("never silently cuts long lists and exposes Show more and Show all", async () => {
     api.needs.mockResolvedValue(needs(Array.from({ length: 125 }, (_, i) => item(i + 1))));
     render(<HomePage />);
-    await waitFor(() => expect(rowTexts()).toHaveLength(100));
+    await waitFor(() => expect(rowTexts()).toHaveLength(7));
     const paging = screen.getByTestId("needs-paging");
-    expect(paging).toHaveTextContent("Showing 100 of 125");
+    expect(paging).toHaveTextContent("Showing 7 of 125");
     fireEvent.click(within(paging).getByRole("button", { name: "Show all" }));
     await waitFor(() => expect(rowTexts()).toHaveLength(125));
   });
@@ -476,10 +476,13 @@ describe("Compact Financials block and consolidated Holds group (PLAN-P2-C6)", (
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("financials-list")).toBeNull();
 
-    // Expanding exposes every single one of the 91 financial alerts (zero silent drops).
+    // Expanding exposes the calm top-7 slice with an explicit Show all revealing all 91 alerts (zero silent drops).
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     const finList = screen.getByTestId("financials-list");
+    expect(within(finList).getAllByTestId("need-row")).toHaveLength(7);
+    const finSection = finList.parentElement!;
+    fireEvent.click(within(finSection).getByRole("button", { name: "Show all" }));
     const finRows = within(finList).getAllByTestId("need-row");
     expect(finRows).toHaveLength(91);
     expect(finRows[24]).toHaveTextContent("Verify unit cost");
@@ -489,7 +492,7 @@ describe("Compact Financials block and consolidated Holds group (PLAN-P2-C6)", (
     const detail = await screen.findByTestId("need-detail");
     expect(detail).toHaveTextContent("Customer Cost 1");
     expect(within(detail).getByTestId("need-detail-badge")).toHaveTextContent("Verify unit cost");
-    expect(detail.textContent).not.toContain("—");
+    expect(detail.textContent).not.toContain("\u2014");
   });
 
   it("merges QC holds, batch holds, and order holds into one Holds group while preserving each item's specific badge", async () => {

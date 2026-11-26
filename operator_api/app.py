@@ -86,6 +86,7 @@ MEASURE_ROUTES = frozenset({
     # a source and the records read out of it (business rule 11-23: every tool gets everything,
     # the measure session reads as the owner): GET only; no file download or upload route
     "/api/source", "/api/source/records", "/api/time-saved",
+    "/api/sharepoint/folders",
     # every screen as the owner sees it (owner 11-23): the feedback list, the autopilot's
     # audit; the work log's threads and days are under MEASURE_PREFIXES
     "/api/feedback", "/api/autopilot/audit"})
@@ -1636,6 +1637,8 @@ def create_app(backend: Any, auth: Any, *, allowed_origins: frozenset[str] = fro
     assist_jobs.install(app, backend, reader)
     from . import assist_workflows   # a person's own repeatable workflows (PLAN-1124 (b))
     assist_workflows.install(app, backend, reader)
+    from . import sharepoint_upload_routes   # SharePoint folder discovery + artifact upload
+    sharepoint_upload_routes.install(app, backend, reader)
 
     @app.get("/api/autopilot", response_model=m.AutopilotArea, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})

@@ -37,6 +37,8 @@ import { QueryToggle, ShowWork } from "@/components/query-work";
 import { LoadProblem } from "@/components/ui/notice";
 import { WhyDidItChange } from "@/components/insights/why";
 import { BenchmarksPanel } from "@/components/insights/benchmarks-panel";
+import { CreateInsightModal, type CreateInsightLayout } from "@/components/insights/create-insight-modal";
+import { CreateTriggerModal } from "@/components/insights/create-trigger-modal";
 import { OntologyAndMeasuresPanel } from "@/components/insights/ontology-map";
 import { WidgetLibraryDrawer } from "@/components/insights/widget-library-drawer";
 import {
@@ -74,7 +76,7 @@ import { ago, formatDate, isBeforeToday } from "@/lib/format";
 import { full, human } from "@/components/charts/scale";
 import type { InsightInfo, InsightList, InsightResult } from "@/lib/types";
 
-const quiet = "h-7 rounded-md border border-border px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-control hover:bg-hover active:scale-[0.98] active:bg-surface-2 cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent disabled:active:scale-100";
+const quiet = "h-7 rounded-md border border-border px-2.5 text-[12.5px] font-medium text-fg transition-[background-color,border-color,color] duration-150 ease-[cubic-bezier(0.2,0,0,1)] hover:border-control hover:bg-hover active:bg-surface-2 cursor-pointer disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent";
 
 export const TOP = 8;
 type Drawn = NonNullable<InsightResult["drawn"]>;
@@ -256,11 +258,11 @@ function KpiCardBody({ kpi, title, compact = false }: { kpi: KpiSummary; title: 
     <div
       className={cn(
         "flex items-end justify-between gap-3",
-        compact ? "border-b border-border/60 pb-2.5" : "py-2",
+        compact ? "pb-1" : "py-1.5",
       )}
       data-testid="kpi-bento-summary"
     >
-      <div className="min-w-0 space-y-1">
+      <div className="min-w-0 space-y-0.5">
         <div className={cn("font-semibold tracking-[-0.025em] text-fg tabular-nums", compact ? "text-[22px] leading-7" : "text-[28px] leading-9")}>
           {kpi.headline}
         </div>
@@ -287,56 +289,6 @@ function KpiCardBody({ kpi, title, compact = false }: { kpi: KpiSummary; title: 
       </div>
       {!compact && <KpiSparkline values={kpi.sparkline} positive={kpi.positive} label={title} />}
     </div>
-  );
-}
-
-/** Compact Export dropdown for tabular tiles without a drawn SVG chart (CSV + Excel). */
-function TableExportMenu({ data }: { data: InsightResult }) {
-  const menu = useRef<HTMLDetailsElement>(null);
-  return (
-    <details ref={menu} className="relative">
-      <summary className="inline-flex h-6 list-none items-center gap-1 rounded-md border border-border bg-bg px-1.5 text-[11.5px] font-medium text-muted hover:border-border-strong hover:bg-hover hover:text-fg cursor-pointer [&::-webkit-details-marker]:hidden">
-        <Download className="size-3 shrink-0" strokeWidth={2} aria-hidden />
-        <span>Export</span>
-        <ChevronDown className="size-3 shrink-0 opacity-70" strokeWidth={2} aria-hidden />
-      </summary>
-      <div
-        className="absolute right-0 z-20 mt-1 flex min-w-[9.5rem] flex-col rounded-lg border border-border bg-raised py-1 shadow-pop"
-        role="menu"
-      >
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            if (menu.current) menu.current.open = false;
-            saveCsv(data.columns, data.rows, data.title);
-          }}
-          className="px-3 py-1.5 text-left text-[12px] text-fg hover:bg-hover cursor-pointer"
-          data-testid="csv-export-btn"
-        >
-          CSV
-        </button>
-        <div className="px-2 py-1">
-          <ExcelExportButton
-            title={data.title}
-            label="Excel (.xlsx)"
-            className="inline-flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[12px] text-fg hover:bg-hover cursor-pointer"
-            req={() => ({
-              title: data.title,
-              tables: [{
-                title: data.title,
-                columns: data.columns,
-                rows: data.rows,
-                sql: data.sql,
-                as_of: data.as_of,
-                total_rows: data.total_rows ?? null,
-                truncated: Boolean(data.truncated || (data.total_rows != null && data.rows.length < data.total_rows)),
-              }],
-            })}
-          />
-        </div>
-      </div>
-    </details>
   );
 }
 
@@ -748,12 +700,11 @@ export const InsightTile = memo(function InsightTile({
   );
   const showCompactKpiStrip = Boolean(
     kpi &&
-    kpi.kind === "series" &&
-    effectiveSize === "s" &&
     view === "chart" &&
     data?.drawn &&
     !data.drawn.panels?.length,
   );
+  const domainCaption = item.measure?.owner || (item.group ? item.group.replace(/^Measures:\s*/i, "") : "");
   const hasMeasureWhy = Boolean(item.measure && item.id.startsWith("measure_") && (data?.columns ?? []).includes("month"));
 
   const asOfDate = data?.drawn?.as_of ?? data?.as_of ?? null;
@@ -801,7 +752,7 @@ export const InsightTile = memo(function InsightTile({
       data-flip-id={item.id}
       data-drag-target={activeDrag?.dragOver ? "true" : undefined}
       className={cn(
-        "group/tile cv-auto cv-tile relative flex min-w-0 scroll-mt-24 flex-col gap-3 rounded-lg border bg-bg-subtle p-4 transition-[border-color,box-shadow,opacity,background-color] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+        "group/tile cv-auto cv-tile relative flex min-w-0 scroll-mt-24 flex-col gap-3 rounded-xl border bg-bg p-4 transition-[border-color,opacity,background-color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] dark:bg-[#14161b]",
         colSpanClass,
         resizingNow
           ? "z-10 border-accent ring-1 ring-accent/40 select-none"
@@ -809,20 +760,19 @@ export const InsightTile = memo(function InsightTile({
             ? "border-accent bg-row-on/80 ring-1 ring-accent/40"
             : arrange
               ? "border-border-strong/90 hover:border-fg/40"
-              : "border-border hover:border-border-strong",
-        activeDrag?.dragging && "scale-[0.985] opacity-40 ring-1 ring-accent/40",
+              : "border-border/80 hover:border-border-strong",
+        activeDrag?.dragging && "opacity-45 ring-1 ring-accent/40",
       )}
       data-testid={`insight-${item.id}`}
       aria-labelledby={`insight-${item.id}-title`}
     >
-      {/* Genie-Clean Single-Line Header: Title + quiet domain meta on left, Chart|Table + overflow menu on right */}
+      {/* Inverted-Pyramid Tile Header: Crisp 13px Title + Domain Caption on left, subtle overflow menu on right */}
       <header className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-start gap-1.5">
             {activeDrag && (
-              <span
-                role="button"
-                tabIndex={0}
+              <button
+                type="button"
                 aria-label={`Drag handle for ${item.title}`}
                 title="Drag to reorder"
                 onPointerDown={(e) => {
@@ -835,7 +785,7 @@ export const InsightTile = memo(function InsightTile({
                   if (e.key === "ArrowDown" && goDown) { e.preventDefault(); goDown(); }
                 }}
                 className={cn(
-                  "inline-flex size-6 shrink-0 touch-none cursor-grab items-center justify-center rounded-md text-faint transition-opacity hover:bg-hover hover:text-fg active:cursor-grabbing",
+                  "mt-0.5 inline-flex size-5 shrink-0 touch-none cursor-grab items-center justify-center rounded-md text-faint transition-opacity hover:bg-hover hover:text-fg active:cursor-grabbing",
                   arrange || activeDrag.dragging
                     ? "opacity-100 text-muted"
                     : "opacity-0 group-hover/tile:opacity-100 focus-visible:opacity-100",
@@ -843,31 +793,39 @@ export const InsightTile = memo(function InsightTile({
                 data-testid={`drag-handle-${item.id}`}
               >
                 <GripVertical className="size-3.5" strokeWidth={2} aria-hidden />
-              </span>
+              </button>
             )}
-            <h3
-              id={`insight-${item.id}-title`}
-              className="min-w-0 truncate text-[15px] font-semibold leading-5 tracking-[-0.015em] text-fg"
-              title={item.title}
-            >
-              {item.title}
-            </h3>
-            {item.measure && (
-              <span
-                title={`${item.measure.name}: ${item.measure.definition} (${definitionMeta(item.measure)})`}
-                className="hidden shrink-0 items-center gap-1.5 text-[11.5px] font-normal text-faint sm:inline-flex"
-                data-testid={`verified-pill-${item.id}`}
-              >
-                <span>{item.measure.owner}</span>
-                <span className="h-2.5 w-px bg-border" aria-hidden />
-                <span className="font-mono">{item.measure.version}</span>
-              </span>
-            )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2">
+                <h3
+                  id={`insight-${item.id}-title`}
+                  className="min-w-0 truncate text-[13px] font-semibold leading-5 tracking-[-0.01em] text-fg"
+                  title={item.title}
+                >
+                  {item.title}
+                </h3>
+                {item.measure ? (
+                  <span
+                    title={`${item.measure.name}: ${item.measure.definition} (${definitionMeta(item.measure)})`}
+                    className="hidden shrink-0 items-center gap-1.5 text-[11.5px] font-normal text-faint sm:inline-flex"
+                    data-testid={`verified-pill-${item.id}`}
+                  >
+                    <span>{item.measure.owner}</span>
+                    <span className="h-2.5 w-px bg-border" aria-hidden />
+                    <span className="font-mono">{item.measure.version}</span>
+                  </span>
+                ) : domainCaption ? (
+                  <span className="hidden shrink-0 text-[11.5px] font-normal text-faint sm:inline">
+                    {domainCaption}
+                  </span>
+                ) : null}
+              </div>
+            </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5">
-            {/* Right Header Cluster: Resize presets in Customize mode OR compact Chart|Table toggle */}
-            {arrange && onResize ? (
+            {/* Customize Resize Presets in Arrange Mode */}
+            {arrange && onResize && (
               <div
                 className="inline-flex shrink-0 items-center rounded-md border border-border bg-bg p-0.5"
                 role="group"
@@ -892,41 +850,7 @@ export const InsightTile = memo(function InsightTile({
                   </button>
                 ))}
               </div>
-            ) : data?.drawn && !data.not_measurable && data.drawn.kind !== "table" ? (
-              <div
-                className="inline-flex shrink-0 items-center rounded-md border border-border/70 bg-bg/80 p-0.5"
-                role="group"
-                aria-label={`View mode for ${item.title}`}
-                data-testid={`tile-view-toggle-${item.id}`}
-              >
-                <button
-                  type="button"
-                  aria-pressed={view === "chart"}
-                  title="Chart view"
-                  onClick={() => setView("chart")}
-                  className={cn(
-                    "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[11px] font-medium cursor-pointer",
-                    view === "chart" ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
-                  )}
-                >
-                  <BarChart3 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
-                  <span className="sr-only sm:not-sr-only">Chart</span>
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={view === "table"}
-                  title="Table view"
-                  onClick={() => setView("table")}
-                  className={cn(
-                    "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[11px] font-medium cursor-pointer",
-                    view === "table" ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
-                  )}
-                >
-                  <Table2 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
-                  <span className="sr-only sm:not-sr-only">Table</span>
-                </button>
-              </div>
-            ) : null}
+            )}
 
             {/* Clean Genie "..." overflow menu holding Why?, Layout, Export, Schedule, Definition, Remove */}
             {!arrange && (data || item.saved || onResize || onRemoveFromCanvas) && (
@@ -1038,23 +962,6 @@ export const InsightTile = memo(function InsightTile({
                         )
                       )}
                     </div>
-
-                    {data && !data.not_measurable && (
-                      <div className="border-t border-border/70 pt-2 px-1">
-                        {data.drawn ? (
-                          <ChartSaves
-                            chart={all ? data.drawn : topOf(data.drawn)}
-                            figure={here}
-                            label="Export"
-                            align="left"
-                            includeEmail
-                            question={item.title}
-                          />
-                        ) : (
-                          <TableExportMenu data={data} />
-                        )}
-                      </div>
-                    )}
 
                     {onResize && (
                       <div className="space-y-2 border-t border-border/70 px-1 pt-2">
@@ -1200,10 +1107,10 @@ export const InsightTile = memo(function InsightTile({
           {data.not_measurable ? null : isPureKpiCard && kpi ? (
             <KpiCardBody kpi={kpi} title={item.title} />
           ) : data.drawn && view === "chart" ? (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {showCompactKpiStrip && kpi && <KpiCardBody kpi={kpi} title={item.title} compact />}
               <div
-                className={cn(all ? "max-h-[28rem] overflow-y-auto" : chartBoxClass)}
+                className={cn("pt-1 pb-0.5", all ? "max-h-[28rem] overflow-y-auto" : chartBoxClass)}
                 data-testid={`chart-body-${item.id}`}
               >
                 <AnswerCharts charts={[all ? data.drawn : topOf(data.drawn)]} caption={false} hideFooter />
@@ -1239,9 +1146,9 @@ export const InsightTile = memo(function InsightTile({
             </div>
           )}
 
-          {/* Quiet Databricks Genie-style Footer Bar */}
+          {/* Quiet 1-Line Studio Footer: Show SQL | Table | Export | Metadata | Details | Refresh */}
           <footer className="mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2.5">
-            <div className="flex flex-wrap items-center gap-2 text-[12px] text-faint tabular-nums">
+            <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-faint tabular-nums">
               {data.sql && (
                 <button
                   type="button"
@@ -1258,10 +1165,57 @@ export const InsightTile = memo(function InsightTile({
                   Show SQL
                 </button>
               )}
+              {data.drawn && !data.not_measurable && data.drawn.kind !== "table" && (
+                <div
+                  role="group"
+                  aria-label={`View mode for ${item.title}`}
+                  data-testid={`tile-view-toggle-${item.id}`}
+                  className="inline-flex h-6 items-center rounded-md border border-border bg-bg p-0.5"
+                >
+                  <button
+                    type="button"
+                    aria-pressed={view === "chart"}
+                    onClick={() => setView("chart")}
+                    className={cn(
+                      "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[11.5px] font-medium transition-colors cursor-pointer",
+                      view === "chart" ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
+                    )}
+                    title="Chart view"
+                  >
+                    <BarChart3 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                    <span>Chart</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={view === "table"}
+                    onClick={() => setView("table")}
+                    className={cn(
+                      "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[11.5px] font-medium transition-colors cursor-pointer",
+                      view === "table" ? "bg-surface-2 text-fg" : "text-muted hover:text-fg",
+                    )}
+                    title="Table view"
+                  >
+                    <Table2 className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+                    <span>Table</span>
+                  </button>
+                </div>
+              )}
+              {data.drawn && !data.not_measurable && (
+                <span className="inline-flex items-center">
+                  <ChartSaves
+                    chart={all ? data.drawn : topOf(data.drawn)}
+                    figure={here}
+                    label="Export"
+                    align="left"
+                    includeEmail
+                    question={item.title}
+                  />
+                </span>
+              )}
               {footerMeta.length > 0 && (
-                <span className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                <span className="ml-1 inline-flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   {footerMeta.map((meta, idx) => (
-                    <span key={idx} className="inline-flex items-center gap-2.5">
+                    <span key={idx} className="inline-flex items-center gap-2">
                       {idx > 0 && <span className="h-3 w-px bg-border" aria-hidden />}
                       <span>{meta}</span>
                     </span>
@@ -1634,6 +1588,8 @@ export function InsightsDashboard({
 
   const [activeTab, setActiveTab] = useState<InsightsTab>("dashboard");
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [createInsightOpen, setCreateInsightOpen] = useState(false);
+  const [createTriggerOpen, setCreateTriggerOpen] = useState(false);
   const [bento, setBento] = useState<BentoState>(() => loadBentoState());
   const updateBento = useCallback((updater: (prev: BentoState) => BentoState) => {
     setBento((prev) => {
@@ -2029,6 +1985,9 @@ export function InsightsDashboard({
     const distinctGroups = new Set(visibleItems.map((it) => groupKey(it)));
     return distinctGroups.size > 1 ? "Canvas" : "All";
   });
+  const ALL_VIEWS_PAGE_SIZE = 16;
+  const [allViewsLimit, setAllViewsLimit] = useState(ALL_VIEWS_PAGE_SIZE);
+  const [allViewsQuery, setAllViewsQuery] = useState("");
   const [measuresOpen, setMeasuresOpen] = useState(false);
   const [measureQuery, setMeasureQuery] = useState("");
   const measuresRef = useRef<HTMLDivElement>(null);
@@ -2036,6 +1995,9 @@ export function InsightsDashboard({
     () => visibleItems.filter((i) => i.saved && i.schedule).length,
     [visibleItems],
   );
+  useEffect(() => {
+    setAllViewsLimit(ALL_VIEWS_PAGE_SIZE);
+  }, [activeCategory, allViewsQuery]);
   useEffect(() => {
     if (!measuresOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -2054,9 +2016,50 @@ export function InsightsDashboard({
     };
   }, [measuresOpen]);
   const effectiveCategory = activeCategory;
-  const visibleGroups = effectiveCategory === "All" || effectiveCategory === "Canvas"
-    ? orderedGroups
-    : orderedGroups.filter(([g]) => categoryOf(g) === effectiveCategory);
+  const allViewsNeedle = allViewsQuery.trim().toLowerCase();
+  const visibleGroups = useMemo(() => {
+    const byCategory =
+      effectiveCategory === "All" || effectiveCategory === "Canvas"
+        ? orderedGroups
+        : orderedGroups.filter(([g]) => categoryOf(g) === effectiveCategory);
+    if (!allViewsNeedle || effectiveCategory === "Canvas") return byCategory;
+    return byCategory
+      .map(([g, items]) => [
+        g,
+        items.filter((it) => `${it.title} ${g} ${it.about ?? ""}`.toLowerCase().includes(allViewsNeedle)),
+      ] as [string, InsightInfo[]])
+      .filter(([, items]) => items.length > 0);
+  }, [orderedGroups, effectiveCategory, allViewsNeedle]);
+  const filteredAllItems = useMemo(() => {
+    const base =
+      effectiveCategory === "All" || effectiveCategory === "Canvas"
+        ? visibleItems
+        : visibleGroups.flatMap(([, items]) => items);
+    if (!allViewsNeedle || effectiveCategory === "Canvas") return base;
+    return base.filter((it) => `${it.title} ${groupKey(it)} ${it.about ?? ""}`.toLowerCase().includes(allViewsNeedle));
+  }, [effectiveCategory, visibleItems, visibleGroups, allViewsNeedle]);
+  const paginateAllViews = supportsCuratedCanvas && effectiveCategory !== "Canvas";
+  const displayedAllItems = useMemo(
+    () => (paginateAllViews ? filteredAllItems.slice(0, allViewsLimit) : filteredAllItems),
+    [paginateAllViews, filteredAllItems, allViewsLimit],
+  );
+  const displayedGroups = useMemo(() => {
+    if (!paginateAllViews) return visibleGroups;
+    let remaining = allViewsLimit;
+    const out: [string, InsightInfo[]][] = [];
+    for (const [group, items] of visibleGroups) {
+      if (remaining <= 0) break;
+      if (items.length <= remaining) {
+        out.push([group, items]);
+        remaining -= items.length;
+      } else {
+        out.push([group, items.slice(0, remaining)]);
+        remaining = 0;
+      }
+    }
+    return out;
+  }, [paginateAllViews, visibleGroups, allViewsLimit]);
+  const remainingAllViews = paginateAllViews ? Math.max(0, filteredAllItems.length - displayedAllItems.length) : 0;
   const filteredMeasureGroups = useMemo(() => {
     const q = measureQuery.trim().toLowerCase();
     if (!q) return measureGroups;
@@ -2085,14 +2088,14 @@ export function InsightsDashboard({
 
   return (
     <div ref={gridContainerRef} className="mx-auto w-full max-w-[1680px] space-y-4 text-[14px] leading-6">
-      {/* Clean Apple Liquid Glass 4-Tab Bar: My canvas | All views | Ontology | Monitors + Actions */}
+      {/* Single Unified h-12 Studio Header: Liquid Glass 4-Mode Switcher + Effortless Actions */}
       <div
-        className="flex flex-wrap items-center justify-between gap-3"
+        className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b border-border/80 pb-2"
         data-testid="insights-view-tabs"
       >
         <div
           role="tablist"
-          aria-label="Dashboard sections"
+          aria-label="Analytics studio views"
           className="liquid-glass-pill inline-flex items-center gap-0.5 overflow-x-auto rounded-lg p-0.5"
         >
           <button
@@ -2105,14 +2108,14 @@ export function InsightsDashboard({
             }}
             data-testid="tab-dashboard"
             className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium cursor-pointer",
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium transition-colors cursor-pointer",
               activeTab === "dashboard" && effectiveCategory === "Canvas"
                 ? "liquid-glass-active"
                 : "text-muted hover:text-fg",
             )}
           >
             <LayoutGrid className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
-            My canvas
+            Canvas
             <span className="num text-[11px] opacity-75">
               {canvasItems.length}
             </span>
@@ -2127,14 +2130,14 @@ export function InsightsDashboard({
             }}
             data-testid="tab-all-views"
             className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium cursor-pointer",
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium transition-colors cursor-pointer",
               activeTab === "dashboard" && effectiveCategory !== "Canvas"
                 ? "liquid-glass-active"
                 : "text-muted hover:text-fg",
             )}
           >
             <Layers className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
-            All views
+            Explore
             <span className="num text-[11px] opacity-75">{visibleItems.length}</span>
           </button>
           <button
@@ -2144,12 +2147,12 @@ export function InsightsDashboard({
             onClick={() => setActiveTab("ontology")}
             data-testid="tab-ontology"
             className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium cursor-pointer",
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium transition-colors cursor-pointer",
               activeTab === "ontology" ? "liquid-glass-active" : "text-muted hover:text-fg",
             )}
           >
             <Network className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
-            Ontology
+            Measures &amp; Lineage
             <span className="num text-[11px] opacity-75">{catalogMeasuresCount}</span>
           </button>
           <button
@@ -2159,12 +2162,12 @@ export function InsightsDashboard({
             onClick={() => setActiveTab("monitors")}
             data-testid="tab-monitors"
             className={cn(
-              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium cursor-pointer",
+              "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium transition-colors cursor-pointer",
               activeTab === "monitors" ? "liquid-glass-active" : "text-muted hover:text-fg",
             )}
           >
             <Bell className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
-            Monitors
+            Triggers
             {activeMonitorsCount > 0 && (
               <span className="num text-[11px] opacity-75">{activeMonitorsCount}</span>
             )}
@@ -2175,7 +2178,7 @@ export function InsightsDashboard({
           {activeTab === "dashboard" && list.scope === "self" && (
             <p className="text-[12px] text-muted">The team views show your own row only.</p>
           )}
-          {activeTab === "dashboard" && visibleItems.length > 0 && (
+          {visibleItems.length > 0 && (
             <button
               type="button"
               onClick={() => setLibraryOpen(true)}
@@ -2186,17 +2189,24 @@ export function InsightsDashboard({
               Add widget
             </button>
           )}
-          {activeTab === "dashboard" && (
-            <Link
-              prefetch={false}
-              href="/ask"
-              data-testid="new-chart-link"
-              className="inline-flex h-7 items-center gap-1.5 rounded-md bg-fg px-2.5 text-[12px] font-medium text-bg transition-opacity hover:opacity-90"
-            >
-              <Sparkles className="size-3 shrink-0" strokeWidth={2} aria-hidden />
-              New chart
-            </Link>
-          )}
+          <button
+            type="button"
+            onClick={() => setCreateTriggerOpen(true)}
+            data-testid="new-trigger-btn"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover cursor-pointer"
+          >
+            <Bell className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
+            Set trigger
+          </button>
+          <button
+            type="button"
+            onClick={() => setCreateInsightOpen(true)}
+            data-testid="new-chart-link"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-fg px-3 text-[12px] font-medium text-bg transition-opacity hover:opacity-90 cursor-pointer"
+          >
+            <Sparkles className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+            New insight
+          </button>
         </div>
       </div>
 
@@ -2233,44 +2243,27 @@ export function InsightsDashboard({
 
           {list.saving && effectiveCategory !== "Canvas" && <Monitors items={visibleItems} />}
 
-          {/* Domain Filter Strip + My Canvas Switcher */}
-          {(allGroups.length > 2 || supportsCuratedCanvas) && (
+          {/* Domain Filter Strip (shown only in All views, never duplicating My canvas) */}
+          {effectiveCategory !== "Canvas" && (allGroups.length > 2 || supportsCuratedCanvas) && (
             <nav
               aria-label="Groups"
               className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-2 border-b border-border bg-canvas/95 py-2"
               data-testid="insight-groups"
             >
               <div role="tablist" aria-label="Categories" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto pb-0.5">
-                {supportsCuratedCanvas ? (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={effectiveCategory === "Canvas"}
-                    onClick={() => setActiveCategory("Canvas")}
-                    data-testid="category-canvas"
-                    className={cn(
-                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-colors cursor-pointer",
-                      effectiveCategory === "Canvas" ? "bg-surface-2 text-fg" : "text-muted hover:bg-hover hover:text-fg",
-                    )}
-                  >
-                    My canvas
-                    <span className="num text-[11px] text-faint">{canvasItems.length}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={effectiveCategory === "All"}
-                    onClick={() => setActiveCategory("All")}
-                    className={cn(
-                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-colors cursor-pointer",
-                      effectiveCategory === "All" ? "bg-surface-2 text-fg" : "text-muted hover:bg-hover hover:text-fg",
-                    )}
-                  >
-                    All
-                    <span className="num text-[11px] text-faint">{visibleItems.length}</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={effectiveCategory === "All"}
+                  onClick={() => setActiveCategory("All")}
+                  className={cn(
+                    "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-colors cursor-pointer",
+                    effectiveCategory === "All" ? "bg-surface-2 text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                  )}
+                >
+                  All
+                  <span className="num text-[11px] text-faint">{visibleItems.length}</span>
+                </button>
                 {categories.map(({ cat, charts, measures, total }) => (
                   <button
                     key={cat}
@@ -2280,7 +2273,7 @@ export function InsightsDashboard({
                     title={charts > 0 && measures > 0 ? `${cat}: ${charts} ${charts === 1 ? "chart" : "charts"}, ${measures} ${measures === 1 ? "measure" : "measures"}` : undefined}
                     onClick={() => setActiveCategory(cat)}
                     className={cn(
-                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-[background-color,color,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)] active:scale-[0.98] cursor-pointer",
+                      "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-[13px] font-medium whitespace-nowrap transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)] cursor-pointer",
                       effectiveCategory === cat ? "bg-surface-2 text-fg" : "text-muted hover:bg-hover hover:text-fg",
                     )}
                   >
@@ -2289,15 +2282,30 @@ export function InsightsDashboard({
                   </button>
                 ))}
               </div>
-              {totalMeasures > 0 && (
-                <div ref={measuresRef} className="relative shrink-0">
+              <div className="flex shrink-0 items-center gap-2">
+                {supportsCuratedCanvas && (
+                  <label className="relative flex h-7 items-center rounded-md border border-border bg-bg px-2 text-[12px] focus-within:border-border-strong">
+                    <Search className="size-3.5 shrink-0 text-faint" strokeWidth={2} aria-hidden />
+                    <input
+                      type="search"
+                      value={allViewsQuery}
+                      onChange={(e) => setAllViewsQuery(e.target.value)}
+                      placeholder="Filter views"
+                      aria-label="Filter views"
+                      data-testid="all-views-search"
+                      className="ml-1.5 w-32 bg-transparent text-fg outline-none focus-visible:outline-none placeholder:text-faint sm:w-40"
+                    />
+                  </label>
+                )}
+                {totalMeasures > 0 && (
+                  <div ref={measuresRef} className="relative shrink-0">
                   <button
                     type="button"
                     aria-expanded={measuresOpen}
                     onClick={() => setMeasuresOpen((v) => !v)}
                     data-testid="browse-measures"
                     className={cn(
-                      "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover active:scale-[0.98] cursor-pointer",
+                      "inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover cursor-pointer",
                       measuresOpen && "border-accent bg-accent-soft",
                     )}
                   >
@@ -2361,6 +2369,7 @@ export function InsightsDashboard({
                   )}
                 </div>
               )}
+              </div>
             </nav>
           )}
 
@@ -2389,7 +2398,7 @@ export function InsightsDashboard({
 
           {/* Unified Curated Executive Canvas OR 12-Column Responsive Bento Grid per Domain */}
           {effectiveCategory === "Canvas" ? (
-            <section className="space-y-3" aria-label="My canvas" data-testid="curated-canvas">
+            <section className="space-y-3" aria-label="Canvas" data-testid="curated-canvas">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-muted">
                 <span className="inline-flex flex-wrap items-center gap-2.5">
                   <span className="tabular-nums">Showing {canvasItems.length} of {visibleItems.length} widgets</span>
@@ -2409,7 +2418,7 @@ export function InsightsDashboard({
                     onClick={() => setActiveTab("ontology")}
                     className="text-muted hover:text-fg hover:underline cursor-pointer"
                   >
-                    Ontology map
+                    Measures &amp; lineage
                   </button>
                 </div>
               </div>
@@ -2451,11 +2460,22 @@ export function InsightsDashboard({
                 </div>
               )}
             </section>
-          ) : effectiveCategory === "All" && visibleGroups.length >= 2 && visibleGroups.some(([, items]) => items.length === 1) ? (
+          ) : filteredAllItems.length === 0 ? (
+            <div className="border-y border-border py-8 text-center text-[13px] text-muted" data-testid="all-views-empty">
+              <p>No views match &ldquo;{allViewsQuery.trim()}&rdquo;.</p>
+              <button
+                type="button"
+                onClick={() => setAllViewsQuery("")}
+                className="mt-2 font-medium text-accent hover:underline cursor-pointer"
+              >
+                Clear filter
+              </button>
+            </div>
+          ) : effectiveCategory === "All" && displayedGroups.length >= 2 && displayedGroups.some(([, items]) => items.length === 1) ? (
             <section className="space-y-3" aria-label="All dashboard widgets" data-testid="unified-bento-canvas">
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:grid-flow-dense" data-testid="bento-grid">
-                {visibleItems.map((it) => {
-                  const pool = visibleItems.map((x) => x.id);
+                {displayedAllItems.map((it) => {
+                  const pool = displayedAllItems.map((x) => x.id);
                   return (
                     <InsightTile
                       key={it.id}
@@ -2469,58 +2489,84 @@ export function InsightsDashboard({
                       heightOverride={bento.heights?.[it.id]}
                       onResize={(sz) => handleResize(it.id, sz)}
                       onHeightResize={(h) => handleHeightResize(it.id, h)}
-                      fillSolo={visibleItems.length === 1}
+                      fillSolo={displayedAllItems.length === 1}
                     />
                   );
                 })}
               </div>
+              {remainingAllViews > 0 && (
+                <div className="flex items-center justify-center pt-2">
+                  <button
+                    type="button"
+                    data-testid="all-views-show-more"
+                    onClick={() => setAllViewsLimit((n) => n + ALL_VIEWS_PAGE_SIZE)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-surface px-3.5 text-[12.5px] font-medium text-fg transition-colors hover:bg-surface-2 cursor-pointer"
+                  >
+                    Show more views ({remainingAllViews} remaining)
+                  </button>
+                </div>
+              )}
             </section>
           ) : (
-            visibleGroups.map(([group, items]) => {
-              const isMeasureGroup = /^Measures:\s*/i.test(group);
-              const cat = categoryOf(group);
-              const catMeta = categories.find((c) => c.cat === cat);
-              const hasBoth = Boolean(catMeta && catMeta.charts > 0 && catMeta.measures > 0);
-              const unitLabel = isMeasureGroup ? (items.length === 1 ? "measure" : "measures") : (items.length === 1 ? "chart" : "charts");
-              const groupPool = items.map((x) => x.id);
-              return (
-                <section
-                  key={group}
-                  id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
-                  className="scroll-mt-16 space-y-3"
-                  aria-label={group}
-                >
-                  <h2 className="flex items-baseline gap-2 border-b border-border/80 pb-2 text-[14.5px] font-semibold tracking-[-0.02em] text-fg">
-                    <span>{group}</span>
-                    <span className="num text-[12px] font-normal text-muted">
-                      {hasBoth ? `${items.length} ${unitLabel}` : items.length}
-                    </span>
-                  </h2>
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:grid-flow-dense" data-testid="bento-grid">
-                    {items.map((it) => (
-                      <InsightTile
-                        key={it.id}
-                        item={it}
-                        onRemoved={onChanged}
-                        entry={feed?.[it.id]}
-                        streaming={feed ? !!streaming : undefined}
-                        arrange={arrangeOf(it, groupPool)}
-                        quickDrag={quickDragOf(it, groupPool)}
-                        sizeOverride={bento.sizes[it.id]}
-                        heightOverride={bento.heights?.[it.id]}
-                        onResize={(sz) => handleResize(it.id, sz)}
-                        onHeightResize={(h) => handleHeightResize(it.id, h)}
-                        fillSolo={items.length === 1}
-                      />
-                    ))}
-                  </div>
-                </section>
-              );
-            })
+            <>
+              {displayedGroups.map(([group, items]) => {
+                const isMeasureGroup = /^Measures:\s*/i.test(group);
+                const cat = categoryOf(group);
+                const catMeta = categories.find((c) => c.cat === cat);
+                const hasBoth = Boolean(catMeta && catMeta.charts > 0 && catMeta.measures > 0);
+                const unitLabel = isMeasureGroup ? (items.length === 1 ? "measure" : "measures") : (items.length === 1 ? "chart" : "charts");
+                const groupPool = items.map((x) => x.id);
+                return (
+                  <section
+                    key={group}
+                    id={`insight-group-${group.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+                    className="scroll-mt-16 space-y-3"
+                    aria-label={group}
+                  >
+                    <h2 className="flex items-baseline gap-2 border-b border-border/80 pb-2 text-[14.5px] font-semibold tracking-[-0.02em] text-fg">
+                      <span>{group}</span>
+                      <span className="num text-[12px] font-normal text-muted">
+                        {hasBoth ? `${items.length} ${unitLabel}` : items.length}
+                      </span>
+                    </h2>
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:grid-flow-dense" data-testid="bento-grid">
+                      {items.map((it) => (
+                        <InsightTile
+                          key={it.id}
+                          item={it}
+                          onRemoved={onChanged}
+                          entry={feed?.[it.id]}
+                          streaming={feed ? !!streaming : undefined}
+                          arrange={arrangeOf(it, groupPool)}
+                          quickDrag={quickDragOf(it, groupPool)}
+                          sizeOverride={bento.sizes[it.id]}
+                          heightOverride={bento.heights?.[it.id]}
+                          onResize={(sz) => handleResize(it.id, sz)}
+                          onHeightResize={(h) => handleHeightResize(it.id, h)}
+                          fillSolo={items.length === 1}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
+              {remainingAllViews > 0 && (
+                <div className="flex items-center justify-center pt-2">
+                  <button
+                    type="button"
+                    data-testid="all-views-show-more"
+                    onClick={() => setAllViewsLimit((n) => n + ALL_VIEWS_PAGE_SIZE)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-surface px-3.5 text-[12.5px] font-medium text-fg transition-colors hover:bg-surface-2 cursor-pointer"
+                  >
+                    Show more views ({remainingAllViews} remaining)
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {list.saving && !visibleItems.some((i) => i.saved) && (
-            <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live. Set it to check by itself and it is listed under Monitors.</p>
+            <p className="text-[13px] text-muted">Ask for a chart and pin it from the answer: it shows here and stays live. Set it to check by itself and it is listed under Triggers.</p>
           )}
         </>
       )}
@@ -2544,6 +2590,44 @@ export function InsightsDashboard({
         canvasIdSet={canvasIdSet}
         onToggleCanvas={handleToggleCanvasItem}
         onResetCurated={handleResetCurated}
+      />
+
+      <CreateInsightModal
+        open={createInsightOpen}
+        onClose={() => setCreateInsightOpen(false)}
+        items={visibleItems}
+        measures={list.measures}
+        canvasIdSet={canvasIdSet}
+        onAddTile={(tileId: string, layout?: CreateInsightLayout) => {
+          const matched = visibleItems.find((it) => it.id === tileId);
+          if (matched && !canvasIdSet.has(tileId)) {
+            handleToggleCanvasItem(matched);
+          }
+          if (layout?.size) {
+            handleResize(tileId, layout.size);
+          }
+          setActiveTab("dashboard");
+          if (supportsCuratedCanvas) setActiveCategory("Canvas");
+        }}
+        onCreated={(created, layout) => {
+          if (!canvasIdSet.has(created.id)) {
+            handleToggleCanvasItem(created);
+          }
+          if (layout?.size) {
+            handleResize(created.id, layout.size);
+          }
+          setActiveTab("dashboard");
+          if (supportsCuratedCanvas) setActiveCategory("Canvas");
+        }}
+      />
+
+      <CreateTriggerModal
+        open={createTriggerOpen}
+        onClose={() => setCreateTriggerOpen(false)}
+        measures={list.measures}
+        onCreated={() => {
+          setActiveTab("monitors");
+        }}
       />
     </div>
   );

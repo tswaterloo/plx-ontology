@@ -40,6 +40,7 @@ import os
 import re
 from pathlib import Path
 import threading
+import time
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from operating.file_modes import keep_shared
@@ -60,6 +61,76 @@ NOTE = "Mail, Teams, meetings and the systems that record who did what. Floor, l
 
 _CACHE: dict[str, tuple[float, Any]] = {}
 _LOCK = threading.Lock()
+TEAM_CACHE_TTL_SECONDS = 60.0
+TEAM_CACHE_STALE_SECONDS = 300.0
+_INBOX_COUNTS_CACHE: dict[tuple[Any, ...], tuple[float, dict[str, Counter]]] = {}
+_PG_DOMAINS_CACHE: dict[tuple[Any, ...], tuple[float, tuple[str, ...]]] = {}
+_PARTS_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_PARTS_INFLIGHT: dict[tuple[Any, ...], threading.Event] = {}
+_PARTS_REFRESHING: set[tuple[Any, ...]] = set()
+_PARTS_LOCK = threading.Lock()
+
+_NON_HUMAN_LOCAL_RE = re.compile(
+    r"^(?:printer|noreply|no-reply|donotreply|do-not-reply|mailer-daemon|"
+    r"postmaster|bounces?|scanner|copier|fax|notifications?|automated|"
+    r"quarantine|calendar-notification)(?:[._+-].*)?$",
+    re.IGNORECASE,
+)
+_EXTERNAL_PERSONAL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "ymail.com",
+    "hotmail.com", "outlook.com", "live.com", "msn.com",
+    "icloud.com", "me.com", "aol.com", "protonmail.com", "proton.me",
+})
+
+
+def clear_cache() -> None:
+    """Clear in-memory Team aggregation caches (intended for tests)."""
+    with _PARTS_LOCK:
+        _INBOX_COUNTS_CACHE.clear()
+        _PG_DOMAINS_CACHE.clear()
+        _PARTS_CACHE.clear()
+        _PARTS_INFLIGHT.clear()
+        _PARTS_REFRESHING.clear()
+
+
+def _path_mtime(path: Optional[Path]) -> Optional[float]:
+    if path is None:
+        return None
+    try:
+        return Path(path).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _is_non_human_or_external_account(
+    row: Mapping[str, Any],
+    domains: Iterable[str] = (),
+) -> bool:
+    """True for obvious automated/device accounts (printer@, noreply@, mailer-daemon@) or
+    external personal-mail non-staff accounts (@gmail.com, @yahoo.com, etc.) with no
+    internal company address."""
+    own = {str(d).strip().lower() for d in domains if str(d or "").strip()}
+    name = str(row.get("name") or "").strip().lower()
+    if "@" in name:
+        nlocal, _, ndom = name.partition("@")
+        if _NON_HUMAN_LOCAL_RE.match(nlocal):
+            return True
+        if ndom in _EXTERNAL_PERSONAL_DOMAINS and not row.get("addresses"):
+            return True
+    elif _NON_HUMAN_LOCAL_RE.match(name) and not row.get("addresses"):
+        return True
+
+    raw_addrs = [str(a).strip().lower() for a in (row.get("addresses") or ()) if str(a or "").strip()]
+    addrs = [a for a in raw_addrs if "@" in a]
+    if not addrs:
+        return False
+    parsed = [(a.partition("@")[0], a.partition("@")[2]) for a in addrs]
+    if all(_NON_HUMAN_LOCAL_RE.match(local) for local, _dom in parsed):
+        return True
+    has_internal = bool(own and any(dom in own and not _NON_HUMAN_LOCAL_RE.match(local) for local, dom in parsed))
+    if not has_internal and all(dom in _EXTERNAL_PERSONAL_DOMAINS for _local, dom in parsed):
+        return True
+    return False
 
 
 def key_of(oid: str) -> str:
@@ -647,29 +718,75 @@ class TeamViewMixin:
             return oid in hidden or excluded(oid)
         return everyone, me, gone, bool(hidden)
 
-    def _team_parts(self, reader: Reader):
+    def _cached_inbox_counts(self, inbox: Optional[Path]) -> dict[str, Counter]:
         from operating import inbox_triage as it
-        from operating import proactive_engine as pe
         from operating.proactive_commitments import OWNER_KINDS
-        everyone, me, gone, known = self._team_scope(reader)
+        if inbox is None:
+            return {}
+        mtime = _path_mtime(inbox)
+        if mtime is None:
+            return {}
+        key = (str(inbox), mtime)
+        now = time.monotonic()
+        with _PARTS_LOCK:
+            hit = _INBOX_COUNTS_CACHE.get(key)
+            if hit is not None and now - hit[0] < TEAM_CACHE_TTL_SECONDS:
+                return {k: Counter(v) for k, v in hit[1].items()}
+        since = ""   # every resolved alert, not the last 28 days (owner no-limits rule 11-23)
+        counts = open_counts(it.open_rows(inbox), it.closed_rows(inbox, since), OWNER_KINDS)
+        with _PARTS_LOCK:
+            _INBOX_COUNTS_CACHE[key] = (time.monotonic(), {k: Counter(v) for k, v in counts.items()})
+            if len(_INBOX_COUNTS_CACHE) > 8:
+                oldest = min(_INBOX_COUNTS_CACHE, key=lambda k: _INBOX_COUNTS_CACHE[k][0])
+                _INBOX_COUNTS_CACHE.pop(oldest, None)
+        return counts
+
+    def _cached_pg_domains(self, pg_provider: Any, domains: tuple[str, ...]) -> tuple[str, ...]:
+        if pg_provider is None or not domains:
+            return domains
+        pg_dsn = getattr(self, "pg_dsn", None)
+        key = (str(pg_dsn or ""), domains)
+        now = time.monotonic()
+        with _PARTS_LOCK:
+            hit = _PG_DOMAINS_CACHE.get(key)
+            if hit is not None and now - hit[0] < TEAM_CACHE_TTL_SECONDS:
+                return hit[1]
+        try:
+            with pg_provider().connection() as conn:
+                merged = _pg_alias_domains(conn, domains)
+        except Exception:  # noqa: BLE001
+            return domains
+        with _PARTS_LOCK:
+            _PG_DOMAINS_CACHE[key] = (time.monotonic(), merged)
+            if len(_PG_DOMAINS_CACHE) > 8:
+                oldest = min(_PG_DOMAINS_CACHE, key=lambda k: _PG_DOMAINS_CACHE[k][0])
+                _PG_DOMAINS_CACHE.pop(oldest, None)
+        return merged
+
+    def _build_team_parts(
+        self,
+        everyone: bool,
+        me: frozenset[str],
+        gone: Callable[[str], bool],
+        known: bool,
+    ):
+        from operating import proactive_engine as pe
         snap = snapshot(self._team_file())
         store = getattr(self, "store_path", None)
         inbox = pe.inbox_path(store) if store else None
-        since = ""   # every resolved alert, not the last 28 days (owner no-limits rule 11-23)
-        counts = open_counts(it.open_rows(inbox) if inbox else (),
-                             it.closed_rows(inbox, since) if inbox else (), OWNER_KINDS)
+        counts = self._cached_inbox_counts(inbox)
         grants = self._workload_grants()   # type: ignore[attr-defined]
         teams = (grants.load() if grants else {}).get("teams") or {}
         people = (snap or {}).get("people") or {}
-        shown = {oid for oid in people if not gone(oid) and (everyone or oid in me)}
         domains = tuple((snap or {}).get("domains") or ())
         pg_provider = self.pg if getattr(self, "pg_dsn", None) and callable(getattr(self, "pg", None)) else None
-        if pg_provider is not None and domains:
-            try:
-                with pg_provider().connection() as conn:
-                    domains = _pg_alias_domains(conn, domains)
-            except Exception:  # noqa: BLE001
-                pass
+        domains = self._cached_pg_domains(pg_provider, domains)
+        shown = {
+            oid for oid in people
+            if not gone(oid)
+            and (everyone or oid in me)
+            and (oid in me or not _is_non_human_or_external_account(people[oid], domains))
+        }
         people, counts, members = merge_identities(people, shown, counts, domains)
         shown = {oid for oid in shown if oid in people}
         me = frozenset(me | {rep for rep, ms in members.items() if ms & me})
@@ -685,6 +802,76 @@ class TeamViewMixin:
             except Exception:  # noqa: BLE001 - fall back to snapshot only if PG unavailable
                 pass
         return everyone, me, gone, snap, counts, teams, people, shown, known, members
+
+    def _team_parts(self, reader: Reader):
+        from operating import proactive_engine as pe
+        everyone, me, gone, known = self._team_scope(reader)
+        team_file = self._team_file()
+        store = getattr(self, "store_path", None)
+        inbox = pe.inbox_path(store) if store else None
+        grants = self._workload_grants()   # type: ignore[attr-defined]
+        grants_path = getattr(grants, "path", None) if grants else None
+        cache_key = (
+            id(self),
+            str(team_file or ""),
+            _path_mtime(team_file),
+            str(inbox or ""),
+            _path_mtime(inbox),
+            _path_mtime(grants_path),
+            str(getattr(self, "pg_dsn", None) or ""),
+            everyone,
+            me,
+            known,
+            os.environ.get(HIDDEN_ENV, ""),
+            os.environ.get(READERS_ENV, ""),
+        )
+        now = time.monotonic()
+        with _PARTS_LOCK:
+            hit = _PARTS_CACHE.get(cache_key)
+            if hit is not None:
+                age = now - hit[0]
+                if age < TEAM_CACHE_TTL_SECONDS:
+                    return hit[1]
+                if age < TEAM_CACHE_STALE_SECONDS:
+                    if cache_key not in _PARTS_REFRESHING:
+                        _PARTS_REFRESHING.add(cache_key)
+
+                        def _refresh() -> None:
+                            try:
+                                fresh = self._build_team_parts(everyone, me, gone, known)
+                                with _PARTS_LOCK:
+                                    _PARTS_CACHE[cache_key] = (time.monotonic(), fresh)
+                            except Exception:  # noqa: BLE001
+                                pass
+                            finally:
+                                with _PARTS_LOCK:
+                                    _PARTS_REFRESHING.discard(cache_key)
+
+                        threading.Thread(target=_refresh, name="team-view-refresh", daemon=True).start()
+                    return hit[1]
+            inflight = _PARTS_INFLIGHT.get(cache_key)
+            owner_flight = inflight is None
+            if owner_flight:
+                inflight = _PARTS_INFLIGHT[cache_key] = threading.Event()
+        if not owner_flight:
+            inflight.wait(timeout=30.0)
+            with _PARTS_LOCK:
+                hit = _PARTS_CACHE.get(cache_key)
+            if hit is not None:
+                return hit[1]
+            return self._build_team_parts(everyone, me, gone, known)
+        try:
+            built = self._build_team_parts(everyone, me, gone, known)
+            with _PARTS_LOCK:
+                _PARTS_CACHE[cache_key] = (time.monotonic(), built)
+                if len(_PARTS_CACHE) > 32:
+                    oldest = min(_PARTS_CACHE, key=lambda k: _PARTS_CACHE[k][0])
+                    _PARTS_CACHE.pop(oldest, None)
+            return built
+        finally:
+            with _PARTS_LOCK:
+                _PARTS_INFLIGHT.pop(cache_key, None)
+            inflight.set()
 
     def team_view(self, reader: Reader) -> m.TeamView:
         everyone, me, _gone, snap, counts, teams, people, shown, _known, _members = self._team_parts(reader)

@@ -332,5 +332,120 @@ class UpcomingMeetingsPgTests(unittest.TestCase):
         self.assertEqual([a["address"] for a in got[0]["attendees"]], ["me@synth.example"])
 
 
+class UpcomingFastPathAndCacheTests(unittest.TestCase):
+    """Fast PG path bypasses self._brief_run, maintains 60s fresh / 30m stale fallback
+    cache, and READ_WORKERS is raised to 6."""
+
+    def test_read_workers_is_six(self):
+        from operator_api import serving
+        self.assertEqual(serving.READ_WORKERS, 6)
+
+    def test_fast_pg_path_bypasses_brief_run_and_caches_with_stale_fallback(self):
+        from datetime import datetime, timezone
+        from operator_api import models as m
+        from operating.pg.access_classes import FULL_KEY
+
+        class FakeReader:
+            key = "alex-oid"
+            email = "alex@synth.example"
+            mode = "default"
+            session = None
+
+        class FakeGrant:
+            keys = (FULL_KEY,)
+            held = frozenset({"ops"})
+
+        class FakeDoors:
+            def get(self, _r):
+                return (type("D", (), {"grant": FakeGrant()})(), "dsn", {})
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def transaction(self):
+                return self
+            def execute(self, sql, params=None):
+                return self
+
+        class FakePool:
+            def connection(self):
+                return FakeConn()
+
+        calls = {"pg": 0, "brief_run": 0}
+
+        def fake_pg_meetings(*a, **kw):
+            calls["pg"] += 1
+            return [{
+                "object_id": "CalendarEvent:pg:1",
+                "label": "Weekly ops",
+                "start": "2026-11-26T15:00:00Z",
+                "end": "2026-11-26T15:30:00Z",
+                "all_day": False,
+                "location": None,
+                "online": True,
+                "join_url": None,
+                "agenda": None,
+                "organizer": None,
+                "attendees": [],
+                "is_organizer": True,
+                "private": False,
+                "people_withheld": False,
+                "parties": [],
+                "open_items": [],
+                "sources": [],
+            }]
+
+        class Host(ob.BriefsMixin):
+            pg_dsn = "postgresql:///synth"
+            state_dir = None
+            doors = FakeDoors()
+            def pg(self):
+                return FakePool()
+            def _brief_run(self, *a, **kw):
+                calls["brief_run"] += 1
+                raise br.CalendarNotRead("busy")
+            def prepare_day_ahead(self, *a, **kw):
+                pass
+
+        host = Host()
+        who = FakeReader()
+        with mock.patch.object(br, "upcoming_meetings_pg", side_effect=fake_pg_meetings), \
+                mock.patch.object(ob, "_people", return_value=None):
+            first = host.upcoming_meetings(who)
+            second = host.upcoming_meetings(who)
+        self.assertEqual(len(first.meetings), 1)
+        self.assertEqual(first.meetings[0].object.label, "Weekly ops")
+        self.assertEqual(second.meetings[0].object.label, "Weekly ops")
+        # Direct PG called once, second hit served from 60s cache, _brief_run never touched
+        self.assertEqual(calls["pg"], 1)
+        self.assertEqual(calls["brief_run"], 0)
+
+        # Age cache past 60s fresh window (<30m stale window): transient PG + brief_run failure
+        # serves stale cached meetings instead of 503
+        lock, cache = host._upcoming_cache_store()
+        with lock:
+            for k, (ts, st, mdl) in list(cache.items()):
+                cache[k] = (ts - 120.0, st, mdl)
+        with mock.patch.object(br, "upcoming_meetings_pg", side_effect=RuntimeError("pg blip")), \
+                mock.patch.object(ob, "_people", return_value=None):
+            stale_ok = host.upcoming_meetings(who)
+        self.assertEqual(len(stale_ok.meetings), 1)
+        self.assertEqual(stale_ok.meetings[0].object.label, "Weekly ops")
+
+    def test_calendar_auto_responses_and_cos_relay_filtered_from_replies(self):
+        for subj in (
+            "Accepted: Weekly sync",
+            "Declined: Planning review",
+            "Tentative: Supplier call",
+            "Canceled: Standup",
+            "Invitation: Q4 budget",
+        ):
+            self.assertTrue(ob._is_reply_noise(subject=subj), subj)
+        self.assertTrue(ob._is_reply_noise(sender="cos@petrasoap.com", subject="Staging alert"))
+        self.assertFalse(ob._is_reply_noise(sender="alex@supplier.example", subject="Need ETA for PO 500"))
+
+
 if __name__ == "__main__":
     unittest.main()

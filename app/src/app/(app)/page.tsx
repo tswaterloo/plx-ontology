@@ -1,54 +1,68 @@
 "use client";
 
 import {
+  ArrowRight,
+  ArrowUpRight,
   Check,
   ChevronDown,
   ChevronRight,
-  ClipboardList,
   Clock3,
   DollarSign,
-  Mail,
+  Lock,
+  MessageCircle,
   RefreshCw,
   RotateCcw,
+  Search,
   Server,
   ShieldAlert,
   X,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useAuth } from "@/components/auth";
+import { noteParts } from "@/components/autopilot/lines";
+import { PreparedCard } from "@/components/autopilot/prepared";
 import {
+  cleanNeedCopy,
   dedupeNeedItems,
   DUE_ORDER,
   DUE_WORDS,
   dueValue,
   financialsSummaryLabel,
+  isCommitmentItem,
   isDecisionOrHoldItem,
   isFinancialsItem,
   isHoldItem,
   isLateSupplyItem,
   isOpsSystemNotice,
+  itemBadgeOf,
+  KIND_WORDS,
+  ONLY_YOU_RE,
   sectionOf,
   SOURCE_ORDER,
   SOURCE_WORDS,
+  sourceLabelOf,
+  timingMeta,
   TZ,
   type HomeSectionId,
 } from "@/components/home/home-copy";
 import { HomeCustomizePopover } from "@/components/home/home-customize";
-import { SECTION_DESCRIPTIONS, SECTION_LABELS, SECTION_ORDER, useHomePrefs } from "@/components/home/home-prefs";
-import { HomeSectionCard, NeedRow } from "@/components/home/home-row";
+import { SECTION_ORDER, useHomePrefs, type HomeDensity } from "@/components/home/home-prefs";
+import { KindIcon, resolveNeedHref } from "@/components/home/home-row";
 import { TodayScheduleCard, type ScheduleSummary } from "@/components/home/today-schedule-card";
+import { CloseControl } from "@/components/late/close-control";
 import { MobileAccount, MobileSearch, publishNeedsCount } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { StyledSelect } from "@/components/ui/controls";
 import { LoadProblem, StaleNote } from "@/components/ui/notice";
 import { PageIntro } from "@/components/ui/page-intro";
 import { Pending } from "@/components/ui/skeleton";
-import { getHomeNeeds, setHomeItemState } from "@/lib/api";
+import { getHomeNeeds, setHomeItemState, type PreparedItem } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { noticeKind, plainError } from "@/lib/errors";
-import { eastern } from "@/lib/format";
+import { eastern, formatMoney, readable } from "@/lib/format";
 import { keyOwner } from "@/lib/home";
 import { useStaleRefreshOnReturn } from "@/lib/stale-refresh";
 import type { HomeNeedItem, HomeNeeds } from "@/lib/types";
@@ -72,17 +86,53 @@ function usePreloadHomeParts() {
   }, []);
 }
 
-const PAGE_ROWS = 100;
+const INITIAL_STREAM_ROWS = 7;
+const EXPAND_STEP_ROWS = 15;
+const PAGE_ROWS = 50;
+const SPOTLIGHT_MAX = 2;
 
-// guard-ok: display labels for the four unified Home section filter pills; decides nothing.
+// guard-ok: display labels for the four unified Home section filter controls; decides nothing.
 const SECTION_CHIP_LABELS: Record<HomeSectionId, string> = {
   replies: "Replies",
   tasks: "Tasks",
-  holds_alerts: "Alerts & Supply",
+  holds_alerts: "Alerts",
   waiting: "Waiting",
 };
 
 const SWITCHER_ORDER: HomeSectionId[] = ["replies", "tasks", "holds_alerts", "waiting"];
+
+// guard-ok: display capitalization overrides for source system labels (never lowercase "bc").
+const SOURCE_DISPLAY_OVERRIDES: Record<string, string> = {
+  bc: "BC",
+  mc: "Mission Control",
+  mail: "Mail",
+  teams: "Teams",
+  pos: "POs",
+  alerts: "Alerts",
+  planner: "Planner",
+  portal: "Portal",
+  sage: "Sage",
+  file: "Files",
+  files: "Files",
+  gaps: "Gaps",
+  feedback: "Feedback",
+  system: "System",
+};
+
+const QUICK_ASK_PROMPTS = [
+  { label: "Open orders at risk", query: "Which open customer orders are currently at risk or on hold?" },
+  { label: "Late supplier POs", query: "Which supplier purchase orders are overdue right now?" },
+  { label: "Drafts awaiting approval", query: "Summarize my drafts and replies waiting for approval." },
+];
+
+// Calibrated muted non-purple avatar tones for Spotlight counterparty badges.
+const SPOTLIGHT_AVATAR_TONES = [
+  "bg-sky-500/15 text-sky-800 border-sky-500/25 dark:bg-sky-400/15 dark:text-sky-300 dark:border-sky-400/25",
+  "bg-teal-500/15 text-teal-800 border-teal-500/25 dark:bg-teal-400/15 dark:text-teal-300 dark:border-teal-400/25",
+  "bg-amber-500/15 text-amber-800 border-amber-500/25 dark:bg-amber-400/15 dark:text-amber-300 dark:border-amber-400/25",
+  "bg-emerald-500/15 text-emerald-800 border-emerald-500/25 dark:bg-emerald-400/15 dark:text-emerald-300 dark:border-emerald-400/25",
+  "bg-stone-500/15 text-stone-700 border-stone-500/25 dark:bg-stone-400/15 dark:text-stone-300 dark:border-stone-400/25",
+];
 
 type HomeToast = {
   note: string;
@@ -98,6 +148,79 @@ type HomeItemSnapshot = {
 
 type PulseFocus = "decisions" | "late" | null;
 type FilterState = { section: HomeSectionId | null; focus: PulseFocus; source: string; due: string };
+
+function formatSourceLabel(item: Pick<HomeNeedItem, "source" | "source_label">): string {
+  const raw = sourceLabelOf(item).trim();
+  const lowerRaw = raw.toLowerCase();
+  const lowerSrc = (item.source ?? "").trim().toLowerCase();
+  if (SOURCE_DISPLAY_OVERRIDES[lowerRaw]) return SOURCE_DISPLAY_OVERRIDES[lowerRaw];
+  if (SOURCE_DISPLAY_OVERRIDES[lowerSrc]) return SOURCE_DISPLAY_OVERRIDES[lowerSrc];
+  if (!raw) return "";
+  return raw[0].toUpperCase() + raw.slice(1);
+}
+
+function formatSourceChoiceLabel(src: string): string {
+  const lower = src.trim().toLowerCase();
+  if (SOURCE_DISPLAY_OVERRIDES[lower]) return SOURCE_DISPLAY_OVERRIDES[lower];
+  const mapped = SOURCE_WORDS[src] ?? src;
+  return mapped ? mapped[0].toUpperCase() + mapped.slice(1) : src;
+}
+
+function initialsFor(label: string): string {
+  const words = label
+    .trim()
+    .split(/\s+/)
+    .filter((w) => /[A-Za-z0-9]/.test(w));
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+function avatarToneFor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  return SPOTLIGHT_AVATAR_TONES[Math.abs(hash) % SPOTLIGHT_AVATAR_TONES.length];
+}
+
+function askHrefOf(item: HomeNeedItem, titleText: string): string {
+  return item.object_id
+    ? `/ask?q=${encodeURIComponent(`What is the latest on ${titleText}?`)}&object=${encodeURIComponent(item.object_id)}`
+    : `/ask?q=${encodeURIComponent(`What is the latest on ${titleText}?`)}`;
+}
+
+function detailLinkLabel(item: HomeNeedItem, resolvedHref: string | null): string {
+  if (item.kind === "gap") return "Open in Data health";
+  if (item.kind === "feedback") return "Open in Feedback";
+  if (resolvedHref?.startsWith("/assist")) return "Open in Assist";
+  if (item.object_id || resolvedHref?.startsWith("/object/") || resolvedHref?.startsWith("/po/") || resolvedHref?.startsWith("/order/")) {
+    return "Open the full record";
+  }
+  return "Open in Assist";
+}
+
+function preparedOf(item: HomeNeedItem): PreparedItem | null {
+  if (!item.matter_id || (!item.body && !item.ask)) return null;
+  return {
+    item_id: item.matter_id,
+    sender: item.person ?? "",
+    channel: item.source === "teams" ? "teams" : item.source === "mail" ? "mail" : "system",
+    subject: item.title,
+    message: item.quote ?? "",
+    kind: item.body ? "reply" : "your_call",
+    to: item.to ?? [],
+    cc: [],
+    body: item.body ?? "",
+    edited: false,
+    state: item.state === "unverified" ? "unverified" : "open",
+    verified_at: item.verified_at,
+    plan_status: item.plan_status,
+    ask: item.ask ?? "",
+    facts: [],
+    created_at: item.basis_at ?? "",
+  };
+}
 
 function greetingFor(now: Date, displayName?: string | null): string {
   const hourParts = new Intl.DateTimeFormat("en-US", {
@@ -168,6 +291,625 @@ function initialFilters(params: ReturnType<typeof useSearchParams>): FilterState
   };
 }
 
+/** Elevated Spotlight card for the top 1-2 highest-priority items with visible 1-click actions. */
+function PrioritySpotlightCard({
+  item,
+  mergedCount,
+  selected,
+  onPick,
+  onClose,
+  onQuickState,
+}: {
+  item: HomeNeedItem;
+  mergedCount: number;
+  selected: boolean;
+  onPick: () => void;
+  onClose: () => void;
+  onQuickState: (item: HomeNeedItem, nextState: "closed" | "snoozed", title: string) => void;
+}) {
+  const resolvedHref = resolveNeedHref(item);
+  const href = resolvedHref ?? "/";
+  const srcLabel = formatSourceLabel(item);
+  const copy = cleanNeedCopy(item);
+  const timing = timingMeta(item, copy.extractedDue);
+  const badge = itemBadgeOf(item);
+  const hold = isHoldItem(item);
+  const commitment = isCommitmentItem(item);
+  const waiting = item.kind === "waiting" || !!copy.waitingLabel;
+  const askHref = askHrefOf(item, copy.title);
+
+  const leadLabel = hold
+    ? [copy.holdImpact, copy.person].filter(Boolean).join(", ") || null
+    : waiting
+      ? copy.waitingLabel || copy.person || null
+      : commitment
+        ? copy.person || "Commitment"
+        : copy.person || null;
+  const secondaryDue =
+    (hold || commitment || timing.overdue) && timing.dueShort ? `Due ${timing.dueShort}` : null;
+  const summaryText = copy.subtitle || (!leadLabel && copy.actionLabel ? copy.actionLabel : "");
+  const avatarSeed = copy.person || srcLabel || copy.title;
+
+  return (
+    <article
+      data-testid="spotlight-card"
+      className={cn(
+        "group flex flex-col gap-3 rounded-xl border bg-bg p-4 transition-colors duration-150 dark:bg-[#14161b] sm:flex-row sm:items-center sm:justify-between sm:gap-4",
+        selected ? "border-accent bg-row-on" : "border-border/75 hover:border-border-strong",
+      )}
+    >
+      <a
+        href={href}
+        data-row-link=""
+        data-testid="need-row"
+        aria-current={selected ? "true" : undefined}
+        aria-expanded={selected}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+          e.preventDefault();
+          if (selected) onClose();
+          else onPick();
+        }}
+        className="flex min-w-0 flex-1 items-start gap-3.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+      >
+        {copy.person ? (
+          <span
+            aria-hidden
+            className={cn(
+              "mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-full border text-[12px] font-semibold leading-none",
+              avatarToneFor(avatarSeed),
+            )}
+          >
+            {initialsFor(copy.person)}
+          </span>
+        ) : (
+          <span
+            aria-hidden
+            className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/80 bg-surface text-muted"
+          >
+            <KindIcon item={item} className="size-4 text-fg/80" />
+          </span>
+        )}
+
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
+            <span
+              className="text-[14.5px] font-semibold leading-5 tracking-[-0.015em] text-fg group-hover:text-accent transition-colors duration-150"
+              title={copy.title}
+              data-testid="need-title"
+            >
+              {copy.title}
+              {mergedCount > 0 && (
+                <span
+                  data-testid="need-merged-count"
+                  className="num ml-1.5 text-[12px] font-normal text-faint"
+                  title={`${mergedCount} duplicate ${mergedCount === 1 ? "update" : "updates"} collapsed`}
+                >
+                  (+{mergedCount} {mergedCount === 1 ? "update" : "updates"})
+                </span>
+              )}
+            </span>
+            {badge && (
+              <span
+                data-testid="need-badge"
+                className={cn(
+                  "text-[12px] font-medium",
+                  badge === "Verify unit cost" ? "text-risk" : "text-muted",
+                )}
+              >
+                {badge}
+              </span>
+            )}
+            {item.draft_ready && (
+              <span className="text-[12px] font-medium text-ok">Draft ready</span>
+            )}
+          </span>
+
+          {(leadLabel || summaryText) && (
+            <span className="mt-1 flex min-w-0 items-baseline gap-x-2 text-[13px] leading-5 text-muted">
+              {leadLabel && (
+                <span className="shrink-0 font-medium text-fg/85">{leadLabel}</span>
+              )}
+              {summaryText && (
+                <span className="min-w-0 flex-1 truncate text-muted" title={summaryText}>
+                  {summaryText}
+                </span>
+              )}
+            </span>
+          )}
+
+          <span className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[12px] text-faint">
+            {srcLabel && (
+              <span data-testid="need-source" className="font-medium text-muted">
+                {srcLabel}
+              </span>
+            )}
+            {secondaryDue && <span className="num text-muted">{secondaryDue}</span>}
+            {timing.badge && (
+              <span className={cn("num", timing.overdue ? "font-medium text-late" : "text-faint")}>
+                {timing.badge}
+              </span>
+            )}
+            {copy.isPrivate && (
+              <span
+                className="inline-flex items-center gap-1 text-faint"
+                title="Only you can see this"
+                aria-label="Only you can see this"
+                data-testid="need-private"
+              >
+                <Lock className="size-3" strokeWidth={2} aria-hidden />
+              </span>
+            )}
+          </span>
+        </span>
+      </a>
+
+      <div className="flex shrink-0 items-center gap-1.5 sm:pl-2" data-testid="row-quick-actions">
+        <button
+          type="button"
+          onClick={() => onQuickState(item, "closed", copy.title)}
+          aria-label="Close item"
+          title="Done"
+          data-testid="row-quick-dismiss"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/80 bg-surface/70 px-2.5 text-[12.5px] font-medium text-fg transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-ok focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+        >
+          <Check className="size-3.5" strokeWidth={2.2} aria-hidden />
+          Done
+        </button>
+        <button
+          type="button"
+          onClick={() => onQuickState(item, "snoozed", copy.title)}
+          aria-label="Snooze 1 day"
+          title="Snooze 1 day"
+          data-testid="row-quick-snooze"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/80 bg-transparent px-2.5 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+        >
+          <Clock3 className="size-3.5" strokeWidth={1.9} aria-hidden />
+          Snooze
+        </button>
+        {resolvedHref && resolvedHref !== "/" && (
+          <Link
+            href={resolvedHref}
+            aria-label={`Open ${copy.title}`}
+            title="Open"
+            data-testid="row-quick-open"
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border/80 bg-transparent px-2.5 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            Open
+            <ArrowUpRight className="size-3.5" strokeWidth={2} aria-hidden />
+          </Link>
+        )}
+        <Link
+          href={askHref}
+          aria-label={`Ask about ${copy.title}`}
+          title="Ask"
+          data-testid="row-quick-ask"
+          className="inline-flex size-8 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <MessageCircle className="size-3.5" strokeWidth={1.9} aria-hidden />
+        </Link>
+      </div>
+    </article>
+  );
+}
+
+/** Dense Linear-style action stream row separated by crisp 1px hairlines. */
+function ActionStreamRow({
+  item,
+  mergedCount,
+  density,
+  selected,
+  onPick,
+  onClose,
+  onQuickState,
+}: {
+  item: HomeNeedItem;
+  mergedCount: number;
+  density: HomeDensity;
+  selected: boolean;
+  onPick: () => void;
+  onClose: () => void;
+  onQuickState: (item: HomeNeedItem, nextState: "closed" | "snoozed", title: string) => void;
+}) {
+  const resolvedHref = resolveNeedHref(item);
+  const href = resolvedHref ?? "/";
+  const srcLabel = formatSourceLabel(item);
+  const copy = cleanNeedCopy(item);
+  const timing = timingMeta(item, copy.extractedDue);
+  const badge = itemBadgeOf(item);
+  const hold = isHoldItem(item);
+  const commitment = isCommitmentItem(item);
+  const waiting = item.kind === "waiting" || !!copy.waitingLabel;
+  const askHref = askHrefOf(item, copy.title);
+
+  const leadLabel = hold
+    ? [copy.holdImpact, copy.person].filter(Boolean).join(", ") || null
+    : waiting
+      ? copy.waitingLabel || copy.person || null
+      : commitment
+        ? copy.person || "Commitment"
+        : copy.person || null;
+  const secondaryDue =
+    (hold || commitment || timing.overdue) && timing.dueShort ? `Due ${timing.dueShort}` : null;
+  const summaryText = copy.subtitle || (!leadLabel && copy.actionLabel ? copy.actionLabel : "");
+  const showRightTiming =
+    !!timing.badge &&
+    !(commitment && !timing.overdue && timing.dueShort) &&
+    !(waiting && !timing.overdue && timing.ageShort);
+
+  const compact = density === "compact";
+
+  return (
+    <li className="cv-auto">
+      <div
+        className={cn(
+          "group relative flex items-center gap-3 px-3 transition-colors duration-150",
+          compact ? "py-2" : "py-3",
+          selected ? "bg-row-on" : "hover:bg-hover",
+        )}
+      >
+        <a
+          href={href}
+          data-row-link=""
+          data-testid="need-row"
+          aria-current={selected ? "true" : undefined}
+          aria-expanded={selected}
+          onClick={(e) => {
+            if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+            e.preventDefault();
+            if (selected) onClose();
+            else onPick();
+          }}
+          className="flex min-w-0 flex-1 items-start gap-2.5 rounded-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+        >
+          <span className="pt-0.5">
+            <KindIcon item={item} className={selected ? "text-fg" : "text-faint group-hover:text-muted"} />
+          </span>
+
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 items-baseline justify-between gap-x-4">
+              <span
+                className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 tracking-[-0.01em] text-fg"
+                title={copy.title}
+                data-testid="need-title"
+              >
+                {copy.title}
+                {mergedCount > 0 && (
+                  <span
+                    data-testid="need-merged-count"
+                    className="num ml-1.5 text-[12px] font-normal text-faint"
+                    title={`${mergedCount} duplicate ${mergedCount === 1 ? "update" : "updates"} collapsed`}
+                  >
+                    (+{mergedCount} {mergedCount === 1 ? "update" : "updates"})
+                  </span>
+                )}
+              </span>
+
+              <span className="inline-flex shrink-0 items-baseline gap-2.5 text-[12px] leading-5 whitespace-nowrap">
+                {badge && (
+                  <span
+                    data-testid="need-badge"
+                    className={cn(
+                      "font-medium",
+                      badge === "Verify unit cost" ? "text-risk" : "text-muted",
+                    )}
+                  >
+                    {badge}
+                  </span>
+                )}
+                {item.draft_ready && (
+                  <span className="font-medium text-ok">Draft ready</span>
+                )}
+                {leadLabel && (
+                  <span className="hidden max-w-[160px] truncate text-fg/80 md:inline" title={leadLabel}>
+                    {leadLabel}
+                  </span>
+                )}
+                {srcLabel && (
+                  <span data-testid="need-source" className="text-muted">
+                    {srcLabel}
+                  </span>
+                )}
+                {showRightTiming && (
+                  <span className={cn("num", timing.overdue ? "font-medium text-late" : "text-faint")}>
+                    {timing.badge}
+                  </span>
+                )}
+              </span>
+            </span>
+
+            {(leadLabel || secondaryDue || summaryText) && (
+              <span className="mt-0.5 flex min-w-0 items-baseline gap-x-2 text-[12.5px] leading-[18px] text-muted">
+                {leadLabel && (
+                  <span className="max-w-[180px] shrink-0 truncate font-medium text-fg/80 md:hidden" title={leadLabel}>
+                    {leadLabel}
+                  </span>
+                )}
+                {secondaryDue && (
+                  <span className="num shrink-0 text-[12px] text-faint">{secondaryDue}</span>
+                )}
+                {summaryText && (
+                  <span className="min-w-0 flex-1 truncate text-muted" title={summaryText}>
+                    {summaryText}
+                  </span>
+                )}
+              </span>
+            )}
+          </span>
+        </a>
+
+        <div className="flex shrink-0 items-center gap-0.5" data-testid="row-quick-actions">
+          {copy.isPrivate && (
+            <span
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100"
+              title="Only you can see this"
+              aria-label="Only you can see this"
+              data-testid="need-private"
+            >
+              <Lock className="size-3" strokeWidth={2} aria-hidden />
+            </span>
+          )}
+          <div className="flex items-center gap-0.5 opacity-100 transition-opacity duration-150 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 [@media(hover:none)]:opacity-100">
+            <button
+              type="button"
+              onClick={() => onQuickState(item, "closed", copy.title)}
+              aria-label="Close item"
+              title="Done"
+              data-testid="row-quick-dismiss"
+              className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-ok focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+            >
+              <Check className="size-3.5" strokeWidth={2.2} aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={() => onQuickState(item, "snoozed", copy.title)}
+              aria-label="Snooze 1 day"
+              title="Snooze 1 day"
+              data-testid="row-quick-snooze"
+              className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+            >
+              <Clock3 className="size-3.5" strokeWidth={2} aria-hidden />
+            </button>
+            {resolvedHref && resolvedHref !== "/" && (
+              <Link
+                href={resolvedHref}
+                aria-label={`Open ${copy.title}`}
+                title="Open"
+                data-testid="row-quick-open"
+                className="hidden size-7 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:inline-flex"
+              >
+                <ArrowUpRight className="size-3.5" strokeWidth={2} aria-hidden />
+              </Link>
+            )}
+            <Link
+              href={askHref}
+              aria-label={`Ask about ${copy.title}`}
+              title="Ask"
+              data-testid="row-quick-ask"
+              className="hidden size-7 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 sm:inline-flex"
+            >
+              <MessageCircle className="size-3.5" strokeWidth={2} aria-hidden />
+            </Link>
+          </div>
+          <span className="inline-flex size-5 items-center justify-center text-faint transition-colors duration-150 group-hover:text-muted" aria-hidden>
+            <ChevronRight className="size-3.5" />
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/** Right-docked slide-over detail drawer for inspecting and acting on any Home item. */
+function NeedDetailDrawer({
+  item,
+  onClose,
+  onGone,
+  onQuickState,
+}: {
+  item: HomeNeedItem;
+  onClose: () => void;
+  onGone: (id: string, note?: string) => void;
+  onQuickState: (item: HomeNeedItem, nextState: "closed" | "snoozed", title: string) => void;
+}) {
+  const resolvedHref = resolveNeedHref(item);
+  const srcLabel = formatSourceLabel(item);
+  const copy = cleanNeedCopy(item);
+  const parts = noteParts(item.line ?? "");
+  const timing = timingMeta(item, copy.extractedDue);
+  const badge = itemBadgeOf(item);
+  const nextStep = !item.matter_id && item.ask ? readable(item.ask, { shortDates: true }).trim() : "";
+  const askHref = askHrefOf(item, copy.title);
+  const prepared = preparedOf(item);
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" data-testid="need-detail-backdrop">
+      <button
+        type="button"
+        aria-label="Close detail panel"
+        onClick={onClose}
+        className="fixed inset-0 bg-black/45 backdrop-blur-[2px] cursor-default"
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={copy.title}
+        data-testid="need-detail"
+        className="plx-drawer-animate relative z-10 flex h-full w-full max-w-[480px] flex-col border-l border-border-strong bg-raised shadow-pop"
+      >
+        <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[12.5px] text-muted">
+            <span className="font-semibold text-fg">{KIND_WORDS[item.kind] ?? item.kind}</span>
+            {srcLabel && <span>{srcLabel}</span>}
+            {badge && (
+              <span
+                data-testid="need-detail-badge"
+                className={cn(
+                  "font-medium",
+                  badge === "Verify unit cost" ? "text-risk" : "text-fg/85",
+                )}
+              >
+                {badge}
+              </span>
+            )}
+            {timing.badge && (
+              <span className={cn("num font-medium", timing.overdue ? "text-late" : "text-muted")}>
+                {timing.badge}
+                {timing.overdue && timing.dueShort ? ` (Due ${timing.dueShort})` : ""}
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close details"
+            title="Close (Esc)"
+            data-testid="close-detail"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
+          <div>
+            <h2 className="font-display text-[17px] font-semibold leading-6 tracking-[-0.015em] text-fg">
+              {copy.title}
+            </h2>
+            {(copy.person || item.amount || copy.waitingLabel || copy.actionLabel) && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted">
+                {copy.person && <span className="font-medium text-fg/85">{copy.person}</span>}
+                {item.amount && (
+                  <span className="num font-semibold text-fg">
+                    {formatMoney(item.amount.amount, item.amount.currency)}
+                  </span>
+                )}
+                {copy.waitingLabel ? (
+                  <span>{copy.waitingLabel}</span>
+                ) : copy.actionLabel ? (
+                  <span>{copy.actionLabel}</span>
+                ) : null}
+              </div>
+            )}
+          </div>
+
+          {copy.subtitle && (
+            <p className="text-[14px] leading-6 text-fg/90">{copy.subtitle}</p>
+          )}
+
+          {(item.facts ?? []).length > 0 && (
+            <ul className="space-y-1.5 text-[13px] leading-5 text-muted" data-testid="need-facts">
+              {(item.facts ?? []).map((fact, idx) => (
+                <li key={idx} className="flex items-start gap-2">
+                  <span className="mt-2 size-1 shrink-0 rounded-full bg-border-strong" aria-hidden />
+                  <span className="min-w-0">{readable(fact, { shortDates: true })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {nextStep && nextStep !== copy.subtitle && (
+            <div className="rounded-lg border border-border/80 bg-surface/70 px-3.5 py-2.5" data-testid="need-next-step">
+              <p className="text-[12px] font-medium text-muted">Suggested action</p>
+              <p className="mt-0.5 text-[13.5px] leading-5 text-fg">{nextStep}</p>
+            </div>
+          )}
+
+          {item.quote && (
+            <blockquote className="rounded-lg border border-border/70 bg-bg-subtle px-3.5 py-2.5 text-[13px] leading-5 text-muted whitespace-pre-wrap">
+              {item.quote}
+            </blockquote>
+          )}
+
+          {parts.labels.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3" data-testid="need-detail-scope">
+              {parts.labels.map((label) => (
+                <span key={label} className="inline-flex items-center gap-1 text-[12px] leading-4 text-faint">
+                  {ONLY_YOU_RE.test(label.trim()) && <Lock className="size-3 text-faint" aria-hidden />}
+                  {label.replace(/\.$/, "")}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {item.rank_reasons && item.rank_reasons.length > 0 && (
+            <p className="text-[12px] text-faint">Here because it is {item.rank_reasons.join(", ")}.</p>
+          )}
+
+          {item.state !== "open" && (
+            <p className="rounded-lg border border-risk-line bg-risk-soft px-3 py-2 text-[12.5px] text-fg/85">
+              {item.state === "unverified"
+                ? "Its source could not be checked again; it stays listed until checked."
+                : "It may already be closed or missing in the data; check it before acting."}
+            </p>
+          )}
+
+          {item.kind === "late_po" && item.object_id && (
+            <div className="border-t border-border pt-3">
+              <CloseControl order={{ object_id: item.object_id }} onChanged={() => onGone(item.id, `Closed ${copy.title}`)} />
+            </div>
+          )}
+
+          {prepared && (
+            <ul className="border-t border-border pt-3" data-testid="need-draft">
+              <PreparedCard
+                item={prepared}
+                onGone={() => onGone(item.id, `Updated ${readable(item.title, { shortDates: true })}`)}
+                onChanged={() => undefined}
+              />
+            </ul>
+          )}
+        </div>
+
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {resolvedHref && resolvedHref !== "/" && (
+              <Link
+                href={resolvedHref}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-surface px-3 text-[12.5px] font-medium text-fg transition-colors duration-150 hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                {detailLinkLabel(item, resolvedHref)}
+                <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
+              </Link>
+            )}
+            <Link
+              href={askHref}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-transparent px-3 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <MessageCircle className="size-3.5" aria-hidden />
+              Ask about this
+            </Link>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              onClick={() => onQuickState(item, "snoozed", copy.title)}
+              aria-label="Snooze 1 day"
+              data-testid="need-snooze"
+            >
+              <Clock3 className="size-3.5" aria-hidden />
+              Snooze
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="xs"
+              onClick={() => onQuickState(item, "closed", copy.title)}
+              aria-label="Close item"
+              data-testid="need-dismiss"
+            >
+              <Check className="size-3.5" strokeWidth={2.2} aria-hidden />
+              Done
+            </Button>
+          </div>
+        </footer>
+      </aside>
+    </div>
+  );
+}
+
 function Today() {
   const router = useRouter();
   const params = useSearchParams();
@@ -187,21 +929,20 @@ function Today() {
     isCustomized,
     setDensity,
     toggleSectionVisible,
-    toggleSectionCollapsed,
     resetPrefs,
   } = useHomePrefs();
 
   const [now] = useState(() => new Date());
+  const [commandQuery, setCommandQuery] = useState("");
   const [gone, setGone] = useState<Set<string>>(() => new Set());
   const [restoredItems, setRestoredItems] = useState<Map<string, HomeItemSnapshot>>(() => new Map());
   const undoSnapshots = useRef<Map<string, HomeItemSnapshot>>(new Map());
   const itemMutationGen = useRef<Map<string, number>>(new Map());
   const refreshStartedPayload = useRef<HomeNeeds | null>(null);
-  const [shownTasks, setShownTasks] = useState(PAGE_ROWS);
-  const [shownAlerts, setShownAlerts] = useState(PAGE_ROWS);
+  const [shownStream, setShownStream] = useState(INITIAL_STREAM_ROWS);
   const [holdsOpen, setHoldsOpen] = useState(true);
   const [financialsOpen, setFinancialsOpen] = useState(false);
-  const [financialsShown, setFinancialsShown] = useState(PAGE_ROWS);
+  const [financialsShown, setFinancialsShown] = useState(INITIAL_STREAM_ROWS);
   const [olderOpen, setOlderOpen] = useState(false);
   const [opsOpen, setOpsOpen] = useState(false);
   const [filters, setFilters] = useState<FilterState>(() => initialFilters(params));
@@ -211,7 +952,7 @@ function Today() {
   });
   const [toast, setToast] = useState<HomeToast | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [scheduleSummary, setScheduleSummary] = useState<ScheduleSummary>({
+  const [, setScheduleSummary] = useState<ScheduleSummary>({
     todayCount: 0,
     nextTime: null,
     loading: true,
@@ -223,7 +964,6 @@ function Today() {
         : next,
     );
   }, []);
-  const [scheduleHighlighted, setScheduleHighlighted] = useState(false);
 
   const supplier = params?.get("supplier") ?? null;
   const listRef = useRef<HTMLDivElement>(null);
@@ -250,12 +990,6 @@ function Today() {
   }, [toast]);
 
   useEffect(() => {
-    if (!scheduleHighlighted) return;
-    const t = window.setTimeout(() => setScheduleHighlighted(false), 1800);
-    return () => window.clearTimeout(t);
-  }, [scheduleHighlighted]);
-
-  useEffect(() => {
     if (!refreshing) return;
     if (readError || (payload && payload !== refreshStartedPayload.current)) {
       setRefreshing(false);
@@ -270,7 +1004,6 @@ function Today() {
   const refresh = needsRead.retry;
   useStaleRefreshOnReturn(payload?.stale_since, refresh);
 
-  // Clean up any restored overlay once the server payload natively includes the item again.
   useEffect(() => {
     if (!payload || restoredItems.size === 0) return;
     const present = new Set<string>([
@@ -294,7 +1027,6 @@ function Today() {
     });
   }, [payload, restoredItems]);
 
-  // Defensive frontend deduplication guarantees users never see stacked duplicate notifications.
   const dedupedCurrent = useMemo(() => {
     const base = [...(payload?.items ?? [])];
     const baseIds = new Set(base.map((row) => row.id));
@@ -344,7 +1076,7 @@ function Today() {
     return unfoldedCurrent.filter((row) => !opsIds.has(row.id));
   }, [unfoldedCurrent]);
 
-  // Sidebar badge, page header count, and "All" filter pill always agree on mainCurrent.length.
+  // Sidebar badge, masthead count, and "All" filter tab always agree on mainCurrent.length.
   useEffect(() => {
     if (!supplier) {
       if (payload) {
@@ -359,7 +1091,6 @@ function Today() {
     }
   }, [payload, readError, supplier, mainCurrent.length]);
 
-  // Exact partition counts using sectionOf(), matching the rendered sections 1:1.
   const sectionTotals: Record<HomeSectionId, number> = useMemo(() => {
     const counts: Record<HomeSectionId, number> = {
       replies: 0,
@@ -373,10 +1104,6 @@ function Today() {
     return counts;
   }, [mainCurrent]);
 
-  const decisionHoldCount = useMemo(
-    () => mainCurrent.filter(isDecisionOrHoldItem).length,
-    [mainCurrent],
-  );
   const lateSupplyCount = useMemo(
     () => mainCurrent.filter(isLateSupplyItem).length,
     [mainCurrent],
@@ -412,7 +1139,6 @@ function Today() {
   const items = useMemo(() => activeCurrent.filter(matches), [activeCurrent, matches]);
   const olderItems = useMemo(() => activeOlder.filter(matches), [activeOlder, matches]);
 
-  // Partition matched items into the four sections plus collapsible financials/ops groups.
   const {
     replyItems,
     waitingItems,
@@ -469,54 +1195,48 @@ function Today() {
     replyItems.length + waitingItems.length + taskItems.length + alertAndLateItems.length + holdItems.length;
 
   useEffect(() => {
-    setShownTasks(PAGE_ROWS);
-    setShownAlerts(PAGE_ROWS);
-    setFinancialsShown(PAGE_ROWS);
+    setShownStream(INITIAL_STREAM_ROWS);
+    setFinancialsShown(INITIAL_STREAM_ROWS);
   }, [filters, supplier]);
 
   const hasFilters = !!filters.section || !!filters.focus || !!filters.source || !!filters.due;
+  const isSectionVisible = useCallback(
+    (id: HomeSectionId) => hasFilters || prefs.visibleSections[id],
+    [hasFilters, prefs.visibleSections],
+  );
 
-  // When a user actively clicks a filter, always show matching sections even if hidden/collapsed.
-  const isSectionVisible = (id: HomeSectionId) => hasFilters || prefs.visibleSections[id];
-  const isSectionOpen = (id: HomeSectionId) => hasFilters || !prefs.collapsedSections[id];
+  // Unified priority-ordered briefing stream (Replies -> Alerts & late supply -> Tasks -> Waiting).
+  const orderedStreamItems = useMemo(
+    () => [
+      ...(isSectionVisible("replies") ? replyItems : []),
+      ...(isSectionVisible("holds_alerts") ? alertAndLateItems : []),
+      ...(isSectionVisible("tasks") ? taskItems : []),
+      ...(isSectionVisible("waiting") ? waitingItems : []),
+    ],
+    [isSectionVisible, replyItems, alertAndLateItems, taskItems, waitingItems],
+  );
 
-  // guard-ok: exact total, Show more, and Show all controls are rendered beside the list.
-  const visibleTasks = taskItems.slice(0, shownTasks);
-  // guard-ok: exact total, Show more, and Show all controls are rendered beside the list.
-  const visibleAlertsAndLate = alertAndLateItems.slice(0, shownAlerts);
+  // Calm scannable top-7 default with Show N more / Show all expanders so Home is never a scroll wall.
+  // guard-ok: exact total, Show more, and Show all controls are rendered directly beneath the capped stream.
+  const visibleStreamItems = orderedStreamItems.slice(0, shownStream);
+  // Top 1-2 highest-urgency items earn elevated Spotlight cards; remaining items flow in the crisp Linear stream.
+  const spotlightCount = visibleStreamItems.length > 0 ? Math.min(SPOTLIGHT_MAX, visibleStreamItems.length) : 0;
+  const spotlightItems = visibleStreamItems.slice(0, spotlightCount);
+  const actionStreamItems = visibleStreamItems.slice(spotlightCount);
+  const showHoldsGroup = holdItems.length > 0 && isSectionVisible("holds_alerts");
+
   // guard-ok: exact total, Show more, and Show all controls are rendered inside the expanded Financials block.
   const visibleFinancials = financialsItems.slice(0, financialsShown);
 
   const selectable = useMemo(
     () => [
-      ...(isSectionVisible("replies") && isSectionOpen("replies") ? replyItems : []),
-      ...(isSectionVisible("holds_alerts") && isSectionOpen("holds_alerts")
-        ? [...visibleAlertsAndLate, ...(holdsOpen ? holdItems : [])]
-        : []),
-      ...(isSectionVisible("tasks") && isSectionOpen("tasks") ? visibleTasks : []),
-      ...(isSectionVisible("waiting") && isSectionOpen("waiting") ? waitingItems : []),
+      ...visibleStreamItems,
+      ...(showHoldsGroup && holdsOpen ? holdItems : []),
       ...(financialsOpen ? visibleFinancials : []),
       ...(opsOpen ? opsNotices : []),
       ...(olderOpen ? olderItems : []),
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [
-      prefs.visibleSections,
-      prefs.collapsedSections,
-      hasFilters,
-      replyItems,
-      visibleAlertsAndLate,
-      holdsOpen,
-      holdItems,
-      visibleTasks,
-      waitingItems,
-      financialsOpen,
-      visibleFinancials,
-      opsOpen,
-      opsNotices,
-      olderOpen,
-      olderItems,
-    ],
+    [visibleStreamItems, showHoldsGroup, holdsOpen, holdItems, financialsOpen, visibleFinancials, opsOpen, opsNotices, olderOpen, olderItems],
   );
   const allListed = useMemo(() => [...items, ...olderItems], [items, olderItems]);
 
@@ -639,11 +1359,18 @@ function Today() {
     });
   }, [replaceUrl]);
 
-  const focusSchedule = useCallback(() => {
-    setScheduleHighlighted(true);
-    scheduleRef.current?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
-    scheduleRef.current?.focus?.();
-  }, []);
+  const handleCommandSubmit = useCallback(
+    (e: FormEvent) => {
+      e.preventDefault();
+      const trimmed = commandQuery.trim();
+      if (!trimmed) {
+        router.push("/ask");
+        return;
+      }
+      router.push(`/ask?q=${encodeURIComponent(trimmed)}`);
+    },
+    [commandQuery, router],
+  );
 
   const markGone = useCallback(
     (id: string, note?: string) => {
@@ -668,7 +1395,6 @@ function Today() {
     [payload, picked, setPayload, closeDetail],
   );
 
-  // Optimistic universal 1-click Close / Snooze with instant Undo support on every Home row.
   const handleQuickItemState = useCallback(
     (item: HomeNeedItem, nextState: "closed" | "snoozed", title: string) => {
       const id = item.id;
@@ -768,13 +1494,13 @@ function Today() {
     [refresh, setPayload],
   );
 
-  // Escape collapses the expanded row; j/k and arrow keys step through rows.
+  // Escape closes the slide-over detail drawer; j/k and arrow keys step through rows.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       if (e.key === "Escape" && picked) {
         const active = document.activeElement;
-        if (active instanceof Element && active.closest("[role='dialog']")) return;
+        if (active instanceof Element && active.closest("[data-testid='home-customize-popover']")) return;
         e.preventDefault();
         closeDetail();
         return;
@@ -817,271 +1543,105 @@ function Today() {
     !error &&
     (sectionChips.length > 0 || sourceChoices.length > 1 || dueChoices.length > 1 || hasFilters);
 
-  const renderRow = (item: HomeNeedItem) => (
-    <NeedRow
-      key={item.id}
-      item={item}
-      mergedCount={mergedCountById.get(item.id) ?? 0}
-      density={prefs.density}
-      on={selected?.id === item.id}
-      onPick={() => pick(item.id)}
-      onClose={closeDetail}
-      onGone={markGone}
-      onQuickState={handleQuickItemState}
-    />
-  );
-
   const hiddenNonEmptySections = !hasFilters
     ? SECTION_ORDER.filter((id) => !prefs.visibleSections[id] && sectionCounts[id] > 0)
     : [];
 
-  const repliesSection =
-    replyItems.length > 0 && isSectionVisible("replies") ? (
-      <HomeSectionCard
-        title={SECTION_LABELS.replies}
-        description={SECTION_DESCRIPTIONS.replies}
-        count={replyItems.length}
-        icon={<Mail className="size-3.5 shrink-0 text-accent" aria-hidden />}
-        open={isSectionOpen("replies")}
-        onToggle={() => toggleSectionCollapsed("replies")}
-        testId="section-replies"
-        toggleTestId="section-replies-toggle"
-      >
-        <ul className="divide-y divide-border/50" data-testid="section-replies-list">
-          {replyItems.map(renderRow)}
-        </ul>
-      </HomeSectionCard>
-    ) : null;
+  const renderStreamRow = (item: HomeNeedItem) => (
+    <ActionStreamRow
+      key={item.id}
+      item={item}
+      mergedCount={mergedCountById.get(item.id) ?? 0}
+      density={prefs.density}
+      selected={selected?.id === item.id}
+      onPick={() => pick(item.id)}
+      onClose={closeDetail}
+      onQuickState={handleQuickItemState}
+    />
+  );
 
-  const waitingSection =
-    waitingItems.length > 0 && isSectionVisible("waiting") ? (
-      <HomeSectionCard
-        title={SECTION_LABELS.waiting}
-        description={SECTION_DESCRIPTIONS.waiting}
-        count={waitingItems.length}
-        icon={<Clock3 className="size-3.5 shrink-0 text-muted" aria-hidden />}
-        open={isSectionOpen("waiting")}
-        onToggle={() => toggleSectionCollapsed("waiting")}
-        testId="section-waiting"
-        toggleTestId="section-waiting-toggle"
-      >
-        <ul className="divide-y divide-border/50" data-testid="section-waiting-list">
-          {waitingItems.map(renderRow)}
-        </ul>
-      </HomeSectionCard>
-    ) : null;
+  const draftsReadyCount = useMemo(() => mainCurrent.filter((row) => row.draft_ready).length, [mainCurrent]);
+  const overdueCount = useMemo(() => dueCounts.get("overdue") ?? 0, [dueCounts]);
 
-  const tasksSection =
-    taskItems.length > 0 && isSectionVisible("tasks") ? (
-      <HomeSectionCard
-        title={SECTION_LABELS.tasks}
-        description={SECTION_DESCRIPTIONS.tasks}
-        count={taskItems.length}
-        icon={<ClipboardList className="size-3.5 shrink-0 text-muted" aria-hidden />}
-        open={isSectionOpen("tasks")}
-        onToggle={() => toggleSectionCollapsed("tasks")}
-        testId="section-tasks"
-        toggleTestId="section-tasks-toggle"
-      >
-        <ul className="divide-y divide-border/50" data-testid="section-tasks-list">
-          {visibleTasks.map(renderRow)}
-        </ul>
-        {visibleTasks.length < taskItems.length && (
-          <div className="flex items-center gap-2 border-t border-border/50 px-3 py-2 text-[12px] text-muted" data-testid="needs-paging">
-            <span className="num">
-              Showing {visibleTasks.length} of {taskItems.length}
-            </span>
-            <Button size="xs" variant="ghost" onClick={() => setShownTasks((n) => n + PAGE_ROWS)}>
-              Show {Math.min(PAGE_ROWS, taskItems.length - visibleTasks.length)} more
-            </Button>
-            <Button size="xs" variant="ghost" onClick={() => setShownTasks(taskItems.length)}>
-              Show all
-            </Button>
-          </div>
-        )}
-      </HomeSectionCard>
-    ) : null;
-
-  const holdsAlertsSection =
-    (alertAndLateItems.length > 0 || holdItems.length > 0) && isSectionVisible("holds_alerts") ? (
-      alertAndLateItems.length === 0 ? (
-        <section className="min-w-0" data-testid="holds-group">
-          <div className="flex items-center gap-2 border-b border-border/80 px-1 py-2">
-            <button
-              type="button"
-              aria-expanded={holdsOpen}
-              onClick={() => setHoldsOpen((open) => !open)}
-              data-testid="holds-toggle"
-              className="group/hdr flex min-w-0 flex-1 items-center gap-2 text-left transition-colors cursor-pointer"
-            >
-              {holdsOpen ? (
-                <ChevronDown className="size-3.5 shrink-0 text-faint transition-colors group-hover/hdr:text-fg" aria-hidden />
-              ) : (
-                <ChevronRight className="size-3.5 shrink-0 text-faint transition-colors group-hover/hdr:text-fg" aria-hidden />
-              )}
-              <h2 className="shrink-0 text-[13.5px] font-semibold tracking-[-0.01em] text-fg">
-                QC Holds ({holdItems.length})
-              </h2>
-              <span className="hidden truncate text-[12.5px] font-normal text-faint sm:inline">
-                Quality holds and rejected lots
-              </span>
-            </button>
-          </div>
-          {holdsOpen && (
-            <ul className="divide-y divide-border/50 pt-1" data-testid="holds-list">
-              {holdItems.map(renderRow)}
-            </ul>
-          )}
-        </section>
-      ) : (
-        <HomeSectionCard
-          title={SECTION_LABELS.holds_alerts}
-          description={SECTION_DESCRIPTIONS.holds_alerts}
-          count={alertAndLateItems.length + holdItems.length}
-          open={isSectionOpen("holds_alerts")}
-          onToggle={() => toggleSectionCollapsed("holds_alerts")}
-          testId="section-holds-alerts"
-          toggleTestId="section-holds-alerts-toggle"
-        >
-          <ul className="divide-y divide-border/50" data-testid="section-alerts-list">
-            {visibleAlertsAndLate.map(renderRow)}
-          </ul>
-          {visibleAlertsAndLate.length < alertAndLateItems.length && (
-            <div className="flex items-center gap-2 border-t border-border/50 px-3 py-2 text-[12px] text-muted" data-testid="alerts-paging">
-              <span className="num">
-                Showing {visibleAlertsAndLate.length} of {alertAndLateItems.length}
-              </span>
-              <Button size="xs" variant="ghost" onClick={() => setShownAlerts((n) => n + PAGE_ROWS)}>
-                Show {Math.min(PAGE_ROWS, alertAndLateItems.length - visibleAlertsAndLate.length)} more
-              </Button>
-              <Button size="xs" variant="ghost" onClick={() => setShownAlerts(alertAndLateItems.length)}>
-                Show all
-              </Button>
-            </div>
-          )}
-          {holdItems.length > 0 && (
-            <div className="mt-2 border-t border-border/60 pt-1" data-testid="holds-group">
-              <button
-                type="button"
-                aria-expanded={holdsOpen}
-                onClick={() => setHoldsOpen((open) => !open)}
-                data-testid="holds-toggle"
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12.5px] font-medium text-muted transition-colors hover:bg-hover/70 hover:text-fg cursor-pointer"
-              >
-                {holdsOpen ? (
-                  <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
-                ) : (
-                  <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
-                )}
-                <ShieldAlert className="size-3.5 shrink-0 text-risk" aria-hidden />
-                <span>QC Holds ({holdItems.length})</span>
-                <span className="ml-auto text-[11.5px] font-normal text-muted">{holdsOpen ? "Hide" : "Show"}</span>
-              </button>
-              {holdsOpen && (
-                <ul className="divide-y divide-border/50" data-testid="holds-list">
-                  {holdItems.map(renderRow)}
-                </ul>
-              )}
-            </div>
-          )}
-        </HomeSectionCard>
-      )
-    ) : null;
-
-  const financialsSection =
-    financialsItems.length > 0 ? (
-      <section className="min-w-0" data-testid="financials-group">
-        <button
-          type="button"
-          aria-expanded={financialsOpen}
-          onClick={() => setFinancialsOpen((open) => !open)}
-          data-testid="financials-toggle"
-          className="group/hdr flex w-full items-center gap-2 border-b border-border/80 px-1 py-2 text-left text-[12.5px] font-medium text-muted transition-colors hover:border-border-strong hover:text-fg cursor-pointer"
-        >
-          {financialsOpen ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
-          )}
-          <DollarSign className="size-3.5 shrink-0 text-muted" aria-hidden />
-          <span className="min-w-0 truncate">{financialsSummaryLabel(financialsItems)}</span>
-          <span className="ml-auto shrink-0 text-[11.5px] font-normal text-muted">{financialsOpen ? "Hide" : "Show"}</span>
-        </button>
-        {financialsOpen && (
-          <div className="pt-1">
-            <ul className="divide-y divide-border/50" data-testid="financials-list">
-              {visibleFinancials.map(renderRow)}
-            </ul>
-            {visibleFinancials.length < financialsItems.length && (
-              <div className="flex items-center gap-2 border-t border-border/50 px-3 py-2 text-[12px] text-muted" data-testid="financials-paging">
-                <span className="num">
-                  Showing {visibleFinancials.length} of {financialsItems.length}
-                </span>
-                <Button size="xs" variant="ghost" onClick={() => setFinancialsShown((n) => n + PAGE_ROWS)}>
-                  Show {Math.min(PAGE_ROWS, financialsItems.length - visibleFinancials.length)} more
-                </Button>
-                <Button size="xs" variant="ghost" onClick={() => setFinancialsShown(financialsItems.length)}>
-                  Show all
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-    ) : null;
-
-  const opsSection =
-    opsNotices.length > 0 ? (
-      <section className="min-w-0" data-testid="ops-notices-group">
-        <button
-          type="button"
-          aria-expanded={opsOpen}
-          onClick={() => setOpsOpen((open) => !open)}
-          data-testid="ops-notices-toggle"
-          className="group/hdr flex w-full items-center gap-2 border-b border-border/80 px-1 py-2 text-left text-[12.5px] font-medium text-muted transition-colors hover:border-border-strong hover:text-fg cursor-pointer"
-        >
-          {opsOpen ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
-          )}
-          <Server className="size-3.5 shrink-0 text-muted" aria-hidden />
-          <span>System and ops notices ({opsNotices.length})</span>
-          <span className="ml-auto text-[11.5px] font-normal text-muted">{opsOpen ? "Hide" : "Show"}</span>
-        </button>
-        {opsOpen && (
-          <ul className="divide-y divide-border/50 pt-1" data-testid="ops-notices-list">
-            {opsNotices.map(renderRow)}
-          </ul>
-        )}
-      </section>
-    ) : null;
-
-  const olderSection =
-    olderItems.length > 0 && payload ? (
-      <section className="min-w-0" data-testid="older-needs">
-        <button
-          type="button"
-          aria-expanded={olderOpen}
-          onClick={() => setOlderOpen((open) => !open)}
-          data-testid="older-needs-toggle"
-          className="group/hdr flex w-full items-center gap-2 border-b border-border/80 px-1 py-2 text-left text-[12.5px] font-medium text-muted transition-colors hover:border-border-strong hover:text-fg cursor-pointer"
-        >
-          {olderOpen ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
-          )}
-          <span>Older than {payload.older_after_days} days ({olderItems.length})</span>
-          <span className="ml-auto text-[11.5px] font-normal text-muted">{olderOpen ? "Hide" : "Show"}</span>
-        </button>
-        {olderOpen && (
-          <ul className="divide-y divide-border/50 pt-1" data-testid="older-needs-list">
-            {olderItems.map(renderRow)}
-          </ul>
-        )}
-      </section>
-    ) : null;
+  // Only show meaningful non-zero operational counters in the right focus rail (never 0/0/0/0).
+  const attentionCounters = useMemo(() => {
+    if (loading) return [];
+    const entries: {
+      id: string;
+      label: string;
+      count: number;
+      tone?: "late" | "risk" | "ok" | "default";
+      onClick?: () => void;
+      href?: string;
+    }[] = [];
+    if (draftsReadyCount > 0) {
+      entries.push({
+        id: "drafts",
+        label: "Drafts ready to send",
+        count: draftsReadyCount,
+        tone: "ok",
+        href: "/assist",
+      });
+    }
+    if (overdueCount > 0) {
+      entries.push({
+        id: "overdue",
+        label: "Overdue items",
+        count: overdueCount,
+        tone: "late",
+        onClick: () => setDueFilter(filters.due === "overdue" ? "" : "overdue"),
+      });
+    }
+    if (holdItems.length > 0) {
+      entries.push({
+        id: "holds",
+        label: "Active QC holds",
+        count: holdItems.length,
+        tone: "risk",
+        onClick: () => selectPulseFocus("decisions"),
+      });
+    }
+    if (lateSupplyCount > 0) {
+      entries.push({
+        id: "late-supply",
+        label: "Late purchase orders",
+        count: lateSupplyCount,
+        tone: "late",
+        onClick: () => selectPulseFocus("late"),
+      });
+    }
+    if (entries.length < 3 && sectionTotals.replies > 0) {
+      entries.push({
+        id: "replies",
+        label: "Awaiting your reply",
+        count: sectionTotals.replies,
+        tone: "default",
+        onClick: () => selectSection("replies"),
+      });
+    }
+    if (entries.length < 3 && sectionTotals.waiting > 0) {
+      entries.push({
+        id: "waiting",
+        label: "Waiting on others",
+        count: sectionTotals.waiting,
+        tone: "default",
+        onClick: () => selectSection("waiting"),
+      });
+    }
+    return entries.slice(0, 4);
+  }, [
+    loading,
+    draftsReadyCount,
+    overdueCount,
+    holdItems.length,
+    lateSupplyCount,
+    sectionTotals.replies,
+    sectionTotals.waiting,
+    filters.due,
+    setDueFilter,
+    selectPulseFocus,
+    selectSection,
+  ]);
 
   return (
     <section
@@ -1105,27 +1665,27 @@ function Today() {
         data-testid="needs-you"
         {...(loading ? { "data-pending": "" } : {})}
       >
-        <div className="mx-auto w-full max-w-[1360px] space-y-6 px-4 pt-6 pb-14 sm:px-6">
-          {/* Zone 1: Clean Architectural Greeting Header (zero floating search/ask form) */}
-          <div className="flex flex-wrap items-end justify-between gap-3" data-testid="home-header">
-            <div className="min-w-0">
-              <h1 className="font-display text-[26px] leading-8 font-semibold tracking-[-0.03em] text-fg sm:text-[28px]">
+        <div className="mx-auto w-full max-w-[1360px] space-y-5 px-4 pt-5 pb-16 sm:px-6">
+          {/* 1. Compact Single-Line Executive Masthead */}
+          <div className="flex flex-wrap items-center justify-between gap-3" data-testid="home-header">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <h1 className="font-display text-[20px] leading-7 font-semibold tracking-[-0.02em] text-fg">
                 {greeting}
               </h1>
-              <p className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[13px] text-muted">
-                <span>{todayDateLabel}</span>
-                {!loading && payload && payload.status === "ok" && (
-                  <span title="Open items needing your attention">
-                    <span className="num font-medium text-fg" data-testid="needs-total">
-                      {hasFilters ? visibleMainCount : mainCurrent.length}
-                    </span>{" "}
-                    open
-                  </span>
-                )}
-                {payload?.as_of && (
-                  <span className="num text-faint">Updated {eastern(payload.as_of)}</span>
-                )}
-              </p>
+              <span className="text-[13.5px] font-medium text-muted">{todayDateLabel}</span>
+              {!loading && payload && payload.status === "ok" && (
+                <span className="text-[13px] text-muted" title="Open items needing your attention">
+                  <span className="num font-semibold text-fg" data-testid="needs-total">
+                    {hasFilters ? visibleMainCount : mainCurrent.length}
+                  </span>{" "}
+                  open
+                </span>
+              )}
+              {payload?.as_of && (
+                <span className="num hidden text-[12.5px] text-faint md:inline">
+                  Updated {eastern(payload.as_of)}
+                </span>
+              )}
             </div>
 
             <div className="flex shrink-0 items-center gap-1.5">
@@ -1148,7 +1708,7 @@ function Today() {
                 aria-label="Refresh Home"
                 title="Refresh"
                 data-testid="home-refresh"
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-transparent px-2.5 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 cursor-pointer"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-transparent px-2.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 cursor-pointer"
               >
                 <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} aria-hidden />
                 <span className="hidden sm:inline">{refreshing ? "Refreshing" : "Refresh"}</span>
@@ -1156,123 +1716,57 @@ function Today() {
             </div>
           </div>
 
-          {/* Zone 2: Flush Hairline Executive Metric Strip (pure numbers + crisp labels, zero cards) */}
-          <div
-            className="grid grid-cols-2 divide-y divide-border border-y border-border lg:grid-cols-4 lg:divide-x lg:divide-y-0"
-            data-testid="home-pulse-strip"
-            role="group"
-            aria-label="Executive pulse"
-          >
-            <button
-              type="button"
-              onClick={() => selectSection("replies")}
-              aria-pressed={filters.section === "replies" && filters.focus === null}
-              data-testid="pulse-tile-replies"
-              className={cn(
-                "group relative px-4 py-3 text-left transition-colors cursor-pointer first:pl-1",
-                filters.section === "replies" && filters.focus === null
-                  ? "bg-surface/65"
-                  : "hover:bg-hover",
-              )}
+          {/* 2. Hero Focal Element: Unified Command / Ask-or-Jump Bar */}
+          <div className="space-y-2" data-testid="home-command-bar">
+            <form
+              onSubmit={handleCommandSubmit}
+              className="flex items-center gap-2 rounded-xl border border-border/80 bg-surface/90 px-3.5 py-2 transition-colors duration-150 focus-within:border-border-strong dark:bg-[#14161a]"
             >
-              {filters.section === "replies" && filters.focus === null && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] bg-accent" aria-hidden />
-              )}
-              <div className="text-[12px] font-medium text-muted">Needs reply</div>
-              <div className="font-display num mt-0.5 text-[24px] leading-8 font-semibold tracking-[-0.03em] text-fg">
-                {loading ? "-" : sectionTotals.replies}
-              </div>
-              <p className="truncate text-[11.5px] text-faint">
-                {loading ? "Checking queue" : sectionTotals.replies === 0 ? "All caught up" : "Awaiting your response"}
-              </p>
-            </button>
+              <Search className="size-4 shrink-0 text-muted" strokeWidth={1.9} aria-hidden />
+              <label htmlFor="home-command-input" className="sr-only">
+                Ask Petra or jump to a record
+              </label>
+              <input
+                id="home-command-input"
+                type="search"
+                value={commandQuery}
+                onChange={(e) => setCommandQuery(e.target.value)}
+                placeholder="Ask Petra anything, or jump to an order, customer, or metric..."
+                data-testid="home-command-input"
+                className="min-w-0 flex-1 bg-transparent text-[14px] text-fg placeholder:text-faint focus:outline-none"
+              />
+              <button
+                type="submit"
+                data-testid="home-command-submit"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3.5 text-[13px] font-medium text-accent-fg transition-colors duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 cursor-pointer"
+              >
+                Ask
+                <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden />
+              </button>
+            </form>
 
-            <button
-              type="button"
-              onClick={() => selectPulseFocus("decisions")}
-              aria-pressed={filters.section === "holds_alerts" && filters.focus === "decisions"}
-              data-testid="pulse-tile-decisions"
-              className={cn(
-                "group relative px-4 py-3 text-left transition-colors cursor-pointer",
-                filters.section === "holds_alerts" && filters.focus === "decisions"
-                  ? "bg-surface/65"
-                  : "hover:bg-hover",
-              )}
-            >
-              {filters.section === "holds_alerts" && filters.focus === "decisions" && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] bg-accent" aria-hidden />
-              )}
-              <div className="text-[12px] font-medium text-muted">Decisions &amp; holds</div>
-              <div className={cn("font-display num mt-0.5 text-[24px] leading-8 font-semibold tracking-[-0.03em]", decisionHoldCount > 0 ? "text-risk" : "text-fg")}>
-                {loading ? "-" : decisionHoldCount}
-              </div>
-              <p className="truncate text-[11.5px] text-faint">
-                {loading ? "Checking alerts" : decisionHoldCount === 0 ? "No active holds" : "Holds and exceptions"}
-              </p>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => selectPulseFocus("late")}
-              aria-pressed={filters.section === "holds_alerts" && filters.focus === "late"}
-              data-testid="pulse-tile-late"
-              className={cn(
-                "group relative px-4 py-3 text-left transition-colors cursor-pointer",
-                filters.section === "holds_alerts" && filters.focus === "late"
-                  ? "bg-surface/65"
-                  : "hover:bg-hover",
-              )}
-            >
-              {filters.section === "holds_alerts" && filters.focus === "late" && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] bg-accent" aria-hidden />
-              )}
-              <div className="text-[12px] font-medium text-muted">Late supply</div>
-              <div className={cn("font-display num mt-0.5 text-[24px] leading-8 font-semibold tracking-[-0.03em]", lateSupplyCount > 0 ? "text-late" : "text-fg")}>
-                {loading ? "-" : lateSupplyCount}
-              </div>
-              <p className="truncate text-[11.5px] text-faint">
-                {loading ? "Checking supply" : lateSupplyCount === 0 ? "On schedule" : "Overdue purchase orders"}
-              </p>
-            </button>
-
-            <button
-              type="button"
-              onClick={focusSchedule}
-              data-testid="pulse-tile-schedule"
-              className={cn(
-                "group relative px-4 py-3 text-left transition-colors cursor-pointer last:pr-1",
-                scheduleHighlighted
-                  ? "bg-surface/65"
-                  : "hover:bg-hover",
-              )}
-            >
-              {scheduleHighlighted && (
-                <span className="absolute inset-x-0 bottom-0 h-[2px] bg-accent" aria-hidden />
-              )}
-              <div className="text-[12px] font-medium text-muted">Today&apos;s schedule</div>
-              <div className="font-display num mt-0.5 text-[24px] leading-8 font-semibold tracking-[-0.03em] text-fg">
-                {scheduleSummary.loading ? "-" : scheduleSummary.todayCount}
-              </div>
-              <p className="truncate text-[11.5px] text-faint">
-                {scheduleSummary.loading
-                  ? "Reading calendar"
-                  : scheduleSummary.nextTime
-                    ? `Next at ${scheduleSummary.nextTime}`
-                    : scheduleSummary.todayCount > 0
-                      ? "Done for today"
-                      : "Clear calendar"}
-              </p>
-            </button>
+            <div className="flex flex-wrap items-center gap-1.5" aria-label="Quick prompts">
+              {QUICK_ASK_PROMPTS.map((prompt) => (
+                <Link
+                  key={prompt.label}
+                  href={`/ask?q=${encodeURIComponent(prompt.query)}`}
+                  className="inline-flex h-7 items-center gap-1 rounded-md border border-border/60 bg-bg px-2.5 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-hover hover:text-fg dark:bg-[#131519]"
+                >
+                  {prompt.label}
+                </Link>
+              ))}
+            </div>
           </div>
 
-          {/* Zone 3: Asymmetric 2-Column Executive Split (~64% Priority Stream / ~36% Today's Schedule) */}
-          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1.78fr)_minmax(310px,1fr)] xl:grid-cols-[minmax(0,1.82fr)_minmax(340px,1fr)]">
-            <div className="min-w-0 space-y-5">
+          {/* 3. Asymmetric 2-Stage Workspace (Priority Briefing + Sticky Focus Rail) */}
+          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
+            {/* LEFT STAGE: Priority Briefing */}
+            <div className="min-w-0 space-y-4">
               {(supplier || showFilterBar) && (
                 <div className="flex flex-wrap items-center justify-between gap-2.5">
                   {supplier && (
                     <div className="flex items-center gap-2" data-testid="supplier-filter">
-                      <span className="inline-flex h-8 min-w-0 items-center gap-2 rounded-lg border border-border bg-surface pr-1.5 pl-3">
+                      <span className="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-surface pr-1.5 pl-3">
                         <span className="truncate text-[12.5px] font-medium text-fg">{supplier}</span>
                         <button
                           type="button"
@@ -1290,7 +1784,7 @@ function Today() {
                     <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2.5" data-testid="needs-filters">
                       {sectionChips.length > 0 && (
                         <div
-                          className="liquid-glass-pill inline-flex flex-wrap items-center gap-0.5 rounded-xl p-1"
+                          className="liquid-glass-pill inline-flex flex-wrap items-center gap-0.5 rounded-lg p-1"
                           role="group"
                           aria-label="Filter by section"
                           data-testid="section-filters"
@@ -1301,7 +1795,7 @@ function Today() {
                             onClick={setAllSections}
                             data-testid="filter-section-all"
                             className={cn(
-                              "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium transition-colors cursor-pointer",
+                              "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors duration-150 cursor-pointer",
                               !filters.section && !filters.focus
                                 ? "liquid-glass-active"
                                 : "text-muted hover:bg-hover/60 hover:text-fg",
@@ -1323,7 +1817,7 @@ function Today() {
                                 onClick={() => selectSection(sec)}
                                 data-testid={`filter-section-${sec}`}
                                 className={cn(
-                                  "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] font-medium transition-colors cursor-pointer",
+                                  "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium transition-colors duration-150 cursor-pointer",
                                   on
                                     ? "liquid-glass-active"
                                     : "text-muted hover:bg-hover/60 hover:text-fg",
@@ -1348,7 +1842,7 @@ function Today() {
                                 { value: "", label: "All sources" },
                                 ...sourceChoices.map((src) => ({
                                   value: src,
-                                  label: `${SOURCE_WORDS[src] ?? src} (${sourceCounts.get(src) ?? 0})`,
+                                  label: `${formatSourceChoiceLabel(src)} (${sourceCounts.get(src) ?? 0})`,
                                 })),
                               ]}
                             />
@@ -1371,7 +1865,7 @@ function Today() {
                             <button
                               type="button"
                               onClick={clearFilters}
-                              className="h-8 rounded-md px-2.5 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                              className="h-8 rounded-md px-2.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
                               data-testid="clear-filters"
                             >
                               Clear
@@ -1406,7 +1900,7 @@ function Today() {
                         type="button"
                         onClick={() => handleUndoItemState(toast.undoItemId!)}
                         data-testid="home-action-undo"
-                        className="inline-flex h-6 items-center gap-1 rounded-md border border-border-strong bg-bg/70 px-2 text-[12px] font-medium text-fg transition-colors hover:bg-hover cursor-pointer"
+                        className="inline-flex h-6 items-center gap-1 rounded-md border border-border-strong bg-bg/70 px-2 text-[12px] font-medium text-fg transition-colors duration-150 hover:bg-hover cursor-pointer"
                       >
                         <RotateCcw className="size-3" strokeWidth={2} aria-hidden />
                         Undo
@@ -1425,7 +1919,11 @@ function Today() {
               )}
 
               {notes.length > 0 && (
-                <div className="space-y-0.5 rounded-lg border border-border bg-surface/60 px-3.5 py-2 text-[12px] text-muted" data-testid="needs-state" aria-live="polite">
+                <div
+                  className="space-y-0.5 rounded-lg border border-border bg-surface/60 px-3.5 py-2 text-[12.5px] text-muted"
+                  data-testid="needs-state"
+                  aria-live="polite"
+                >
                   {notes.map((line) => (
                     <p key={line}>{line}</p>
                   ))}
@@ -1443,7 +1941,10 @@ function Today() {
               ) : (
                 <>
                   {items.length === 0 ? (
-                    <div className="rounded-xl border border-border/80 bg-surface/50 py-12 text-center text-[13px] text-muted" data-testid="home-empty">
+                    <div
+                      className="rounded-xl border border-border/80 bg-surface/50 py-12 text-center text-[13.5px] text-muted"
+                      data-testid="home-empty"
+                    >
                       <p>
                         {hasFilters
                           ? "Nothing matches these filters."
@@ -1462,21 +1963,282 @@ function Today() {
                       )}
                     </div>
                   ) : (
-                    <div className="space-y-6" data-testid="home-grouped-view">
-                      {repliesSection}
-                      {holdsAlertsSection}
-                      {tasksSection}
-                      {waitingSection}
-                      {financialsSection}
-                      {opsSection}
-                      {olderSection}
+                    <div className="space-y-4" data-testid="home-grouped-view">
+                      {/* Top Priority Spotlight (top 1-2 highest-urgency items) */}
+                      {spotlightItems.length > 0 && (
+                        <div className="space-y-2.5" data-testid="home-spotlight">
+                          {spotlightItems.map((item) => (
+                            <PrioritySpotlightCard
+                              key={item.id}
+                              item={item}
+                              mergedCount={mergedCountById.get(item.id) ?? 0}
+                              selected={selected?.id === item.id}
+                              onPick={() => pick(item.id)}
+                              onClose={closeDetail}
+                              onQuickState={handleQuickItemState}
+                            />
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Dense Linear-Style Action Stream */}
+                      {actionStreamItems.length > 0 && (
+                        <div
+                          className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                          data-testid="home-action-stream"
+                        >
+                          <ul className="divide-y divide-border/50">
+                            {actionStreamItems.map(renderStreamRow)}
+                          </ul>
+                          {visibleStreamItems.length < orderedStreamItems.length && (
+                            <div
+                              className="flex items-center justify-between gap-2 border-t border-border/60 px-3.5 py-2.5 text-[12.5px] text-muted"
+                              data-testid="needs-paging"
+                            >
+                              <span className="num text-faint">
+                                Showing {visibleStreamItems.length} of {orderedStreamItems.length}
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => setShownStream((n) => n + EXPAND_STEP_ROWS)}
+                                >
+                                  Show {Math.min(EXPAND_STEP_ROWS, orderedStreamItems.length - visibleStreamItems.length)} more
+                                </Button>
+                                {orderedStreamItems.length - visibleStreamItems.length > EXPAND_STEP_ROWS && (
+                                  <Button
+                                    size="xs"
+                                    variant="ghost"
+                                    onClick={() => setShownStream(orderedStreamItems.length)}
+                                  >
+                                    Show all
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Pager fallback when spotlight alone is capped (e.g. defensive safety) */}
+                      {actionStreamItems.length === 0 && visibleStreamItems.length < orderedStreamItems.length && (
+                        <div
+                          className="flex items-center justify-between gap-2 rounded-lg border border-border/60 px-3.5 py-2.5 text-[12.5px] text-muted"
+                          data-testid="needs-paging"
+                        >
+                          <span className="num text-faint">
+                            Showing {visibleStreamItems.length} of {orderedStreamItems.length}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => setShownStream((n) => n + EXPAND_STEP_ROWS)}
+                            >
+                              Show {Math.min(EXPAND_STEP_ROWS, orderedStreamItems.length - visibleStreamItems.length)} more
+                            </Button>
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => setShownStream(orderedStreamItems.length)}
+                            >
+                              Show all
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Collapsible Holds Group */}
+                      {showHoldsGroup && (
+                        <section
+                          className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                          data-testid="holds-group"
+                        >
+                          <button
+                            type="button"
+                            aria-expanded={holdsOpen}
+                            onClick={() => setHoldsOpen((open) => !open)}
+                            data-testid="holds-toggle"
+                            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-fg transition-colors duration-150 hover:bg-hover cursor-pointer"
+                          >
+                            {holdsOpen ? (
+                              <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            ) : (
+                              <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            )}
+                            <ShieldAlert className="size-3.5 shrink-0 text-risk" aria-hidden />
+                            <span>Holds ({holdItems.length})</span>
+                            <span className="ml-auto text-[12px] font-normal text-muted">
+                              {holdsOpen ? "Hide" : "Show"}
+                            </span>
+                          </button>
+                          {holdsOpen && (
+                            <ul className="divide-y divide-border/50 border-t border-border/50" data-testid="holds-list">
+                              {holdItems.map(renderStreamRow)}
+                            </ul>
+                          )}
+                        </section>
+                      )}
+
+                      {/* Collapsible Financials Group */}
+                      {financialsItems.length > 0 && (
+                        <section
+                          className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                          data-testid="financials-group"
+                        >
+                          <button
+                            type="button"
+                            aria-expanded={financialsOpen}
+                            onClick={() => setFinancialsOpen((open) => !open)}
+                            data-testid="financials-toggle"
+                            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
+                          >
+                            {financialsOpen ? (
+                              <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            ) : (
+                              <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            )}
+                            <DollarSign className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            <span className="min-w-0 truncate">{financialsSummaryLabel(financialsItems)}</span>
+                            <span className="ml-auto shrink-0 text-[12px] font-normal text-muted">
+                              {financialsOpen ? "Hide" : "Show"}
+                            </span>
+                          </button>
+                          {financialsOpen && (
+                            <div className="border-t border-border/50">
+                              <ul className="divide-y divide-border/50" data-testid="financials-list">
+                                {visibleFinancials.map(renderStreamRow)}
+                              </ul>
+                              {visibleFinancials.length < financialsItems.length && (
+                                <div
+                                  className="flex items-center gap-2 border-t border-border/50 px-3.5 py-2 text-[12px] text-muted"
+                                  data-testid="financials-paging"
+                                >
+                                  <span className="num">
+                                    Showing {visibleFinancials.length} of {financialsItems.length}
+                                  </span>
+                                  <Button
+                                    size="xs"
+                                    variant="ghost"
+                                    onClick={() => setFinancialsShown((n) => n + PAGE_ROWS)}
+                                  >
+                                    Show {Math.min(PAGE_ROWS, financialsItems.length - visibleFinancials.length)} more
+                                  </Button>
+                                  <Button
+                                    size="xs"
+                                    variant="ghost"
+                                    onClick={() => setFinancialsShown(financialsItems.length)}
+                                  >
+                                    Show all
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </section>
+                      )}
+
+                      {/* Collapsible System and Ops Notices */}
+                      {opsNotices.length > 0 && (
+                        <section
+                          className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                          data-testid="ops-notices-group"
+                        >
+                          <button
+                            type="button"
+                            aria-expanded={opsOpen}
+                            onClick={() => setOpsOpen((open) => !open)}
+                            data-testid="ops-notices-toggle"
+                            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
+                          >
+                            {opsOpen ? (
+                              <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            ) : (
+                              <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            )}
+                            <Server className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            <span>System and ops notices ({opsNotices.length})</span>
+                            <span className="ml-auto text-[12px] font-normal text-muted">
+                              {opsOpen ? "Hide" : "Show"}
+                            </span>
+                          </button>
+                          {opsOpen && (
+                            <ul className="divide-y divide-border/50 border-t border-border/50" data-testid="ops-notices-list">
+                              {opsNotices.map(renderStreamRow)}
+                            </ul>
+                          )}
+                        </section>
+                      )}
+
+                      {/* Collapsible 90-Day Older Items */}
+                      {olderItems.length > 0 && payload && (
+                        <section
+                          className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                          data-testid="older-needs"
+                        >
+                          <button
+                            type="button"
+                            aria-expanded={olderOpen}
+                            onClick={() => setOlderOpen((open) => !open)}
+                            data-testid="older-needs-toggle"
+                            className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
+                          >
+                            {olderOpen ? (
+                              <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            ) : (
+                              <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
+                            )}
+                            <span>Older than {payload.older_after_days} days ({olderItems.length})</span>
+                            <span className="ml-auto text-[12px] font-normal text-muted">
+                              {olderOpen ? "Hide" : "Show"}
+                            </span>
+                          </button>
+                          {olderOpen && (
+                            <ul className="divide-y divide-border/50 border-t border-border/50" data-testid="older-needs-list">
+                              {olderItems.map(renderStreamRow)}
+                            </ul>
+                          )}
+                        </section>
+                      )}
                     </div>
                   )}
 
-                  {items.length === 0 && olderSection}
+                  {items.length === 0 && olderItems.length > 0 && payload && (
+                    <section
+                      className="overflow-hidden rounded-xl border border-border/70 bg-bg dark:bg-[#111317]"
+                      data-testid="older-needs"
+                    >
+                      <button
+                        type="button"
+                        aria-expanded={olderOpen}
+                        onClick={() => setOlderOpen((open) => !open)}
+                        data-testid="older-needs-toggle"
+                        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[13px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
+                      >
+                        {olderOpen ? (
+                          <ChevronDown className="size-3.5 shrink-0 text-muted" aria-hidden />
+                        ) : (
+                          <ChevronRight className="size-3.5 shrink-0 text-muted" aria-hidden />
+                        )}
+                        <span>Older than {payload.older_after_days} days ({olderItems.length})</span>
+                        <span className="ml-auto text-[12px] font-normal text-muted">
+                          {olderOpen ? "Hide" : "Show"}
+                        </span>
+                      </button>
+                      {olderOpen && (
+                        <ul className="divide-y divide-border/50 border-t border-border/50" data-testid="older-needs-list">
+                          {olderItems.map(renderStreamRow)}
+                        </ul>
+                      )}
+                    </section>
+                  )}
 
                   {hiddenNonEmptySections.length > 0 && (
-                    <div className="flex items-center justify-between gap-2 rounded-lg border border-border/80 bg-surface/60 px-3.5 py-2 text-[12px] text-muted" data-testid="home-hidden-sections-note">
+                    <div
+                      className="flex items-center justify-between gap-2 rounded-lg border border-border/80 bg-surface/60 px-3.5 py-2 text-[12.5px] text-muted"
+                      data-testid="home-hidden-sections-note"
+                    >
                       <span>
                         {hiddenNonEmptySections.length === 1
                           ? "1 section is hidden in your layout."
@@ -1495,14 +2257,109 @@ function Today() {
               )}
             </div>
 
-            <TodayScheduleCard
-              cardRef={scheduleRef}
-              highlighted={scheduleHighlighted}
-              onSummaryChange={handleScheduleSummary}
-            />
+            {/* RIGHT FOCUS RAIL: Today Schedule + Actionable Pulse / Quick Links */}
+            <div className="space-y-4 lg:sticky lg:top-6">
+              <TodayScheduleCard
+                cardRef={scheduleRef}
+                sticky={false}
+                onSummaryChange={handleScheduleSummary}
+              />
+
+              <section
+                aria-label={attentionCounters.length > 0 ? "Needs attention" : "Workspace shortcuts"}
+                data-testid="home-focus-card"
+                className="rounded-xl border border-border/75 bg-bg p-4 dark:bg-[#14161b]"
+              >
+                <h2 className="font-display text-[14.5px] font-semibold tracking-[-0.015em] text-fg">
+                  {attentionCounters.length > 0 ? "Needs attention" : "Quick access"}
+                </h2>
+
+                {attentionCounters.length > 0 && (
+                  <ul className="mt-2.5 divide-y divide-border/50 text-[13px]" data-testid="home-attention-list">
+                    {attentionCounters.map((entry) => {
+                      const countTone =
+                        entry.tone === "late"
+                          ? "text-late"
+                          : entry.tone === "risk"
+                            ? "text-risk"
+                            : entry.tone === "ok"
+                              ? "text-ok"
+                              : "text-fg";
+                      const content = (
+                        <>
+                          <span className="text-muted transition-colors duration-150 group-hover:text-fg">
+                            {entry.label}
+                          </span>
+                          <span className={cn("num font-semibold", countTone)}>{entry.count}</span>
+                        </>
+                      );
+                      return (
+                        <li key={entry.id}>
+                          {entry.href ? (
+                            <Link
+                              href={entry.href}
+                              className="group flex items-center justify-between gap-2 rounded-md px-1.5 py-2 transition-colors duration-150 hover:bg-hover"
+                            >
+                              {content}
+                            </Link>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={entry.onClick}
+                              className="group flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-2 text-left transition-colors duration-150 hover:bg-hover cursor-pointer"
+                            >
+                              {content}
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                <div
+                  className={cn(
+                    "grid grid-cols-1 gap-1 text-[13px]",
+                    attentionCounters.length > 0 ? "mt-3 border-t border-border/70 pt-3" : "mt-2.5",
+                  )}
+                >
+                  <Link
+                    href="/assist"
+                    className="flex items-center justify-between rounded-md px-2 py-1.5 font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg"
+                  >
+                    <span>Assist queue</span>
+                    <ArrowUpRight className="size-3.5 text-faint" aria-hidden />
+                  </Link>
+                  <Link
+                    href="/insights"
+                    className="flex items-center justify-between rounded-md px-2 py-1.5 font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg"
+                  >
+                    <span>View dashboard</span>
+                    <ArrowUpRight className="size-3.5 text-faint" aria-hidden />
+                  </Link>
+                  <Link
+                    href="/meetings?view=weekly"
+                    className="flex items-center justify-between rounded-md px-2 py-1.5 font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg"
+                  >
+                    <span>Weekly review</span>
+                    <ArrowUpRight className="size-3.5 text-faint" aria-hidden />
+                  </Link>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Right-docked slide-over detail drawer */}
+      {selected && (
+        <NeedDetailDrawer
+          item={selected}
+          onClose={closeDetail}
+          onGone={markGone}
+          onQuickState={handleQuickItemState}
+        />
+      )}
     </section>
   );
 }

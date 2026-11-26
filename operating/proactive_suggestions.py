@@ -127,7 +127,7 @@ def eta_answer(po: Mapping[str, Any] | None) -> dict[str, Any]:
     confirmation), ``in_mail`` (the confirmation is a message), ``source`` and ``text``."""
     if po is None:
         return {"answer": "unknown", "when": None, "in_mail": False, "source": None,
-                "text": "Not checked: the purchase order's trail was not read in time."}
+                "text": "Awaiting email trail check."}
     eta = po.get("eta")
     if not isinstance(eta, Mapping):
         return {"answer": "unknown", "when": None, "in_mail": False, "source": None,
@@ -304,12 +304,39 @@ def _money(item: Mapping[str, Any]) -> dict[str, Any] | None:
             **({"suspect": str(amount["suspect"])} if amount.get("suspect") else {})}
 
 
-def group(items: Sequence[Mapping[str, Any]]) -> tuple[list[list[Mapping[str, Any]]],
-                                                        dict[str, int]]:
+_TEST_PO_RE = re.compile(
+    r"(?:invoicetest|test[-_ ]?po\b|\bpo[-_ ]?test\b|\bdummy[-_ ]?po\b|\bsample[-_ ]?po\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_test_po(item: Mapping[str, Any], label: str = "") -> bool:
+    """True for obvious test purchase orders (such as ``INVOICETEST`` or zero-line BC test
+    POs) that should stay out of operator suggestion cards."""
+    if str(item.get("object_type") or "") != "PurchaseOrder":
+        return False
+    oid = str(item.get("object_id") or "")
+    tail = oid.rsplit(":", 1)[-1] if ":" in oid else oid
+    facts = item.get("facts") if isinstance(item.get("facts"), Mapping) else {}
+    if facts.get("test_po"):
+        return True
+    if facts.get("line_count") == 0 and ":bc." in oid.lower():
+        return True
+    text = " ".join(
+        str(x) for x in (tail, label, item.get("label"), item.get("summary"), item.get("counterpart"))
+        if x
+    )
+    return bool(text and _TEST_PO_RE.search(text))
+
+
+def group(items: Sequence[Mapping[str, Any]], *,
+          labels: Mapping[str, str] | None = None) -> tuple[list[list[Mapping[str, Any]]],
+                                                            dict[str, int]]:
     """The briefing's items as one group per record, by business impact (``_TIERS``) and
     then the briefing's rank order (a group's place is its best-ranked finding's); items of a type that is no suggestion are
     counted per type in the second value, never dropped silently. A customer order at risk
     keeps its own card (the customer update); its late purchase order's card lists it."""
+    labels = labels or {}
     groups: dict[str, list[Mapping[str, Any]]] = {}
     order: list[str] = []
     collapsed: dict[str, int] = {}
@@ -319,6 +346,9 @@ def group(items: Sequence[Mapping[str, Any]]) -> tuple[list[list[Mapping[str, An
         if kind is None or not isinstance(oid, str):
             key = str(item.get("event_type"))
             collapsed[key] = collapsed.get(key, 0) + 1
+            continue
+        if _is_test_po(item, labels.get(oid, "")):
+            collapsed["test_po"] = collapsed.get("test_po", 0) + 1
             continue
         if oid not in groups:
             groups[oid] = []
@@ -428,8 +458,8 @@ def compose(members: Sequence[Mapping[str, Any]], *, label: str,
             missing.append("Mail or files you can't open could hold a later supplier "
                            "message.")
     elif otype == "PurchaseOrder":
-        drafting_notes.append("Its confirmations and messages weren't read in time: open "
-                              "the order for them.")
+        drafting_notes.append("Awaiting email trail check: open the order to inspect recent "
+                              "confirmations and messages.")
     if orders and otype == "PurchaseOrder":
         names = [labels.get(o) or "a customer order" for o in orders[:5]]
         reason(f"It holds up {len(orders)} customer order{'s' if len(orders) != 1 else ''}: "
@@ -607,9 +637,7 @@ def _confidence(po: Mapping[str, Any] | None, eta: Mapping[str, Any] | None,
         return {"level": "low", "why": "The link to the customer order is a lead, not a "
                                        "recorded link."}
     if kind == "vendor_chase" and po is None:
-        return {"level": "low", "why": "Found by the scheduled check on the records; the "
-                                       "order's confirmations and messages were not read "
-                                       "for you yet."}
+        return {"level": "low", "why": "Based on ERP due date; awaiting email trail check."}
     if eta is not None and eta.get("answer") in ("unknown", "possibly", "conflicting",
                                                  "hidden"):
         level = "medium"
@@ -657,12 +685,14 @@ def _headline(kind: str, label: str, days: int | None, eta: Mapping[str, Any] | 
 
 
 _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
+STALE_ORPHAN_DAYS = 90
 
 
-def _card_rank_key(card: Mapping[str, Any]) -> tuple[int, int, int, int, int, int]:
-    """Order composed suggestion cards: unacknowledged first; suppress empty low-confidence
-    vendor drafts (trail not checked AND no supplier address) below actionable cards;
-    prefer higher confidence and addressed drafts; preserve business tier and briefing rank."""
+def _card_rank_key(card: Mapping[str, Any]) -> tuple[int, int, int, int, int, int, int, int]:
+    """Order composed suggestion cards: unacknowledged first; push uncontactable >90-day-old
+    stale orphan POs and empty unchecked vendor drafts below actionable cards; prefer verified
+    supplier contacts and recent actionable POs (<=90d) over >90d stale POs; preserve
+    confidence, business tier, and briefing rank."""
     ack = 1 if card.get("acknowledged") else 0
     conf_level = str((card.get("confidence") or {}).get("level") or "low")
     conf = _CONFIDENCE_RANK.get(conf_level, 2)
@@ -670,19 +700,26 @@ def _card_rank_key(card: Mapping[str, Any]) -> tuple[int, int, int, int, int, in
     to = draft.get("to") if isinstance(draft.get("to"), Mapping) else {}
     has_address = bool(to.get("address"))
     eta = card.get("eta") if isinstance(card.get("eta"), Mapping) else {}
+    impact = card.get("impact") if isinstance(card.get("impact"), Mapping) else {}
+    days_late = impact.get("days_late")
+    is_vendor = card.get("kind") == "vendor_chase"
+    is_very_stale = bool(is_vendor and isinstance(days_late, int) and days_late > STALE_ORPHAN_DAYS)
+    stale_orphan = 1 if (is_very_stale and not has_address) else 0
     empty_unchecked_draft = (
-        card.get("kind") == "vendor_chase"
+        is_vendor
         and conf_level == "low"
         and eta.get("answer") in (None, "unknown")
         and not has_address
     )
-    missing_addr = 1 if (card.get("kind") == "vendor_chase" and not has_address) else 0
+    missing_addr = 1 if (is_vendor and not has_address) else 0
     return (
         ack,
+        stale_orphan,
         1 if empty_unchecked_draft else 0,
+        missing_addr,
+        1 if is_very_stale else 0,
         conf,
         int(card.get("tier") if card.get("tier") is not None else 3),
-        missing_addr,
         int(card.get("rank") or 0),
     )
 
@@ -694,14 +731,19 @@ def build(items: Sequence[Mapping[str, Any]], *, labels: Mapping[str, str],
     """Every suggestion card of one reader's briefing items, in impact order, at most
     ``top`` composed; the rest counted. ``trails``, ``late_drafts``, and optional
     ``supplier_contacts`` by record id."""
-    groups, collapsed = group(items)
+    groups, collapsed = group(items, labels=labels)
     contacts = supplier_contacts or {}
+    # Compose over the wider candidate pool covered by trails/contacts when present so
+    # recent actionable POs with verified contacts promote into the top ``top`` cards
+    # ahead of >90-day uncontactable orphans.
+    pool_limit = max(top, len(contacts), len(trails)) if (contacts or trails) else top
     cards = [compose(g, label=labels.get(str(g[0]["object_id"])) or str(g[0]["object_id"]),
                      labels=labels, trail=trails.get(str(g[0]["object_id"])),
                      late_draft=late_drafts.get(str(g[0]["object_id"])),
                      supplier_contact=contacts.get(str(g[0]["object_id"])))
-             for g in groups[:top]]
+             for g in groups[:pool_limit]]
     cards.sort(key=_card_rank_key)
+    cards = cards[:top]
     by_kind: dict[str, int] = {}
     for g in groups:
         k = KIND_OF_TYPE[str(g[0].get("event_type"))]

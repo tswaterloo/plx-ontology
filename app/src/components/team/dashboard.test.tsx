@@ -280,6 +280,11 @@ describe("shared mailboxes and accounts are listed apart from the people", () =>
     vi.mocked(getTeamPerson).mockClear();
     render(<TeamDashboard data={view} />);
     const panel = screen.getByTestId("team-monitoring-panel");
+    const legend = within(panel).getByTestId("team-channel-legend");
+    expect(legend).toHaveTextContent("Comms");
+    expect(legend).toHaveTextContent("Docs & Planner");
+    expect(legend).toHaveTextContent("ERP & Ops");
+
     const topOutput = within(panel).getByTestId("team-top-output");
     expect(topOutput).toHaveTextContent("Bea Okafor");
     expect(topOutput).toHaveTextContent("Avery Lindqvist");

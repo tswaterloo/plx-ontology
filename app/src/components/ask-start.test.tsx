@@ -71,7 +71,7 @@ describe("Genie Spaces switcher in AskStart", () => {
 
     const strip = await screen.findByTestId("ask-quick-jump");
     expect(strip).toHaveTextContent("/revenue-why");
-    expect(strip).toHaveTextContent("Monthly revenue by customer");
+    expect(strip).toHaveTextContent("Monthly Revenue by Customer");
 
     await userEvent.click(screen.getByRole("button", { name: /\/revenue-why/ }));
     expect(onAsk).toHaveBeenCalledWith(expect.stringContaining("Explain the monthly revenue change"));

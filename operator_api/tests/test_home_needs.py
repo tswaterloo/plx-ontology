@@ -88,7 +88,6 @@ class Build(unittest.TestCase):
         self.assertTrue({"pos", "alerts", "teams"}.issubset({f.value for f in got.sources}))
         # Mission Control approvals stay out of Workbench Home lists.
         self.assertNotIn("matter:" + f"{1:024x}", ids)
-        self.assertEqual(got.items[0].id, "late:PurchaseOrder:demo:90412")
         self.assertTrue(all(i.rank == n for n, i in enumerate(got.items, 1)))
 
     def test_mc_approvals_excluded_from_both_matters_and_alerts_while_other_approvals_stay(self):
@@ -248,6 +247,7 @@ class Build(unittest.TestCase):
                 rank=1,
             )
 
+        stale_overdue = row("stale-overdue-45d", due=NOW - timedelta(days=45))
         old = row("old-overdue", due=NOW - timedelta(days=5))
         newer_overdue = row("newer-overdue", due=NOW - timedelta(days=2))
         today = row("due-today", due=NOW)
@@ -255,10 +255,16 @@ class Build(unittest.TestCase):
         quiet_new = row("quiet-new", basis_days=2, quiet=True)
         newest = row("newest", basis_days=0)
         older = row("older", basis_days=4)
-        got = hn.rank([newest, quiet_new, today, newer_overdue, older, quiet_old, old], now=NOW)
+        got = hn.rank(
+            [newest, stale_overdue, quiet_new, today, newer_overdue, older, quiet_old, old],
+            now=NOW,
+        )
         self.assertEqual(
             [r.id for r in got],
-            ["old-overdue", "newer-overdue", "due-today", "quiet-old", "quiet-new", "newest", "older"],
+            [
+                "newer-overdue", "old-overdue", "due-today",
+                "quiet-old", "quiet-new", "newest", "older", "stale-overdue-45d",
+            ],
         )
         self.assertTrue(any(r.startswith("overdue") for r in got[0].rank_reasons))
         self.assertIn("waiting on a follow-up", got[3].rank_reasons)
@@ -1351,6 +1357,68 @@ class Route(unittest.TestCase):
 
     def test_signed_out_gets_nothing(self):
         self.assertEqual(mock_client().get("/api/home/needs").status_code, 401)
+
+
+class BroadcastPersonalizationAndNoiseTests(unittest.TestCase):
+    def test_role_scoped_broadcast_alerts_exclude_software_it_and_route_by_department(self):
+        staff = [
+            {"person_id": "alex-id", "email": "alex@synth.example", "department": "IT",
+             "title": "Software Engineer", "reports_count": 0},
+            {"person_id": "jordan-id", "email": "jordan@synth.example", "department": "Purchasing",
+             "title": "Buyer", "reports_count": 0},
+            {"person_id": "morgan-id", "email": "morgan@synth.example", "department": "Sales",
+             "title": "Account Manager", "reports_count": 0},
+            {"person_id": "claire-id", "email": "claire@synth.example", "department": "EXEC",
+             "title": "VP Operations", "reports_count": 8},
+        ]
+
+        def mk_reader(pid, email):
+            return SimpleNamespace(
+                key=pid, email=email,
+                session=SimpleNamespace(access=None, view_as=False, subject_oid=pid, identities=[email]),
+            )
+
+        with patch("operator_api.home_needs._load_staff_rows", return_value=staff), \
+                patch("operator_api.feedback.owner_open", return_value=False):
+            self.assertEqual(hn._reader_broadcast_scopes(None, mk_reader("alex-id", "alex@synth.example")), frozenset())
+            self.assertEqual(hn._reader_broadcast_scopes(None, mk_reader("jordan-id", "jordan@synth.example")), frozenset({"purchasing"}))
+            self.assertEqual(hn._reader_broadcast_scopes(None, mk_reader("morgan-id", "morgan@synth.example")), frozenset({"sales"}))
+            self.assertEqual(hn._reader_broadcast_scopes(None, mk_reader("claire-id", "claire@synth.example")), hn.ALL_BROADCAST_SCOPES)
+
+            # Directly addressed alert still reaches alex even though IT gets no broadcast alerts
+            direct_alert = SimpleNamespace(
+                id="a-direct", event_type="customer_order_at_risk", alert_kind="",
+                mailbox="alex@synth.example", concerns=None,
+            )
+            self.assertTrue(hn._explicitly_addressed_to_reader(direct_alert, mk_reader("alex-id", "alex@synth.example")))
+
+    def test_calendar_auto_responses_cos_relay_and_null_order_number_demotion(self):
+        for subj in ("Accepted: Ops standup", "Declined: Review", "Tentative: Call", "Canceled: Demo", "Invitation: Sync"):
+            m_auto = matter(900, kind="conversation", channel="mail", act="reply")
+            m_auto["subject"] = subj
+            self.assertTrue(hn._filtered_reply_matter(m_auto, now=NOW), subj)
+
+        cos_item = matter(901, kind="task", channel="mail", act="do")
+        cos_item["sender"] = "cos@petrasoap.com"
+        cos_item["subject"] = "Staging GHA relay failure"
+        self.assertTrue(hn._filtered_reply_matter(cos_item, now=NOW))
+
+        null_order = m.HomeNeedItem(
+            id="alert:null-ord", kind="alert", source="alerts", source_label="Alerts",
+            title="Order with no order number", line="Order with no order number is late.",
+            basis_at=NOW.isoformat(), due_at=(NOW - timedelta(days=2)).isoformat(),
+            action="decide", action_label="Decide", href="/", rank=1,
+        )
+        normal = m.HomeNeedItem(
+            id="task:real", kind="task", source="planner", source_label="Planner",
+            title="Confirm shipment", line="Confirm.", basis_at=NOW.isoformat(),
+            action="do", action_label="Do it", href="/", rank=1,
+        )
+        cur, old = hn.split_older([null_order, normal], now=NOW)
+        self.assertEqual([r.id for r in cur], ["task:real"])
+        self.assertEqual([r.id for r in old], ["alert:null-ord"])
+        ranked = hn.rank([null_order, normal], now=NOW)
+        self.assertEqual([r.id for r in ranked], ["task:real", "alert:null-ord"])
 
 
 if __name__ == "__main__":

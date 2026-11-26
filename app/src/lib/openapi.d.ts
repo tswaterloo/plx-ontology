@@ -813,7 +813,9 @@ export type paths = {
         /**
          * Assist List
          * @description Your open work, newest first: each item kept true against its source; the last
-         *     14 days unless ``all_ages`` (``older`` says how many more).
+         *     14 days unless ``all_ages`` (``older`` says how many more). Pass
+         *     ``include_approvals=true`` or ``kind=approvals`` to inspect Mission Control
+         *     approvals.
          */
         get: operations["assist_list_api_autopilot_drafts_get"];
         put?: never;
@@ -18363,6 +18365,8 @@ export interface operations {
         parameters: {
             query?: {
                 all_ages?: boolean;
+                include_approvals?: boolean;
+                kind?: string | null;
             };
             header?: never;
             path?: never;

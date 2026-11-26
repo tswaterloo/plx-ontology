@@ -47,6 +47,88 @@ export function objectIdFromHref(href: string): string | null {
   }
 }
 
+/** Structured key/value pair parsed from a QC hold alert's facts or prose so lot, product,
+ *  status, and affected orders render in a clean 2-column grid instead of a prose dump. */
+export interface StructuredFact {
+  label: string;
+  value: string;
+}
+
+const QC_FIELD_LABELS: [string, RegExp][] = [
+  ["Lot", /\b(?:lot|batch)(?:\s*(?:no\.?|number|#))?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]{1,32})/i],
+  ["Product", /\b(?:product|item|sku|material)\s*[:\-]\s*([^.;\n|]+?)(?=\s*(?:[.;\n|]|affected|orders|reason|status|held|$))/i],
+  ["Affected orders", /\b(?:affected\s+orders?|orders?\s+affected|holds?\s+up|impacts?)\s*[:\-]?\s*([^.;\n|]+)/i],
+  ["Customer", /\b(?:customer|account)\s*[:\-]\s*([^.;\n|]+)/i],
+  ["Status", /\b(?:hold\s+status|qc\s+status|status)\s*[:\-]\s*([^.;\n|]+)/i],
+  ["Reason", /\b(?:reason|issue|finding)\s*[:\-]\s*([^.;\n|]+)/i],
+  ["Quantity", /\b(?:qty|quantity)\s*[:\-]\s*([^.;\n|]+)/i],
+];
+
+export function extractQcFacts(item: PreparedItem, summary: string, extra: string): {
+  structured: StructuredFact[];
+  remainingFacts: string[];
+} {
+  const isQc =
+    item.alert_kind === "qc_hold" ||
+    /\b(?:qc|quality)\s+hold\b/i.test(`${item.subject ?? ""} ${summary} ${extra}`);
+  if (!isQc) return { structured: [], remainingFacts: item.facts };
+
+  const structured: StructuredFact[] = [];
+  const seen = new Set<string>();
+  const remainingFacts: string[] = [];
+
+  const pushFact = (rawLabel: string, rawValue: string) => {
+    const label = rawLabel.trim();
+    const value = countedWords(rawValue.trim());
+    const key = label.toLowerCase();
+    if (!label || !value || seen.has(key)) return;
+    seen.add(key);
+    structured.push({ label, value });
+  };
+
+  for (const fact of item.facts ?? []) {
+    const kv = /^([A-Za-z][A-Za-z0-9 /&()-]{1,32}):\s*(.+)$/.exec(fact.trim());
+    if (kv) {
+      pushFact(kv[1], kv[2]);
+    } else {
+      remainingFacts.push(fact);
+    }
+  }
+
+  // Also parse structured QC fields from summary/extra prose when not already covered by explicit facts.
+  const prose = [summary, extra, ...remainingFacts].filter(Boolean).join("\n");
+  for (const [label, re] of QC_FIELD_LABELS) {
+    if (seen.has(label.toLowerCase())) continue;
+    const m = re.exec(prose);
+    if (m?.[1]) {
+      pushFact(label, m[1].replace(/[.,;\s]+$/, ""));
+    }
+  }
+
+  // Only show a structured 2-column grid when there are at least 2 distinct fields (or explicit key:value facts).
+  if (structured.length < 2 && remainingFacts.length === (item.facts ?? []).length) {
+    return { structured: [], remainingFacts: item.facts };
+  }
+  return { structured, remainingFacts };
+}
+
+function QcFactGrid({ facts }: { facts: StructuredFact[] }) {
+  if (facts.length === 0) return null;
+  return (
+    <dl
+      className="grid grid-cols-1 gap-x-6 gap-y-2.5 border-y border-border/70 py-3 sm:grid-cols-2"
+      data-testid="qc-fact-grid"
+    >
+      {facts.map((f) => (
+        <div key={f.label} className="min-w-0">
+          <dt className="text-[11px] font-medium uppercase tracking-[0.04em] text-faint">{f.label}</dt>
+          <dd className="mt-0.5 break-words text-[13.5px] font-medium leading-5 text-fg tabular-nums">{f.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function AlertCard({
   item,
   linked,
@@ -70,6 +152,7 @@ export function AlertCard({
   const parsedNote = noteParts(item.note ?? "");
   const [summary, extra, noteText] = saidOnce([countedWords(item.summary ?? ""), item.message ?? "", parsedNote.text]);
   const mc = item.alert_kind === "mc_approval_pending";
+  const qc = extractQcFacts(item, summary, extra);
 
   if (detail) {
     const headline = cleanHeadline(item.subject || summary || "Alert");
@@ -128,14 +211,15 @@ export function AlertCard({
                   {summary}
                 </p>
               )}
+              <QcFactGrid facts={qc.structured} />
               {extra && (
                 <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3.5 text-[14px] leading-[1.65] text-fg/85">
                   {extra}
                 </p>
               )}
-              {item.facts.length > 0 && (
+              {qc.remainingFacts.length > 0 && (
                 <ul className="list-disc space-y-1 pl-5 text-[14px] leading-[1.6] text-fg/90">
-                  {item.facts.map((f, n) => (
+                  {qc.remainingFacts.map((f, n) => (
                     <li key={n}>{countedWords(f)}</li>
                   ))}
                 </ul>
@@ -230,10 +314,11 @@ export function AlertCard({
       ) : (
         <>
           {summary && <p className="text-[14px] font-medium leading-relaxed text-fg">{summary}</p>}
+          <QcFactGrid facts={qc.structured} />
           {extra && <p className="whitespace-pre-wrap border-l-2 border-border-strong pl-3 text-[13px] leading-relaxed text-muted">{extra}</p>}
-          {item.facts.length > 0 && (
+          {qc.remainingFacts.length > 0 && (
             <ul className="list-disc space-y-0.5 pl-4 text-[13px] leading-relaxed text-muted">
-              {item.facts.map((f, n) => (
+              {qc.remainingFacts.map((f, n) => (
                 <li key={n}>{countedWords(f)}</li>
               ))}
             </ul>

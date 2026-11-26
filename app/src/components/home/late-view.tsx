@@ -1,7 +1,6 @@
 "use client";
 
-import { SectionTabs } from "@/components/shell";
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, ArrowUpRight, Check, ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
+import { ArrowDownWideNarrow, ArrowLeft, ArrowUpNarrowWide, ArrowUpRight, Check, ChevronDown, ChevronRight, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LateOverview, nextStep } from "@/components/late/overview";
@@ -540,7 +539,15 @@ export function LateView() {
           </ToolbarButton>
         }
       />
-      <SectionTabs section="home" />
+      <nav aria-label="Breadcrumb" className="border-b border-border/60 px-4 py-2 sm:px-6">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-muted transition-colors hover:text-fg"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden />
+          <span>Home</span>
+        </Link>
+      </nav>
       <PageIntro path="/?show=late" />
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="late-all">
         <div ref={desktop ? undefined : phoneRef} className="mx-auto w-full max-w-[980px] space-y-5 px-4 py-5 pb-12 sm:px-6">

@@ -19,6 +19,11 @@ const dismissMeasureCandidate = vi.fn();
 const getFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
 const getAllFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
 const setFeedbackStatus = vi.fn();
+const getAssistWorkflows = vi.fn().mockResolvedValue({ status: "ok", workflows: [], templates: [], routines: [] });
+const runAssistWorkflow = vi.fn();
+const pauseAssistWorkflow = vi.fn();
+const resumeAssistWorkflow = vi.fn();
+const deleteAssistWorkflow = vi.fn();
 vi.mock("@/lib/api", () => ({
   readInsightFiltered: (...a: unknown[]) => readInsightFiltered(...a),
   setInsightSchedule: (...a: unknown[]) => setInsightSchedule(...a),
@@ -35,6 +40,11 @@ vi.mock("@/lib/api", () => ({
   getFeedback: (...a: unknown[]) => getFeedback(...a),
   getAllFeedback: (...a: unknown[]) => getAllFeedback(...a),
   setFeedbackStatus: (...a: unknown[]) => setFeedbackStatus(...a),
+  getAssistWorkflows: (...a: unknown[]) => getAssistWorkflows(...a),
+  runAssistWorkflow: (...a: unknown[]) => runAssistWorkflow(...a),
+  pauseAssistWorkflow: (...a: unknown[]) => pauseAssistWorkflow(...a),
+  resumeAssistWorkflow: (...a: unknown[]) => resumeAssistWorkflow(...a),
+  deleteAssistWorkflow: (...a: unknown[]) => deleteAssistWorkflow(...a),
 }));
 
 vi.mock("@/components/insights/ask-here", () => ({ InsightsAsk: () => <div data-testid="insights-ask" /> }));
@@ -321,6 +331,8 @@ describe("insights dashboard", () => {
     // No redundant Measures accordion dumped at the bottom of the Dashboard tab
     expect(screen.queryByText("Show all 1")).toBeNull();
     fireEvent.click(screen.getByTestId("tab-ontology"));
+    expect(screen.getByTestId("measures-catalog-table")).toHaveTextContent("Net line revenue on posted sales invoices.");
+    fireEvent.click(screen.getByTestId("subtab-ontology-graph"));
     expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Net line revenue on posted sales invoices.");
     const askLink = screen.getByTestId("inspector-ask-btn");
     expect(askLink.getAttribute("href")).toBe(`/ask?q=${encodeURIComponent("Why did revenue change last month?")}`);
@@ -364,7 +376,7 @@ describe("insights dashboard", () => {
   it("with no monitor there is no empty Monitors section, and the page says how to make one", () => {
     render(<InsightsDashboard list={{ ...list, saving: true, items: [list.items[0]] }} onChanged={vi.fn()} />);
     expect(screen.queryByTestId("monitors")).toBeNull();
-    expect(screen.getByText(/listed under Monitors/)).toBeTruthy();
+    expect(screen.getByText(/listed under Triggers/)).toBeTruthy();
   });
 
   it("a number is watched against a line once the line is complete", async () => {
@@ -724,7 +736,7 @@ describe("Bento grid resize, KPI cards, SQL inspector, and Benchmarks tab", () =
     expect(tile.getAttribute("data-bento-height")).toBe("tall");
   });
 
-  it("switches smoothly between the Liquid Glass tabs (My canvas, All views, Ontology, Monitors) with zero AI brochure cards", async () => {
+  it("switches smoothly between the Liquid Glass studio tabs (Canvas, Explore, Measures & Lineage, Triggers) with zero AI brochure cards", async () => {
     const measures = [{
       id: "revenue",
       name: "Revenue invoiced",
@@ -738,19 +750,26 @@ describe("Bento grid resize, KPI cards, SQL inspector, and Benchmarks tab", () =
     }];
     render(<InsightsDashboard list={{ ...list, measures }} onChanged={vi.fn()} />);
 
-    expect(screen.getByTestId("tab-all-views")).toBeTruthy();
-    expect(screen.getByTestId("new-chart-link").getAttribute("href")).toBe("/ask");
+    expect(screen.getByTestId("tab-dashboard")).toHaveTextContent("Canvas");
+    expect(screen.getByTestId("tab-all-views")).toHaveTextContent("Explore");
+    expect(screen.getByTestId("tab-ontology")).toHaveTextContent("Measures & Lineage");
+    expect(screen.getByTestId("tab-monitors")).toHaveTextContent("Triggers");
+    expect(screen.getByTestId("new-chart-link")).toHaveTextContent("New insight");
+    expect(screen.getByTestId("new-trigger-btn")).toHaveTextContent("Set trigger");
 
     fireEvent.click(screen.getByTestId("tab-ontology"));
     expect(screen.getByTestId("ontology-tab-panel")).toBeTruthy();
+    // Side-by-side split view shows BOTH catalog AND dotted grid canvas + docked inspector immediately
+    expect(screen.getByTestId("measures-catalog-table")).toHaveTextContent("Revenue invoiced");
     expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
     expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Revenue invoiced");
 
-    fireEvent.click(screen.getByTestId("subtab-measures-catalog"));
-    expect(screen.getByTestId("measures-catalog-table")).toHaveTextContent("Revenue invoiced");
+    fireEvent.click(screen.getByTestId("subtab-ontology-graph"));
+    expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
+    expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Revenue invoiced");
 
     fireEvent.click(screen.getByTestId("tab-monitors"));
-    expect(screen.getByTestId("monitors-tab-panel")).toHaveTextContent("Scheduled alerts");
+    expect(screen.getByTestId("monitors-tab-panel")).toHaveTextContent("Scheduled triggers");
     await waitFor(() => expect(screen.getByTestId("benchmarks-panel")).toBeTruthy());
     expect(screen.queryByTestId("genie-15-capabilities")).toBeNull();
     fireEvent.click(screen.getByTestId("subtab-accuracy"));
@@ -758,6 +777,32 @@ describe("Bento grid resize, KPI cards, SQL inspector, and Benchmarks tab", () =
 
     fireEvent.click(screen.getByTestId("tab-dashboard"));
     expect(screen.getAllByTestId("bento-grid").length).toBeGreaterThan(0);
+  });
+
+  it("renders inverted-pyramid KPI headline strip above time-series chart tiles and quiet 1-line footer controls", async () => {
+    const seriesTile = { ...base, id: "rev_trend", title: "Monthly Revenue Trend", group: "Finance", chart: { kind: "line" as const, x: "month", y: ["revenue"] } };
+    const seriesResult: InsightResult = {
+      ...result("team_output"),
+      ...seriesTile,
+      sql: "SELECT month, revenue FROM monthly_rev",
+      drawn: {
+        kind: "line",
+        title: "Monthly Revenue Trend",
+        x: "month",
+        labels: ["Oct", "Nov"],
+        series: [{ name: "revenue", values: [100000, 125000] }],
+        currency: "USD",
+        as_of: "2026-11-25",
+        sql: "SELECT month, revenue FROM monthly_rev",
+      },
+    };
+    render(<InsightsDashboard list={{ ...list, items: [seriesTile] }} onChanged={vi.fn()} feed={{ rev_trend: { result: seriesResult } }} streaming={false} />);
+    await waitFor(() => expect(screen.getByTestId("kpi-bento-summary")).toBeTruthy());
+    expect(screen.getByTestId("kpi-bento-summary")).toHaveTextContent("+25%");
+    expect(screen.getByTestId("sql-trigger-rev_trend")).toBeTruthy();
+    expect(screen.getByTestId("tile-view-toggle-rev_trend")).toHaveTextContent("Table");
+    fireEvent.click(screen.getByTestId("tile-view-toggle-rev_trend"));
+    expect(screen.getByTestId("tile-view-toggle-rev_trend")).toHaveTextContent("Chart");
   });
 
   it("starts with a curated 6-tile executive canvas for large libraries and toggles widgets via the library drawer without a Show all dump", () => {
@@ -779,5 +824,37 @@ describe("Bento grid resize, KPI cards, SQL inspector, and Benchmarks tab", () =
     expect(drawer).not.toHaveTextContent("Show all (12)");
     fireEvent.click(screen.getByTestId("library-toggle-tile_7"));
     expect(document.querySelectorAll('section[id^="insight-"]').length).toBe(7);
+  });
+
+  it("never duplicates Canvas and paginates Explore with a Show more button and search filter", () => {
+    const manyItems = Array.from({ length: 24 }, (_, idx) => ({
+      ...base,
+      id: `view_${idx + 1}`,
+      title: `Metric View ${idx + 1}`,
+      group: ["Finance", "Sales", "Purchasing", "Operations"][idx % 4],
+      chart: { kind: "bar" as const, x: "name", y: ["val"] },
+    }));
+    render(<InsightsDashboard list={{ ...list, items: manyItems }} onChanged={vi.fn()} />);
+
+    // On Canvas: only the single top tab exists; no duplicate secondary category strip
+    expect(screen.getAllByRole("tab", { name: /^Canvas/i })).toHaveLength(1);
+    expect(screen.queryByTestId("insight-groups")).toBeNull();
+    expect(screen.queryByTestId("category-canvas")).toBeNull();
+
+    // Switch to Explore: shows first 16 views + Show more views (8 remaining), still no duplicate Canvas
+    fireEvent.click(screen.getByTestId("tab-all-views"));
+    expect(screen.getByTestId("insight-groups")).toBeInTheDocument();
+    expect(screen.queryByTestId("category-canvas")).toBeNull();
+    expect(document.querySelectorAll("section[data-bento-size]").length).toBe(16);
+    const showMore = screen.getByTestId("all-views-show-more");
+    expect(showMore).toHaveTextContent("Show more views (8 remaining)");
+
+    fireEvent.click(showMore);
+    expect(document.querySelectorAll("section[data-bento-size]").length).toBe(24);
+    expect(screen.queryByTestId("all-views-show-more")).toBeNull();
+
+    // Filter views by search query
+    fireEvent.change(screen.getByTestId("all-views-search"), { target: { value: "Metric View 24" } });
+    expect(document.querySelectorAll("section[data-bento-size]").length).toBe(1);
   });
 });

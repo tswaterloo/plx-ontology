@@ -60,32 +60,51 @@ shipping and online sales services, are prepared but not switched on yet.
 
 You can use the Workbench in a web browser or in the desktop app for Windows and Mac. Both
 show the same pages. The desktop app can be downloaded from the Help page in the
-Workbench. It is not yet signed by Microsoft or Apple, so your computer may ask you to
-confirm the first time you open it.
+Workbench.
 
-For now you sign in with a private access link that the Workbench team sends you. Signing
-in with your normal Microsoft work account will replace the links later.
+Sign in with your normal Microsoft work account (Microsoft Entra ID). Your session only ever
+sees the mailboxes, Teams channels, SharePoint folders, and business records that your own
+account is permitted to read.
 
-Once you are in, a typical morning looks like this:
+## Inside the Workbench
 
-1. The My work page lists what needs you today, from every program, in one place. For example,
-   a purchase order that is two days late and a customer email asking for a delivery date.
-2. You open the late purchase order. Its page shows the supplier, the lines, the recent
-   emails about it, and when the ship date last moved.
-3. On the Ask page you type "what did the supplier last say about this order?" The answer quotes
-   the email and links to it.
-4. You type "ask them for a new ship date". A draft appears. You change what you like and
-   confirm it, or leave it.
+The workspace is organized into six focused surfaces:
 
-Every customer, order, product, batch and supplier has its own page with the documents
-that belong to it. A product's page lists its formula down to the raw materials and who
-supplies them. The Meetings page shows your calendar, with a short preparation sheet for
-each meeting.
+1. **Home** — Your daily executive briefing. Open with a unified command bar to ask a question
+   or jump straight to any order, customer, or metric. Below, a role-scoped priority queue
+   surfaces the replies, decisions, and late supply items that actually belong to you (sorted
+   most-actionable first, with one-click Done and Undo), paired with a **Today** calendar panel
+   showing your upcoming meetings, attendees, and one-click Join links.
+2. **Ask** — Ask any question in plain English across orders, suppliers, lots, finance, mail,
+   and Teams. Scope your search with the top domain switcher (`All`, `Finance`, `Purchasing`,
+   `Operations`, `Quality`, `Sales`), type `@` to reference specific records, or type `/` to
+   run built-in workflow skills (`/late-pos`, `/qc-holds`, `/revenue-why`, `/customer-brief`,
+   `/excel-tracker`, `/margin-check`, `/supplier-chase`, `/sharepoint-doc`). Every answer
+   includes a collapsible **Thought process** trace showing the exact tables, governed measures,
+   and records consulted, and conversations are automatically titled and organized by time.
+3. **Insights** — A customizable analytics studio built on governed SQL definitions. Arrange
+   and resize live charts on your **Canvas**, create new charts or scheduled **Triggers**
+   directly in-page, inspect **Governed Measures & Lineage** on an interactive dotted-grid map
+   (`Data tables -> Governed measures -> Dashboard tiles`) with full SQL inspection, and verify
+   accuracy against golden benchmarks.
+4. **Assist** — Your always-on operational assistant in a clean triage workspace (**Inbox**,
+   **Suggestions**, and **Workflows**). Give Assist a job in plain English, review prepared
+   email drafts and QC summaries with inline editing and one-click approval, triage actionable
+   supplier follow-ups with pre-filled contacts, or build scheduled multi-step workflows that
+   always stop at a human approval gate before sending or writing.
+5. **Artifacts** — Create and export real business deliverables — Excel workbooks (`.xlsx`),
+   Word briefs and SOPs (`.docx`), executive slide decks (`.pptx`), interactive charts, and
+   purchase orders or customer quotes — built from live company records, with direct
+   **Save to SharePoint** folder selection and approval-gated upload.
+6. **Data & Team** — Fast, high-density directories for Orders, Customers, Suppliers, Products,
+   Documents, and Production batches (opening individual record pages with instant ERP reads
+   and on-demand Margin, Landed Cost, Formula, Trail, and Document sections), alongside a
+   **Team** productivity and workload monitor for managers and owners.
 
 You can also tell the Workbench how you like things done, such as your usual sign-off or a
-phrase you never use, and your drafts will follow it. The Memory page shows everything it
-remembers about you, and you can correct or remove any of it. If you send the same kind of
-reply or document often, save it as a template and new drafts will start from it.
+phrase you never use, and your drafts will follow it. **Memory & Rules** shows everything it
+remembers about you, and you can edit or remove any item at any time. If you send the same
+kind of reply or document often, save it as a template and new drafts will start from it.
 
 ## Asking a question
 

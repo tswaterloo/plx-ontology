@@ -81,10 +81,10 @@ function Frame({ crumb, actions, main, inspector }: { crumb: ReactNode; actions?
     <div className="flex min-h-0 flex-1 flex-col" data-testid="record-page">
       <Toolbar title={crumb} actions={actions} />
       <div className={cn("grid flex-1", inspector && "xl:grid-cols-[minmax(0,1fr)_304px]")}>
-        <div className="min-w-0 space-y-5 px-5 pt-5 pb-12 sm:px-8 sm:pt-6">{main}</div>
+        <div className="min-w-0 px-5 pt-5 pb-12 sm:px-8 sm:pt-6">{main}</div>
         {inspector && (
           <aside
-            className={cn("grid min-w-0 content-start gap-4 border-t border-border px-5 py-5 sm:grid-cols-2 sm:px-6 xl:grid-cols-1 xl:border-t-0 xl:border-l xl:px-5 xl:pt-6", INSPECTOR)}
+            className={cn("grid min-w-0 content-start gap-5 border-t border-border px-5 py-5 sm:grid-cols-2 sm:px-6 xl:grid-cols-1 xl:border-t-0 xl:border-l xl:px-5 xl:pt-6", INSPECTOR)}
             aria-label="Details"
           >
             {inspector}
@@ -1712,7 +1712,7 @@ export function ObjectView({
         actions={doorActions}
         main={
           <>
-            <div className="space-y-4 rounded-xl border border-border bg-surface p-5" data-testid="door-instant-view">
+            <div className="space-y-5 pb-5" data-testid="door-instant-view">
               <div className="space-y-1.5">
                 <span className="inline-flex items-center rounded-md border border-border bg-bg-subtle px-2 py-0.5 text-[11px] font-medium text-muted" data-testid="record-kind-badge">
                   {typeLabel(type)}
@@ -1735,12 +1735,14 @@ export function ObjectView({
                   </p>
                 )}
               </div>
-              <BizArticle page={door} />
+              <div className="border-t border-border/60 pt-5">
+                <BizArticle page={door} />
+              </div>
             </div>
           </>
         }
         inspector={
-          <section className="rounded-xl border border-border bg-surface p-4">
+          <section className="space-y-1.5">
             <SectionTitle>Ontology links</SectionTitle>
             <p className="text-[12.5px] text-muted">
               {error ? "Additional ontology links are unavailable right now." : "Loading linked records, people, and activity..."}
@@ -2096,11 +2098,11 @@ export function ObjectView({
         actions={actions}
         main={
           <>
-            <div className="space-y-4 rounded-md border border-border bg-bg p-4 sm:p-5">
+            <div className="space-y-4 pb-5">
               {header}
               {tabs}
             </div>
-            <div className="rounded-md border border-border bg-bg p-4 sm:p-5">
+            <div className="border-t border-border/60 py-5">
               <RecordHistory type={obj.type} id={obj.object_id} />
             </div>
           </>
@@ -2108,10 +2110,10 @@ export function ObjectView({
       />
     );
 
-  const mainCard = "rounded-md border border-border bg-bg p-4 empty:hidden";
+  const mainCard = "border-t border-border/60 py-5 empty:hidden";
   const main = (
     <>
-      <div className="space-y-4 rounded-md border border-border bg-bg p-4 sm:p-5">
+      <div className="space-y-4 pb-5">
         {header}
         {tabs}
         {isCustomer && conflictsOpen && <ConflictRows conflicts={conflicts} />}
@@ -2123,9 +2125,9 @@ export function ObjectView({
           <BizArticle page={itemDoor} skipLabels={counterpartHref ? new Set(["Supplier", "Product"]) : undefined} />
         </div>
       )}
-      {/* an order's lines are its main content: right under the hero summary card */}
+      {/* an order's lines are its main content: right under the hero summary */}
       {orderLines && doorLines ? (
-        <div className="space-y-4 rounded-md border border-border bg-bg p-4">
+        <div className="space-y-4 border-t border-border/60 py-5">
           <DoorSection s={doorLines} />
           {/* the lines the order's own read calls late stay listed, with how late */}
           {!pending.has("late") && <LinesTable lines={lines.filter((l) => (l.days_late ?? 0) > 0)} title="Late lines" />}
@@ -2215,12 +2217,12 @@ export function ObjectView({
           <SectionSkeleton name="trail" title={isPo ? "Evidence" : "Materials"} lines={3} />
         </div>
       ) : (
-        <div>
+        <div className={mainCard}>
           <EvidenceTrailCard trail={obj.trail} inPage showNext={!(isPo || isAo)} showEta={!isPo} />
         </div>
       )}
       {custody && (
-        <div>
+        <div className={mainCard}>
           <CustodyRail custody={custody} />
         </div>
       )}
@@ -2336,7 +2338,7 @@ export function ObjectView({
     return hit ? refHref(hit) : null;
   };
 
-  const railCard = "rounded-md border border-border bg-bg p-3.5";
+  const railCard = "border-t border-border/60 pt-4 first:border-t-0 first:pt-0";
   const inspector = (
     <>
       {facts.length > 0 && !itemDoor && (

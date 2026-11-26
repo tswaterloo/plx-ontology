@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import quote
@@ -32,6 +34,39 @@ from .page_core import (
 )
 
 BRIEF_TIMEOUT_SECONDS = 90
+UPCOMING_CACHE_FRESH_SECONDS = 60.0
+UPCOMING_CACHE_STALE_SECONDS = 1800.0
+UPCOMING_PG_TIMEOUT_MS = 5000
+_CALENDAR_AUTO_RESPONSE_RE = re.compile(
+    r"^(?:(?:re|fw|fwd)\s*:\s*)*(?:accepted|declined|tentative|cancell?ed|invitation)\s*:",
+    re.IGNORECASE,
+)
+_COS_SYSTEM_BRIEF_RE = re.compile(
+    r"(?:cos@petrasoap\.com|\b(?:staging|gha\s+dispatch|github\s+actions?|email[- ]relay|"
+    r"merge[- ]class|health\s+check|status\s+report|stale\s+views?|storage[- ]finalize|"
+    r"work[- ]routing|ci\s+red)\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_reply_noise(text: Any = "", *, sender: Any = "", subject: Any = "") -> bool:
+    """True for calendar auto-responses (Accepted/Declined/Tentative/Canceled/Invitation)
+    or automated Chief-of-Staff / staging / GHA relay notices."""
+    s_sender = str(sender or "").strip().lower()
+    s_subject = str(subject or "").strip()
+    s_text = str(text or "").strip()
+    if s_subject and _CALENDAR_AUTO_RESPONSE_RE.match(s_subject):
+        return True
+    if s_text and _CALENDAR_AUTO_RESPONSE_RE.match(s_text):
+        return True
+    if s_sender == "cos@petrasoap.com":
+        return True
+    combined = " ".join(x for x in (s_sender, s_subject, s_text) if x)
+    if "cos@petrasoap.com" in combined.lower():
+        return True
+    if s_sender and ("@petrasoap.com" in s_sender) and _COS_SYSTEM_BRIEF_RE.search(combined):
+        return True
+    return False
 # The weekly review is read whole (owner 11-23, no limit on what a page reads): no time
 # budget cuts it, so a finished week is always kept for its reader (``WeeklyArchive``) and
 # every later visit is the archive row. It was cut at 45 s (a visit) and 300 s (the read-ahead),
@@ -462,6 +497,36 @@ def _people() -> Any:
     return address_guard()
 
 
+def _attach_open_items(raw: list[dict[str, Any]], who: Any, held: frozenset[str],
+                       state_dir: Any) -> list[dict[str, Any]]:
+    store = _follow_ups(state_dir) if who is not None else None
+    if store is None or not raw:
+        return raw
+    from operating import meeting_followup as mf
+    viewer = _viewer(who, held)
+    for e in raw:
+        if e.get("private") or e.get("people_withheld"):
+            continue
+        meeting = {"title": e.get("label"), "start": e.get("start") or "",
+                   "organizer": e.get("organizer") or {}}
+        try:
+            e["open_items"] = mf.carried_items(store, meeting, viewer)[:10]
+        except Exception:  # noqa: BLE001 - an unreadable store shows no item
+            e["open_items"] = []
+    return raw
+
+
+def _grant_of(view: Any) -> Optional[tuple[Any, frozenset[str]]]:
+    grant = getattr(getattr(view, "access", None), "grant", None)
+    if grant is None:
+        return None
+    with view._request():
+        may_read, held = grant()
+    if held is None:
+        return None
+    return may_read, frozenset(held)
+
+
 def upcoming_of(view: Any, who: Any = None, state_dir: Any = None, *,
                 pg: Any = None) -> Optional[list[dict[str, Any]]]:
     """The reader's calendar from the start of today (business time) for two weeks, each meeting
@@ -508,19 +573,7 @@ def upcoming_of(view: Any, who: Any = None, state_dir: Any = None, *,
         with view._request():
             raw = br.upcoming_meetings(view._call, held, people=_people(), since=since,
                                        reader=mine or None)
-    store = _follow_ups(state_dir) if who is not None else None
-    if store is not None:
-        from operating import meeting_followup as mf
-        for e in raw:
-            if e.get("private") or e.get("people_withheld"):
-                continue
-            meeting = {"title": e.get("label"), "start": e.get("start") or "",
-                       "organizer": e.get("organizer") or {}}
-            try:
-                e["open_items"] = mf.carried_items(store, meeting, viewer)[:10]
-            except Exception:  # noqa: BLE001 - an unreadable store shows no item
-                e["open_items"] = []
-    return raw
+    return _attach_open_items(raw, who, frozenset(held), state_dir)
 
 
 def upcoming_model(view: Any, who: Any = None, state_dir: Any = None, *,
@@ -859,7 +912,11 @@ class BriefsMixin:
             since = row.get("since")
             days = max(0, (today - since.date()).days) if since is not None else 0
             why_clean = clean_text(row["why"], strip_email_noise=True)
-            if days > pg_alerts.REPLY_DAYS or pg_alerts.is_automated_reply_alert(why_clean):
+            if (
+                days > pg_alerts.REPLY_DAYS
+                or pg_alerts.is_automated_reply_alert(why_clean)
+                or _is_reply_noise(why_clean)
+            ):
                 continue
             lines.append({
                 "id": f"pg:{row['rule']}:{row['handle']}",
@@ -890,14 +947,20 @@ class BriefsMixin:
                     ) -> list[dict[str, Any]]:
         """The lines whose message the triage model did not read as owed nothing (fyi,
         automated, notice: ``operating.autopilot_triage``, kept for the reader's own
-        mailboxes in the autopilot queue); a message with no reading stays. Stale (>14 days)
-        and automated Microsoft / Teams / Planner / system notifications are always dropped."""
+        mailboxes in the autopilot queue); a message with no reading stays. Stale (>14 days),
+        calendar auto-responses, and automated Microsoft / Teams / Planner / system
+        notifications are always dropped."""
         from operating import autopilot_triage as at
         from operating.pg import alerts as pg_alerts
         lines = [
             x for x in lines
             if int(x.get("days") or 0) <= pg_alerts.REPLY_DAYS
             and not pg_alerts.is_automated_reply_alert(
+                x.get("summary") or "",
+                sender=x.get("sender") or "",
+                subject=x.get("subject") or "",
+            )
+            and not _is_reply_noise(
                 x.get("summary") or "",
                 sender=x.get("sender") or "",
                 subject=x.get("subject") or "",
@@ -1297,16 +1360,143 @@ class BriefsMixin:
         ``weeks``: the last that many weeks (0 or none: every week)."""
         return m.LabourPage(**labour_page_of(getattr(self, "state_dir", None), reader, weeks))
 
+    def _upcoming_cache_store(self) -> tuple[threading.Lock, dict[Any, tuple[float, Any, m.UpcomingMeetings]]]:
+        lock = self.__dict__.get("_upcoming_mem_lock")
+        if lock is None:
+            lock = threading.Lock()
+            self.__dict__["_upcoming_mem_lock"] = lock
+        cache = self.__dict__.get("_upcoming_mem_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_upcoming_mem_cache"] = cache
+        return lock, cache
+
+    def _upcoming_fast_grant(self, reader: Reader) -> Optional[tuple[Any, frozenset[str]]]:
+        """Resolve ``(may_read, held)`` without touching the slow ``self.reads`` pool:
+        first from the pre-decided ``doors`` cache, then from the fast ``access_worker``."""
+        from operating.pg.access_classes import FULL_KEY
+        doors = getattr(self, "doors", None)
+        if doors is not None and callable(getattr(doors, "get", None)):
+            try:
+                got = doors.get(reader)
+            except Exception:  # noqa: BLE001
+                got = None
+            if isinstance(got, tuple) and got and getattr(got[0], "grant", None) is not None:
+                grant = got[0].grant
+                keys = frozenset(getattr(grant, "keys", ()) or ())
+                held = frozenset(getattr(grant, "held", ()) or ())
+                if FULL_KEY in keys:
+                    return (lambda _a: True), held
+                return (lambda a, allowed=keys: a in allowed), held
+        worker = getattr(self, "access_worker", None)
+        if worker is not None and hasattr(worker, "stopped") and not worker.stopped.is_set():
+            try:
+                return worker.run(reader, _grant_of, timeout=5.0, priority=-1)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
+
+    def _upcoming_pg_fast(self, reader: Reader) -> Optional[m.UpcomingMeetings]:
+        """Fast Postgres ``biz.meetings`` read that bypasses ``self.reads`` entirely so slow
+        endpoints never starve ``/api/brief/meetings``."""
+        from datetime import datetime
+        import logging
+        from zoneinfo import ZoneInfo
+        from operating.time_window import BUSINESS_TZ
+        pg_dsn = getattr(self, "pg_dsn", None)
+        pg_fn = getattr(self, "pg", None)
+        if not (isinstance(pg_dsn, str) and pg_dsn and callable(pg_fn)):
+            return None
+        resolved = self._upcoming_fast_grant(reader)
+        if resolved is None:
+            return None
+        may_read, held = resolved
+        if not callable(may_read):
+            return None
+        since = datetime.now(ZoneInfo(BUSINESS_TZ)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        viewer = _viewer(reader, held) if reader is not None else None
+        mine = None if viewer is None else (
+            {a for a in viewer.addresses if a} | {o.rpartition(":")[2] for o in viewer.oids if o}
+        )
+        try:
+            pool = pg_fn()
+            with pool.connection() as conn:
+                with conn.transaction():
+                    conn.execute("SET TRANSACTION READ ONLY")
+                    conn.execute(f"SET LOCAL statement_timeout = {UPCOMING_PG_TIMEOUT_MS}")
+                    raw = br.upcoming_meetings_pg(
+                        conn, held, may_read=may_read, people=_people(),
+                        since=since, reader=mine or None,
+                    )
+        except Exception as exc:  # noqa: BLE001 - fall back to cached or read-worker path
+            logging.getLogger("operator_api.briefs").warning(
+                "upcoming meetings direct PG fast path failed (%s): falling back",
+                type(exc).__name__,
+            )
+            return None
+        if raw is None:
+            return None
+        state_dir = getattr(self, "state_dir", None)
+        _attach_open_items(raw, reader, held, state_dir)
+        return m.UpcomingMeetings(meetings=[upcoming_entry(e) for e in raw])
+
     def upcoming_meetings(self, reader: Reader) -> m.UpcomingMeetings:
+        raw_state = getattr(self, "state_dir", None)
+        state_dir = raw_state if isinstance(raw_state, (str, os.PathLike)) else None
+        reader_id = getattr(reader, "key", None) or getattr(reader, "email", None) or id(reader)
+        cache_key = (reader_id, getattr(reader, "mode", None))
+        stamp = _follow_up_stamp(state_dir) if (reader is not None and state_dir is not None) else None
+        now = time.monotonic()
+        stale_fallback: Optional[m.UpcomingMeetings] = None
+
+        use_cache = isinstance(getattr(self, "__dict__", None), dict) and (
+            "_upcoming_mem_cache" in self.__dict__
+            or hasattr(type(self), "reads")
+            or isinstance(getattr(self, "pg_dsn", None), str)
+        )
+        if use_cache:
+            lock, cache = self._upcoming_cache_store()
+            with lock:
+                hit = cache.get(cache_key)
+            if hit is not None:
+                cached_at, cached_stamp, cached_model = hit
+                age = now - cached_at
+                if age < UPCOMING_CACHE_FRESH_SECONDS and cached_stamp == stamp:
+                    return cached_model.model_copy(deep=True)
+                if age < UPCOMING_CACHE_STALE_SECONDS:
+                    stale_fallback = cached_model.model_copy(deep=True)
+
+        # Fast path: query Postgres biz.meetings directly BEFORE entering self._brief_run
+        fast = self._upcoming_pg_fast(reader) if isinstance(getattr(self, "pg_dsn", None), str) else None
+        if isinstance(fast, m.UpcomingMeetings):
+            if use_cache:
+                lock, cache = self._upcoming_cache_store()
+                with lock:
+                    cache[cache_key] = (time.monotonic(), stamp, fast.model_copy(deep=True))
+            self.prepare_day_ahead(reader, fast)
+            return fast
+
         try:
             got = self._brief_run(reader, lambda view: self._upcoming_cached(view, reader)) \
                 or m.UpcomingMeetings(meetings=[])
+            if use_cache:
+                lock, cache = self._upcoming_cache_store()
+                with lock:
+                    cache[cache_key] = (time.monotonic(), stamp, got.model_copy(deep=True))
             self.prepare_day_ahead(reader, got)   # the day's briefs, kept before they are opened
             return got
-        except br.CalendarNotRead:
+        except (br.CalendarNotRead, TimeoutError):
+            if stale_fallback is not None:
+                return stale_fallback
             # a failed search is never an empty calendar: the page offers to try again
             raise UserFacing("busy", "Your calendar could not be read just now. Try again "
                                      "in a minute.", 503) from None
+        except UserFacing as exc:
+            if exc.status == 503 and stale_fallback is not None:
+                return stale_fallback
+            raise
 
     def _upcoming_cached(self, view: Any, who: Any = None) -> m.UpcomingMeetings:
         """The reader's upcoming meetings as read last for them this hour (``page_key``:

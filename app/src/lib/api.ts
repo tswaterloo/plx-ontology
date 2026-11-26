@@ -2481,3 +2481,59 @@ export async function changeRecurring(id: string, body: RecurringChange): Promis
 export async function stopRecurring(id: string): Promise<void> {
   await call(`/api/instructions/recurring/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
+
+// ---- SharePoint folders & artifact upload ----
+
+export interface SharePointFolderInfo {
+  path: string;
+  label: string;
+  drive_id: string;
+  parent_id: string;
+  site: string;
+  file_count: number;
+  source: string;
+}
+
+export interface SharePointFoldersResponse {
+  folders: SharePointFolderInfo[];
+}
+
+export interface SharePointUploadRequest {
+  title: string;
+  format: string;
+  folder_path: string;
+  create_folder_if_missing?: boolean;
+  content_markdown?: string;
+  artifact_id?: string;
+  source_url?: string;
+}
+
+export interface SharePointUploadResponse {
+  status: "uploaded" | "approval_queued";
+  folder_path: string;
+  filename: string;
+  file_id: string;
+  size_bytes: number;
+  download_url: string;
+  web_url?: string | null;
+  draft_id?: string | null;
+  upload_id?: string | null;
+  assist_url?: string | null;
+  create_folder_if_missing: boolean;
+  folders_created?: string[];
+  missing_for_live?: string[];
+  message: string;
+}
+
+/** Known SharePoint document library folders for saving deliverables. */
+export function getSharePointFolders(signal?: AbortSignal): Promise<SharePointFoldersResponse> {
+  return getJson<SharePointFoldersResponse>("/api/sharepoint/folders", signal);
+}
+
+/** Generate or locate an artifact file and upload to SharePoint (or queue an Assist approval draft). */
+export async function uploadArtifactToSharePoint(
+  body: SharePointUploadRequest,
+): Promise<SharePointUploadResponse> {
+  const res = await call("/api/artifacts/sharepoint-upload", { method: "POST", json: body });
+  return (await res.json()) as SharePointUploadResponse;
+}

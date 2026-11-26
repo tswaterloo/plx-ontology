@@ -3,10 +3,10 @@
 import { ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import { notFound, useParams } from "next/navigation";
-import { useEffect, useState } from "react";
-import { suggest } from "@/lib/api";
-import { recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
-import type { Suggestion } from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { bizPage, suggest } from "@/lib/api";
+import { doorKey, recordLabel, safeHref, SYSTEM_LABEL, typeLabel } from "@/lib/format";
+import type { BizPage, Suggestion } from "@/lib/types";
 import { MissingActions, ObjectView } from "./object-view";
 import { arrange } from "./ask-box";
 import { SystemCode } from "./ui/glyphs";
@@ -20,6 +20,14 @@ export const FRIENDLY_TYPE = {
   ao: "AssemblyOrder",
 } as const;
 export type FriendlyKind = keyof typeof FRIENDLY_TYPE;
+
+/** Fast ERP business-table door kind for friendly paths that have a business-table view. */
+const FRIENDLY_DOOR_KIND = {
+  po: "purchase_order",
+  customer: "customer",
+  supplier: "supplier",
+} as const;
+type FriendlyDoorKind = (typeof FRIENDLY_DOOR_KIND)[keyof typeof FRIENDLY_DOOR_KIND];
 
 /**
  * A friendly path's reference, or null: 1 to 100 characters with no ":" (a whole object
@@ -133,11 +141,54 @@ function Chooser({ type, refText }: { type: string; refText: string }) {
   );
 }
 
-/** The record a friendly path names, rendered in place (the API resolves the reference within the type). */
+/** The record a friendly path names, rendered in place with fast ERP door lookup (~100ms) and
+ *  on-demand lazy sections so header, KPIs, lines, and balances appear immediately while
+ *  ontology enrichment streams in progressively. */
 export function FriendlyRecord({ kind }: { kind: FriendlyKind }) {
   const { ref } = useParams<{ ref: string }>();
   const text = friendlyRef(ref);
   if (!text) notFound();
   const type = FRIENDLY_TYPE[kind];
-  return <ObjectView type={type} id={text} missing={<Chooser type={type} refText={text} />} />;
+  const doorKind: FriendlyDoorKind | null = kind in FRIENDLY_DOOR_KIND ? FRIENDLY_DOOR_KIND[kind as keyof typeof FRIENDLY_DOOR_KIND] : null;
+  const [page, setPage] = useState<BizPage | null>(null);
+  const [doorAttempt, setDoorAttempt] = useState(0);
+  const retryDoor = useCallback(() => setDoorAttempt((n) => n + 1), []);
+
+  useEffect(() => {
+    setPage(null);
+    if (!doorKind) return;
+    const ctl = new AbortController();
+    suggest(text, ctl.signal, 10)
+      .then((res) => {
+        if (ctl.signal.aborted) return null;
+        const matches = namedBy(res?.suggestions ?? [], type, text);
+        // Never guess when multiple records share the reference (let ObjectView / Chooser disambiguate).
+        if (matches.length !== 1) return null;
+        const hit = matches[0];
+        const key = doorKey(hit.open_url, type, hit.object_id);
+        if (!key || key.kind !== doorKind) return null;
+        return bizPage(key.kind, key.h ? { h: key.h } : { record: key.record }, ctl.signal);
+      })
+      .then(
+        (p) => {
+          if (!ctl.signal.aborted && p && p.kind === doorKind && Array.isArray(p.facts) && Array.isArray(p.sections)) {
+            setPage(p);
+          }
+        },
+        () => undefined,
+      );
+    return () => ctl.abort();
+  }, [doorKind, type, text, doorAttempt]);
+
+  return (
+    <ObjectView
+      key={`${type}:${text}`}
+      type={type}
+      id={text}
+      door={page ?? undefined}
+      onRetryDoor={doorKind ? retryDoor : undefined}
+      lazySections
+      missing={<Chooser type={type} refText={text} />}
+    />
+  );
 }

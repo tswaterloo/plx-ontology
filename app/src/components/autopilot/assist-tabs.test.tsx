@@ -93,6 +93,83 @@ describe("Assist Suggestions and Memory tabs", () => {
     expect(container.textContent).not.toContain("\u2014");
   });
 
+  it("defaults to Ready to send drafts, replaces weak/missing labels, and allows adding a supplier email inline", async () => {
+    mocks.getSuggestions.mockResolvedValue({
+      status: "read",
+      total: 2,
+      more: 0,
+      items: [
+        {
+          id: "sug-ready",
+          headline: "PO 106101 is 4 days late",
+          subject: { type: "PurchaseOrder", object_id: "PurchaseOrder:bc:106101", label: "PO 106101", open_url: "/po/106101" },
+          action: { text: "Confirm delivery date with supplier" },
+          impact: { orders: [] },
+          confidence: { level: "high", why: "Verified in supplier thread" },
+          eta: { answer: "no", in_mail: true, text: "No date confirmed in mail" },
+          draft: {
+            audience: "vendor",
+            channel: "email",
+            subject: "PO 106101 delivery date",
+            body: "Hi team, can you confirm delivery?",
+            to: { name: "Jordan", address: "jordan@supplier.example" },
+            sent: false,
+            status: "draft_not_sent",
+          },
+          reasoning: [],
+          missing: [],
+          actions: [],
+        },
+        {
+          id: "sug-no-email",
+          headline: "PO 104002 is 150 days late",
+          subject: { type: "PurchaseOrder", object_id: "PurchaseOrder:bc:104002", label: "PO 104002", open_url: "/po/104002" },
+          action: { text: "Check old open purchase order" },
+          impact: { orders: [] },
+          confidence: { level: "low", why: "ERP due date only" },
+          draft: {
+            audience: "vendor",
+            channel: "email",
+            subject: "PO 104002 status",
+            body: "Checking on this order.",
+            to: null,
+            sent: false,
+            status: "draft_not_sent",
+          },
+          reasoning: [],
+          missing: [],
+          actions: [],
+        },
+      ],
+    });
+    mocks.getActionStates.mockResolvedValue({ cards: {} });
+    mocks.getAssistWorkflows.mockResolvedValue({ status: "ok", workflows: [], templates: [], routines: [] });
+
+    const { container } = render(<AssistSuggestionsView />);
+    await screen.findByTestId("assist-suggestions-list");
+
+    // Defaults to Ready to send (1 ready draft), hiding uncontactable 150d orphan
+    expect(screen.getAllByTestId("suggestion")).toHaveLength(1);
+    expect(screen.getByTestId("suggestion-evidence-pill")).toHaveTextContent("Mail verified");
+    expect(container.textContent).not.toMatch(/Weak evidence|No address on record/i);
+
+    // Switch to All to inspect the uncontactable item and enter a supplier email inline
+    fireEvent.click(screen.getByTestId("suggestions-filter-all"));
+    expect(screen.getAllByTestId("suggestion")).toHaveLength(2);
+    expect(container.textContent).toContain("From ERP schedule");
+    expect(screen.getByTestId("suggestion-needs-email")).toHaveTextContent("Needs supplier email");
+
+    fireEvent.click(screen.getByTestId("suggestion-needs-email"));
+    const input = screen.getByTestId("draft-to-input") as HTMLInputElement;
+    expect(input.placeholder).toBe("Add supplier email to send");
+    fireEvent.change(input, { target: { value: "ops@supplier.example" } });
+    expect(input.value).toBe("ops@supplier.example");
+    expect(screen.getByTestId("suggestion-send-email")).toBeInTheDocument();
+    expect(screen.getByTestId("copy-draft")).toBeInTheDocument();
+    expect(screen.getByTestId("suggestion-dismiss")).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/Weak evidence|No address on record/i);
+  });
+
   it("renders persistent memory with add, filter, and remove actions", async () => {
     mocks.getMemory.mockResolvedValue({
       available: true,
@@ -100,7 +177,7 @@ describe("Assist Suggestions and Memory tabs", () => {
         {
           id: 1,
           kind: "instruction",
-          text: "Always sign off with Thanks, Vince",
+          text: "Always sign off with Thanks, Jordan",
           source: "you",
           at: "2026-11-25T10:00:00Z",
           records: [],

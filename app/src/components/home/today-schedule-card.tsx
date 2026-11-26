@@ -25,8 +25,14 @@ export interface ScheduleSummary {
   loading: boolean;
 }
 
+// Calibrated muted avatar tones (non-purple, WCAG legible in both light and dark themes).
 const AVATAR_TONES = [
-  "bg-surface-2 text-fg/85",
+  "bg-sky-500/15 text-sky-800 border-sky-500/25 dark:bg-sky-400/15 dark:text-sky-300 dark:border-sky-400/25",
+  "bg-teal-500/15 text-teal-800 border-teal-500/25 dark:bg-teal-400/15 dark:text-teal-300 dark:border-teal-400/25",
+  "bg-amber-500/15 text-amber-800 border-amber-500/25 dark:bg-amber-400/15 dark:text-amber-300 dark:border-amber-400/25",
+  "bg-emerald-500/15 text-emerald-800 border-emerald-500/25 dark:bg-emerald-400/15 dark:text-emerald-300 dark:border-emerald-400/25",
+  "bg-rose-500/15 text-rose-800 border-rose-500/25 dark:bg-rose-400/15 dark:text-rose-300 dark:border-rose-400/25",
+  "bg-stone-500/15 text-stone-700 border-stone-500/25 dark:bg-stone-400/15 dark:text-stone-300 dark:border-stone-400/25",
 ];
 
 function toneForName(name: string): string {
@@ -65,16 +71,6 @@ function shortDayLabel(d: Date, now: Date): string {
   return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
 }
 
-function refreshedLabel(at: number | null, now: Date): string | null {
-  if (!at) return null;
-  const mins = Math.max(0, Math.floor((now.getTime() - at) / 60_000));
-  if (mins < 1) return "Refreshed just now";
-  if (mins === 1) return "Refreshed 1 min ago";
-  if (mins < 60) return `Refreshed ${mins} min ago`;
-  const hrs = Math.floor(mins / 60);
-  return hrs === 1 ? "Refreshed 1 hr ago" : `Refreshed ${hrs} hrs ago`;
-}
-
 function AttendeeStack({ meeting }: { meeting: UpcomingMeeting }) {
   const people = inviteesOf(meeting);
   if (people.length === 0) return null;
@@ -88,7 +84,7 @@ function AttendeeStack({ meeting }: { meeting: UpcomingMeeting }) {
             key={p.address ?? p.name}
             title={p.name}
             className={cn(
-              "inline-flex size-6 items-center justify-center rounded-full border border-border-strong text-[10.5px] font-semibold leading-none",
+              "inline-flex size-6 items-center justify-center rounded-full border text-[11px] font-semibold leading-none",
               toneForName(p.name),
             )}
           >
@@ -99,7 +95,7 @@ function AttendeeStack({ meeting }: { meeting: UpcomingMeeting }) {
       {extra > 0 && (
         <span
           title={`${extra} more`}
-          className="num text-[11.5px] font-medium text-muted"
+          className="num text-[12px] font-medium text-muted"
         >
           +{extra}
         </span>
@@ -130,24 +126,27 @@ function ScheduleRow({
   const parties = (meeting.parties ?? []).map((p) => p.label).filter(Boolean);
   const contextLine = parties.length > 0 ? parties.join(", ") : meeting.location ?? null;
   const imminent = when === "now" || when === "soon";
+  const hasAttendees = !meeting.private && inviteesOf(meeting).length > 0;
 
   return (
     <li
       data-testid="today-schedule-row"
       className={cn(
-        "group relative flex items-center gap-3 px-1.5 py-2.5 transition-colors hover:bg-hover",
-        when === "past" && "opacity-65",
+        "group relative flex items-start gap-3 rounded-lg px-2 py-3 transition-colors duration-150",
+        when === "now" ? "bg-accent-soft" : "hover:bg-hover",
+        when === "past" && "opacity-60",
       )}
     >
-      {when === "now" && (
-        <span className="absolute inset-y-2 left-0 w-[2px] bg-accent" aria-hidden />
-      )}
-
-      <div className="num w-[68px] shrink-0">
+      <div className="num w-[68px] shrink-0 pt-0.5">
         {dayPrefix && (
-          <div className="text-[10.5px] font-medium leading-3.5 text-faint">{dayPrefix}</div>
+          <div className="text-[11px] font-medium leading-3.5 text-faint">{dayPrefix}</div>
         )}
-        <div className={cn("text-[12.5px] leading-4", imminent ? "font-semibold text-fg" : "font-medium text-muted")}>
+        <div
+          className={cn(
+            "text-[12.5px] leading-4",
+            when === "now" ? "font-semibold text-accent" : imminent ? "font-semibold text-fg" : "font-medium text-muted",
+          )}
+        >
           {meeting.all_day ? "All day" : start ? clock(start) : "-"}
         </div>
         {!dayPrefix && imminent && rel && (
@@ -161,15 +160,15 @@ function ScheduleRow({
         {briefHref ? (
           <Link
             href={briefHref}
-            className="block truncate text-[13.5px] font-semibold leading-5 text-fg transition-colors group-hover:text-accent"
+            className="line-clamp-2 text-[13.5px] font-semibold leading-[19px] text-fg transition-colors duration-150 group-hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-xs"
             title={title}
           >
             {title}
           </Link>
         ) : (
-          <p className="flex items-center gap-1.5 truncate text-[13.5px] font-medium leading-5 text-muted">
+          <p className="flex items-center gap-1.5 text-[13.5px] font-medium leading-[19px] text-muted">
             <Lock className="size-3.5 shrink-0" strokeWidth={1.8} aria-hidden />
-            <span className="truncate">{title}</span>
+            <span className="line-clamp-2">{title}</span>
           </p>
         )}
 
@@ -179,25 +178,29 @@ function ScheduleRow({
             <span className="truncate">{contextLine}</span>
           </p>
         )}
-      </div>
 
-      <div className="flex shrink-0 items-center gap-2">
-        {joinHref && (
-          <a
-            href={joinHref}
-            target="_blank"
-            rel="noreferrer"
-            data-testid="today-schedule-join"
-            className={cn(
-              "liquid-glass-pill inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition-transform active:scale-[0.98]",
-              imminent ? "text-accent" : "text-fg hover:text-accent",
+        {(hasAttendees || joinHref) && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              {hasAttendees && <AttendeeStack meeting={meeting} />}
+            </div>
+            {joinHref && (
+              <a
+                href={joinHref}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="today-schedule-join"
+                className={cn(
+                  "liquid-glass-pill inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                  imminent ? "text-accent" : "text-fg hover:text-accent",
+                )}
+              >
+                <Video className="size-3.5" strokeWidth={1.85} aria-hidden />
+                Join
+              </a>
             )}
-          >
-            <Video className="size-3.5" strokeWidth={1.85} aria-hidden />
-            Join
-          </a>
+          </div>
         )}
-        {!meeting.private && <AttendeeStack meeting={meeting} />}
       </div>
     </li>
   );
@@ -208,13 +211,15 @@ const EMPTY_MEETINGS: UpcomingMeeting[] = [];
 export function TodayScheduleCard({
   cardRef,
   highlighted = false,
+  sticky = true,
   onSummaryChange,
 }: {
   cardRef?: RefObject<HTMLElement | null>;
   highlighted?: boolean;
+  sticky?: boolean;
   onSummaryChange?: (summary: ScheduleSummary) => void;
 }) {
-  const { data, error, retry, at } = useRead<UpcomingMeetings>(
+  const { data, error, retry } = useRead<UpcomingMeetings>(
     "/api/brief/meetings",
     (signal) => getUpcomingMeetings(signal),
   );
@@ -253,7 +258,6 @@ export function TodayScheduleCard({
   }, [meetings, todayKey]);
 
   const loading = !data && !error;
-  const freshness = refreshedLabel(at, now);
 
   const nextToday = todayMeetings.find((m) => whenOf(m, now) !== "past");
   const nextStart = nextToday ? startOf(nextToday) : null;
@@ -271,23 +275,19 @@ export function TodayScheduleCard({
       aria-label="Today's schedule"
       data-testid="today-schedule-card"
       className={cn(
-        "outline-none transition-colors lg:sticky lg:top-6 lg:border-l lg:border-border lg:pl-6",
+        "rounded-xl border border-border/75 bg-bg p-4 outline-none transition-colors duration-150 dark:bg-[#14161b]",
+        sticky && "lg:sticky lg:top-6",
         highlighted && "border-accent",
       )}
     >
-      <header className="flex items-center justify-between gap-2 border-b border-border pb-2.5">
+      <header className="flex items-center justify-between gap-2 border-b border-border/70 pb-3">
         <div className="flex min-w-0 items-baseline gap-2">
-          <h2 className="font-display text-[14.5px] font-semibold tracking-[-0.015em] text-fg">Today</h2>
+          <h2 className="font-display text-[15px] font-semibold tracking-[-0.015em] text-fg">Today</h2>
           <span className="truncate text-[12.5px] font-medium text-muted">
             {shortHeaderDate(now)}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {freshness && (
-            <span className="hidden text-[11.5px] text-faint xl:inline" title={freshness}>
-              {freshness}
-            </span>
-          )}
+        <div className="flex shrink-0 items-center gap-1">
           <button
             type="button"
             disabled={loading || refreshing}
@@ -298,23 +298,23 @@ export function TodayScheduleCard({
             aria-label="Refresh schedule"
             title="Refresh schedule"
             data-testid="today-schedule-refresh"
-            className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors duration-150 hover:bg-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50 cursor-pointer"
           >
             <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} strokeWidth={1.9} aria-hidden />
           </button>
           <Link
             href="/meetings"
             data-testid="today-schedule-full-link"
-            className="inline-flex h-7 items-center gap-0.5 rounded-md px-2 text-[12px] font-medium text-accent transition-colors hover:bg-hover"
+            className="inline-flex h-7 items-center gap-0.5 rounded-md px-2 text-[12px] font-medium text-accent transition-colors duration-150 hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
-            Full schedule
+            Open schedule
             <ChevronRight className="size-3.5" strokeWidth={2} aria-hidden />
           </Link>
         </div>
       </header>
 
       {error ? (
-        <div className="px-4 py-5 text-[12.5px] text-muted" data-testid="today-schedule-error">
+        <div className="px-2 py-5 text-[12.5px] text-muted" data-testid="today-schedule-error">
           <p>{plainError(error)}</p>
           <button
             type="button"
@@ -322,19 +322,19 @@ export function TodayScheduleCard({
               setRefreshing(true);
               retry();
             }}
-            className="mt-2 inline-flex h-7 items-center rounded-md border border-border-strong bg-bg px-2.5 text-[12px] font-medium text-fg hover:bg-hover cursor-pointer"
+            className="mt-2.5 inline-flex h-7 items-center rounded-md border border-border-strong bg-bg px-2.5 text-[12px] font-medium text-fg transition-colors duration-150 hover:bg-hover cursor-pointer"
           >
             Try again
           </button>
         </div>
       ) : loading ? (
-        <div className="space-y-3 p-4" data-testid="today-schedule-loading">
-          <div className="skeleton h-10 w-full" />
-          <div className="skeleton h-10 w-5/6" />
-          <div className="skeleton h-10 w-4/6" />
+        <div className="space-y-2.5 pt-3" data-testid="today-schedule-loading">
+          <div className="skeleton h-12 w-full" />
+          <div className="skeleton h-12 w-5/6" />
+          <div className="skeleton h-12 w-4/6" />
         </div>
       ) : meetings.length === 0 ? (
-        <div className="px-4 py-8 text-center" data-testid="today-schedule-empty">
+        <div className="px-2 py-7 text-center" data-testid="today-schedule-empty">
           <Calendar className="mx-auto size-5 text-muted" strokeWidth={1.75} aria-hidden />
           <p className="mt-2.5 text-[13.5px] font-medium text-fg">No meetings scheduled</p>
           <p className="mt-1 text-[12.5px] text-muted">
@@ -342,7 +342,7 @@ export function TodayScheduleCard({
           </p>
           <Link
             href="/meetings"
-            className="mt-3 inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-bg px-2.5 text-[12px] font-medium text-fg hover:bg-hover"
+            className="mt-3 inline-flex h-7 items-center gap-1 rounded-md border border-border-strong bg-surface px-2.5 text-[12px] font-medium text-fg transition-colors duration-150 hover:bg-hover"
           >
             Open Meetings
             <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
@@ -351,7 +351,7 @@ export function TodayScheduleCard({
       ) : (
         <>
           {todayMeetings.length > 0 ? (
-            <ol className="divide-y divide-border/60" data-testid="today-schedule-list">
+            <ol className="divide-y divide-border/50 pt-1" data-testid="today-schedule-list">
               {todayMeetings.map((m, idx) => (
                 <ScheduleRow key={m.object?.object_id ?? `${m.start ?? ""}-${idx}`} meeting={m} now={now} />
               ))}
@@ -363,11 +363,11 @@ export function TodayScheduleCard({
           )}
 
           {upNext.length > 0 && (
-            <div className="border-t border-border/80" data-testid="today-schedule-up-next">
-              <div className="px-1 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.04em] text-faint">
+            <div className="mt-1 border-t border-border/70 pt-3" data-testid="today-schedule-up-next">
+              <div className="px-2 pb-1 text-[12px] font-medium text-muted">
                 Up next
               </div>
-              <ol className="divide-y divide-border/60">
+              <ol className="divide-y divide-border/50">
                 {upNext.map(({ day, meeting }, idx) => (
                   <ScheduleRow
                     key={meeting.object?.object_id ?? `${meeting.start ?? ""}-${idx}`}
@@ -380,11 +380,11 @@ export function TodayScheduleCard({
             </div>
           )}
 
-          <footer className="flex items-center justify-between gap-2 border-t border-border/80 px-1 py-2.5 text-[12px]">
-            <Link href="/meetings?view=weekly" className="font-medium text-muted transition-colors hover:text-fg">
+          <footer className="mt-2 flex items-center justify-between gap-2 border-t border-border/70 px-1 pt-2.5 text-[12px]">
+            <Link href="/meetings?view=weekly" className="font-medium text-muted transition-colors duration-150 hover:text-fg">
               Weekly review
             </Link>
-            <Link href="/meetings?view=follow-ups" className="font-medium text-muted transition-colors hover:text-fg">
+            <Link href="/meetings?view=follow-ups" className="font-medium text-muted transition-colors duration-150 hover:text-fg">
               Follow-ups
             </Link>
           </footer>

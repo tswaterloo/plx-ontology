@@ -147,7 +147,7 @@ describe("AssistWorkbench optimistic item actions", () => {
 
   it("orders queue by priority sections (Ready to act, Needs input, collapsible Waiting) and supports sort and search", async () => {
     const waitingItem = todoItem("item_wait", "Supplier confirmation", {
-      summary: "No answer yet from Ricardo",
+      summary: "No answer yet from Alex",
       todos: [],
       created_at: "2026-11-25T12:00:00Z",
     });
@@ -234,8 +234,16 @@ describe("AssistWorkbench optimistic item actions", () => {
     await waitFor(() => expect(screen.getByTestId("assist-detail")).toHaveTextContent("Linked colleague task"));
   });
 
-  it("supports collapsible New Assist job composer and instant hover quick-dismiss in the queue", async () => {
-    const items = [todoItem("item_1", "First item"), todoItem("item_2", "Second item")];
+  it("renders a sleek inline command bar with focus-only quick suggestions, elevated draft composer, and instant hover quick-dismiss", async () => {
+    const items = [
+      todoItem("item_1", "Confirm PO 10844 ETA", {
+        kind: "reply",
+        to: ["ops@supplier.example"],
+        body: "Hi team, please confirm the ship date for PO 10844.",
+        todos: [],
+      }),
+      todoItem("item_2", "Second item"),
+    ];
     mocks.getAutopilotDrafts.mockResolvedValue({ items });
     mocks.getAssistJobs.mockResolvedValue({ jobs: [], status: "ok" });
     mocks.decideAutopilotItem.mockResolvedValue({});
@@ -243,10 +251,18 @@ describe("AssistWorkbench optimistic item actions", () => {
     render(<AssistWorkbench linked={null} />);
     await waitFor(() => expect(screen.getAllByTestId("assist-queue-item")).toHaveLength(2));
 
-    // Composer starts collapsed so the 2-pane inbox sits cleanly above the fold
-    expect(screen.queryByTestId("give-job")).toBeNull();
-    fireEvent.click(screen.getByTestId("assist-new-job-toggle"));
-    expect(screen.getByTestId("give-job")).toBeInTheDocument();
+    // Inline h-11 command strip is visible; quick-try popover stays closed until focused
+    expect(screen.getByTestId("assist-command-bar")).toBeInTheDocument();
+    expect(screen.queryByTestId("give-job-examples")).toBeNull();
+    const cmdInput = screen.getByPlaceholderText(/Give Assist a job/i);
+    fireEvent.focus(cmdInput);
+    expect(screen.getByTestId("give-job-examples")).toBeInTheDocument();
+    fireEvent.keyDown(cmdInput, { key: "Escape" });
+    expect(screen.queryByTestId("give-job-examples")).toBeNull();
+
+    // Elevated Draft Composer renders with To, Subject, body, and Approve CTA
+    expect(screen.getByTestId("inbox-draft-composer")).toBeInTheDocument();
+    expect(screen.getByTestId("inbox-draft-approve")).toHaveTextContent("Approve");
 
     // Instant hover quick-dismiss removes the item optimistically
     const dismissButtons = screen.getAllByTestId("assist-quick-dismiss");
@@ -254,5 +270,33 @@ describe("AssistWorkbench optimistic item actions", () => {
     expect(screen.getAllByTestId("assist-queue-item")).toHaveLength(1);
     expect(screen.getByTestId("assist-toast")).toHaveTextContent("Dismissed");
     await waitFor(() => expect(mocks.decideAutopilotItem).toHaveBeenCalledWith("item_1", { decision: "reject" }));
+  });
+
+  it("isolates automated MC merge approvals into a dedicated filter tab and offers a mobile back-to-queue control", async () => {
+    const humanItem = todoItem("item_human", "Confirm supplier ETA for PO 106200");
+    const mcItem: PreparedItem = {
+      ...todoItem("item_mc", "Approval"),
+      kind: "alert",
+      alert_kind: "mc_approval_pending",
+      summary: "Automated merge approval for PR #412",
+      todos: [],
+    };
+    mocks.getAutopilotDrafts.mockResolvedValue({ items: [humanItem, mcItem] });
+    mocks.getAssistJobs.mockResolvedValue({ jobs: [], status: "ok" });
+
+    render(<AssistWorkbench linked={null} />);
+    await waitFor(() => expect(screen.getAllByTestId("assist-queue-item")).toHaveLength(1));
+    expect(screen.getByTestId("assist-queue-item")).toHaveTextContent("Confirm supplier ETA for PO 106200");
+
+    // Selecting an item opens mobile detail with Back to queue button
+    fireEvent.click(screen.getByTestId("assist-queue-item"));
+    const backBtn = screen.getByTestId("assist-mobile-back");
+    expect(backBtn).toHaveTextContent("Back to queue");
+    fireEvent.click(backBtn);
+
+    // Automated MC approval lives cleanly in its own filter tab
+    fireEvent.click(screen.getByRole("button", { name: /MC approvals/i }));
+    await waitFor(() => expect(screen.getAllByTestId("assist-queue-item")).toHaveLength(1));
+    expect(screen.getByTestId("assist-queue-item")).toHaveTextContent("Automated merge approval for PR #412");
   });
 });

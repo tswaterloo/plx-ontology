@@ -314,7 +314,7 @@ def _reclaimable(cgroup: Path) -> int:
 # Page reads served at once: the owner thread and helpers, each its own runtime and thread
 # on one shared queue, so one slow read (a briefing read again after a visit, a cold
 # list) never holds up another reader's or another route's kept answer.
-READ_WORKERS = 3
+READ_WORKERS = 6
 MAX_QUEUED_ASKS = 64   # pre-reads queued before an Ask is refused at once
 READ_TIMEOUT_SECONDS = 60
 PREREAD_FAILURES: dict[str, int] = {}     # failed pre-reads by exception type, this process

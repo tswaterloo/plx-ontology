@@ -33,28 +33,28 @@ import { ApiError } from "@/lib/errors";
 import { ShowAll } from "@/components/show-all";
 
 /**
- * The cube mark: a block with one corner cut away, in the app's three accents (cyan top,
- * blue lit face, navy shaded face). Flat polygons on no tile; the same drawing as the
- * favicon and install icons. Sized in em so it follows the wordmark.
+ * The cube mark: a block with one corner cut away, rendered in a restrained architectural
+ * platinum/obsidian slate palette that adapts cleanly across dark and light themes. Flat
+ * polygons on no tile; the same drawing as the favicon and install icons. Sized in em so
+ * it follows the wordmark.
  */
 export function CubeMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 20.78 24" className={cn("h-[1.2em] w-auto shrink-0", className)} aria-hidden focusable="false" data-testid="cube-mark">
-      <polygon points="10.39,12 15.59,15 10.39,18 5.2,15" fill="#4FDCEA" />
-      <polygon points="10.39,12 5.2,15 5.2,9 10.39,6" fill="var(--cube-right)" />
-      <polygon points="10.39,12 15.59,15 15.59,9 10.39,6" fill="#4DA8FF" />
-      <polygon points="10.39,0 20.78,6 15.59,9 10.39,6 5.2,9 0,6" fill="#4FDCEA" />
-      <polygon points="20.78,18 10.39,24 10.39,18 15.59,15 15.59,9 20.78,6" fill="var(--cube-right)" />
-      <polygon points="0,18 10.39,24 10.39,18 5.2,15 5.2,9 0,6" fill="#4DA8FF" />
+      <polygon points="10.39,12 15.59,15 10.39,18 5.2,15" className="fill-[#64748b] dark:fill-[#f3f4f6]" />
+      <polygon points="10.39,12 5.2,15 5.2,9 10.39,6" className="fill-[#111318] dark:fill-[#4b5563]" />
+      <polygon points="10.39,12 15.59,15 15.59,9 10.39,6" className="fill-[#334155] dark:fill-[#9ca3af]" />
+      <polygon points="10.39,0 20.78,6 15.59,9 10.39,6 5.2,9 0,6" className="fill-[#64748b] dark:fill-[#f3f4f6]" />
+      <polygon points="20.78,18 10.39,24 10.39,18 15.59,15 15.59,9 20.78,6" className="fill-[#111318] dark:fill-[#4b5563]" />
+      <polygon points="0,18 10.39,24 10.39,18 5.2,15 5.2,9 0,6" className="fill-[#334155] dark:fill-[#9ca3af]" />
     </svg>
   );
 }
 
 /**
- * The wordmark: the cube, then PLX/workbench in Geist Mono with the slash in the bright blue
- * (--brand-slash: #4DA8FF on dark, #2E8FF0 on light, 3:1 or better either way). Every part
- * after the cube carries data-wm="rest", so the collapsed sidebar can show the cube alone.
- * Sizes are in em, so the sign-in page can scale it.
+ * The wordmark: the architectural cube, then PLX/workbench in Geist Mono with the slash
+ * in the theme's accent ink (--brand-slash). Every part after the cube carries data-wm="rest",
+ * so the collapsed sidebar can show the cube alone. Sizes are in em, so the sign-in page can scale it.
  */
 export function Logo({ className }: { className?: string }) {
   return (

@@ -6,28 +6,37 @@ import {
   FileCode2,
   FileSpreadsheet,
   FileText,
+  FolderPlus,
   FolderUp,
   LayoutGrid,
   List,
   Pin,
   PinOff,
   Presentation,
-  RotateCcw,
   Search,
   Sparkles,
-  Trash2,
   Workflow,
   X,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cleanChatTitle } from "@/components/ask-chats";
 import { Button } from "@/components/ui/button";
 import { Toolbar } from "@/components/ui/toolbar";
-import { getAskChats, getAssistJobs, getInsights, type AssistJob } from "@/lib/api";
+import {
+  getAskChats,
+  getAssistJobs,
+  getInsights,
+  getSharePointFolders,
+  type AssistJob,
+  type SharePointFolderInfo,
+} from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { formatDate } from "@/lib/format";
 import type { AskChat, InsightInfo } from "@/lib/types";
+import { DeliverableArtwork } from "./deliverable-artwork";
+import { SharePointUploadPopover } from "./sharepoint-upload-popover";
 
 export type ArtifactFormatFilter = "all" | "Sheet" | "Doc" | "Slides" | "Chart" | "Workflow";
 export type ArtifactViewMode = "grid" | "list";
@@ -37,10 +46,13 @@ export type PetraDomain = "Finance" | "Purchasing" | "Operations" | "Quality" | 
 
 export interface StudioFormatOption {
   id: StudioFormatId;
+  title: string;
+  extension: string;
   label: string;
   shortLabel: string;
   subtitle: string;
   badgeType: ArtifactBadgeType;
+  defaultDomain: PetraDomain;
   promptPrefix: string;
   placeholder: string;
 }
@@ -54,24 +66,15 @@ export interface GalleryArtifact {
   date: string | null;
   href: string;
   openLabel: string;
-  sourceKind: "chat" | "chart" | "assist" | "local";
+  sourceKind: "chat" | "chart" | "assist";
   domain?: PetraDomain;
   pinned?: boolean;
-}
-
-export interface LocalPinnedArtifact {
-  id: string;
-  title: string;
-  subtitle: string;
-  type: ArtifactBadgeType;
-  date: string;
-  href: string;
-  domain?: PetraDomain;
 }
 
 export interface SharePointOption {
   enabled: boolean;
   folder: string;
+  createIfMissing?: boolean;
 }
 
 export const PETRA_DOMAINS: readonly PetraDomain[] = [
@@ -83,54 +86,76 @@ export const PETRA_DOMAINS: readonly PetraDomain[] = [
 ] as const;
 
 export const PAGE_SIZE = 12;
-export const LOCAL_ARTIFACTS_KEY = "plx.artifacts.local.v1";
 export const PINNED_IDS_KEY = "plx.artifacts.pinned-ids.v1";
+
+const FALLBACK_SHAREPOINT_FOLDERS: SharePointFolderInfo[] = [
+  { path: "Shared Documents/Operations", label: "Operations", drive_id: "", parent_id: "", site: "Company Library", file_count: 0, source: "default" },
+  { path: "Shared Documents/Finance", label: "Finance", drive_id: "", parent_id: "", site: "Company Library", file_count: 0, source: "default" },
+  { path: "Shared Documents/Purchasing", label: "Purchasing", drive_id: "", parent_id: "", site: "Company Library", file_count: 0, source: "default" },
+  { path: "Shared Documents/Quality", label: "Quality", drive_id: "", parent_id: "", site: "Company Library", file_count: 0, source: "default" },
+  { path: "Shared Documents/Sales", label: "Sales", drive_id: "", parent_id: "", site: "Company Library", file_count: 0, source: "default" },
+];
 
 export const STUDIO_FORMATS: readonly StudioFormatOption[] = [
   {
     id: "sheets",
+    title: "Excel Workbook",
+    extension: ".xlsx",
     label: "Excel (.xlsx)",
     shortLabel: "Excel",
-    subtitle: "Live spreadsheet or financial model with formulas",
+    subtitle: "Financial model, tracker, or variance workbook with formulas",
     badgeType: "Sheet",
+    defaultDomain: "Purchasing",
     promptPrefix: "Build an Excel spreadsheet (.xlsx) with formulas for ",
     placeholder: "Open PO landed cost tracker by supplier with variance formulas",
   },
   {
     id: "docs",
+    title: "Word Brief / SOP",
+    extension: ".docx",
     label: "Word (.docx)",
     shortLabel: "Word",
-    subtitle: "Formatted brief, memo, SOP, or PO/quote",
+    subtitle: "Executive brief, supplier memo, or structured SOP",
     badgeType: "Doc",
+    defaultDomain: "Quality",
     promptPrefix: "Create a formatted Word document (.docx) for ",
     placeholder: "Q4 supplier quality brief covering late deliveries and QC holds",
   },
   {
     id: "slides",
+    title: "Slide Deck",
+    extension: ".pptx",
     label: "Slides (.pptx)",
     shortLabel: "Slides",
-    subtitle: "Executive slide deck with metrics and takeaways",
+    subtitle: "16:9 executive deck with KPI summary and takeaways",
     badgeType: "Slides",
+    defaultDomain: "Operations",
     promptPrefix: "Create a PowerPoint presentation (.pptx) summarizing ",
     placeholder: "Monthly operations review deck with top late POs and margin trend",
   },
   {
     id: "charts",
+    title: "Live Chart / Report",
+    extension: "Chart",
     label: "Chart",
     shortLabel: "Chart",
-    subtitle: "Interactive chart and data breakdown",
+    subtitle: "Interactive trend breakdown from live company records",
     badgeType: "Chart",
+    defaultDomain: "Finance",
     promptPrefix: "Create an interactive chart and breakdown of ",
     placeholder: "Late purchase orders by supplier over the last 90 days",
   },
   {
     id: "custom",
-    label: "Custom",
-    shortLabel: "Custom",
-    subtitle: "Any file format, CSV export, PO/quote, or tailored report",
+    title: "PO & Quotes",
+    extension: ".docx",
+    label: "PO / Quote",
+    shortLabel: "PO / Quote",
+    subtitle: "Commercial quote, PO draft, CSV export, or any custom file",
     badgeType: "Doc",
-    promptPrefix: "Create a deliverable for ",
-    placeholder: "Structured customer quote or custom CSV export from Business Central",
+    defaultDomain: "Sales",
+    promptPrefix: "Create a structured deliverable for ",
+    placeholder: "Customer quote with SKU quantities, unit pricing, lead times, and delivery terms",
   },
 ] as const;
 
@@ -190,15 +215,13 @@ export function buildCreationPrompt(
   const base = `${format.promptPrefix}${clean} (${domain} team)`;
   if (sharepoint?.enabled) {
     const folder = sharepoint.folder.trim() || `Shared Documents/${domain}`;
-    return `${base}. Prepare a SharePoint upload draft for folder "${folder}" (create the folder first if it does not exist).`;
+    const createClause =
+      sharepoint.createIfMissing === false
+        ? ""
+        : " (create the folder first if it does not exist)";
+    return `${base}. Prepare a SharePoint upload draft for folder "${folder}"${createClause}.`;
   }
   return base;
-}
-
-function summarizeTitle(prompt: string): string {
-  const line = prompt.replace(/\s+/g, " ").trim();
-  if (line.length <= 72) return line;
-  return `${line.slice(0, 69).trimEnd()}...`;
 }
 
 /** Clean deliverable titles so raw questions ending in "?" read as crisp artifact titles. */
@@ -207,26 +230,6 @@ export function formatDeliverableTitle(raw: string, keepQuestion = false): strin
   if (!collapsed) return "Untitled deliverable";
   if (keepQuestion) return collapsed;
   return collapsed.replace(/\?+$/, "").trim() || collapsed;
-}
-
-function readLocalArtifacts(): LocalPinnedArtifact[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(LOCAL_ARTIFACTS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is LocalPinnedArtifact =>
-        Boolean(item) &&
-        typeof item.id === "string" &&
-        typeof item.title === "string" &&
-        typeof item.href === "string" &&
-        typeof item.type === "string",
-    );
-  } catch {
-    return [];
-  }
 }
 
 function readPinnedIds(): Set<string> {
@@ -280,6 +283,103 @@ function ArtifactTypeIcon({ type, className }: { type: ArtifactBadgeType; classN
   }
 }
 
+/** Miniature geometric header preview strip for each deliverable card on the 3-column visual shelf. */
+function DeliverableShelfPreview({ type }: { type: ArtifactBadgeType }) {
+  switch (type) {
+    case "Sheet":
+      return (
+        <svg viewBox="0 0 320 76" fill="none" className="h-full w-full" aria-hidden="true">
+          <rect x="16" y="12" width="288" height="56" rx="4" fill="currentColor" fillOpacity="0.03" stroke="currentColor" strokeOpacity="0.10" />
+          <rect x="16" y="12" width="288" height="14" rx="4" fill="currentColor" fillOpacity="0.06" />
+          <line x1="16" y1="26" x2="304" y2="26" stroke="currentColor" strokeOpacity="0.10" />
+          <line x1="16" y1="40" x2="304" y2="40" stroke="currentColor" strokeOpacity="0.06" />
+          <line x1="16" y1="54" x2="304" y2="54" stroke="currentColor" strokeOpacity="0.06" />
+          <line x1="112" y1="12" x2="112" y2="68" stroke="currentColor" strokeOpacity="0.07" />
+          <line x1="184" y1="12" x2="184" y2="68" stroke="currentColor" strokeOpacity="0.07" />
+          <line x1="248" y1="12" x2="248" y2="68" stroke="currentColor" strokeOpacity="0.07" />
+          <rect x="26" y="17" width="44" height="4" rx="1.5" fill="currentColor" fillOpacity="0.32" />
+          <rect x="122" y="17" width="34" height="4" rx="1.5" fill="currentColor" fillOpacity="0.24" />
+          <rect x="194" y="17" width="38" height="4" rx="1.5" fill="currentColor" fillOpacity="0.24" />
+          <rect x="26" y="31" width="60" height="3.5" rx="1.5" fill="currentColor" fillOpacity="0.22" />
+          <rect x="122" y="31" width="40" height="3.5" rx="1.5" fill="currentColor" fillOpacity="0.16" />
+          <rect x="26" y="45" width="52" height="3.5" rx="1.5" fill="currentColor" fillOpacity="0.18" />
+          <rect x="194" y="45" width="36" height="3.5" rx="1.5" fill="currentColor" fillOpacity="0.16" />
+          <rect x="249" y="54.5" width="54" height="13" fill="var(--ok)" fillOpacity="0.16" />
+          <rect x="258" y="59" width="34" height="4" rx="1.5" fill="var(--ok)" fillOpacity="0.85" />
+          <rect x="26" y="59" width="38" height="4" rx="1.5" fill="currentColor" fillOpacity="0.35" />
+        </svg>
+      );
+    case "Slides":
+      return (
+        <svg viewBox="0 0 320 76" fill="none" className="h-full w-full" aria-hidden="true">
+          <rect x="34" y="14" width="252" height="54" rx="4" fill="currentColor" fillOpacity="0.02" stroke="currentColor" strokeOpacity="0.07" />
+          <rect x="24" y="10" width="272" height="56" rx="4" fill="currentColor" fillOpacity="0.035" stroke="currentColor" strokeOpacity="0.12" />
+          <rect x="36" y="18" width="92" height="4.5" rx="1.5" fill="currentColor" fillOpacity="0.45" />
+          <rect x="256" y="18" width="28" height="4" rx="1.5" fill="currentColor" fillOpacity="0.18" />
+          <line x1="36" y1="28" x2="284" y2="28" stroke="currentColor" strokeOpacity="0.08" />
+          <rect x="36" y="34" width="76" height="24" rx="3" fill="currentColor" fillOpacity="0.04" stroke="currentColor" strokeOpacity="0.08" />
+          <rect x="44" y="41" width="28" height="3" rx="1.5" fill="currentColor" fillOpacity="0.22" />
+          <rect x="44" y="48" width="44" height="5" rx="1.5" fill="var(--risk)" fillOpacity="0.75" />
+          <rect x="120" y="34" width="76" height="24" rx="3" fill="currentColor" fillOpacity="0.04" stroke="currentColor" strokeOpacity="0.08" />
+          <rect x="128" y="41" width="32" height="3" rx="1.5" fill="currentColor" fillOpacity="0.22" />
+          <rect x="128" y="48" width="48" height="5" rx="1.5" fill="currentColor" fillOpacity="0.40" />
+          <rect x="204" y="34" width="80" height="24" rx="3" fill="currentColor" fillOpacity="0.04" stroke="currentColor" strokeOpacity="0.08" />
+          <rect x="212" y="47" width="10" height="7" rx="1" fill="currentColor" fillOpacity="0.20" />
+          <rect x="226" y="43" width="10" height="11" rx="1" fill="currentColor" fillOpacity="0.28" />
+          <rect x="240" y="39" width="10" height="15" rx="1" fill="var(--accent)" fillOpacity="0.75" />
+          <rect x="254" y="42" width="10" height="12" rx="1" fill="currentColor" fillOpacity="0.25" />
+        </svg>
+      );
+    case "Chart":
+      return (
+        <svg viewBox="0 0 320 76" fill="none" className="h-full w-full" aria-hidden="true">
+          <line x1="20" y1="20" x2="300" y2="20" stroke="currentColor" strokeOpacity="0.06" strokeDasharray="2 3" />
+          <line x1="20" y1="38" x2="300" y2="38" stroke="currentColor" strokeOpacity="0.06" strokeDasharray="2 3" />
+          <line x1="20" y1="58" x2="300" y2="58" stroke="currentColor" strokeOpacity="0.12" />
+          <rect x="34" y="42" width="22" height="16" rx="2" fill="currentColor" fillOpacity="0.14" />
+          <rect x="70" y="34" width="22" height="24" rx="2" fill="currentColor" fillOpacity="0.18" />
+          <rect x="106" y="38" width="22" height="20" rx="2" fill="currentColor" fillOpacity="0.18" />
+          <rect x="142" y="28" width="22" height="30" rx="2" fill="currentColor" fillOpacity="0.24" />
+          <rect x="178" y="24" width="22" height="34" rx="2" fill="var(--accent)" fillOpacity="0.55" />
+          <rect x="214" y="18" width="22" height="40" rx="2" fill="var(--accent)" fillOpacity="0.80" />
+          <rect x="250" y="22" width="22" height="36" rx="2" fill="var(--accent)" fillOpacity="0.65" />
+          <path d="M 45 38 L 81 30 L 117 34 L 153 24 L 189 20 L 225 14 L 261 17" stroke="var(--ok)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="225" cy="14" r="2.6" fill="var(--ok)" />
+        </svg>
+      );
+    case "Workflow":
+      return (
+        <svg viewBox="0 0 320 76" fill="none" className="h-full w-full" aria-hidden="true">
+          <line x1="88" y1="38" x2="128" y2="38" stroke="currentColor" strokeOpacity="0.22" strokeWidth="1.2" />
+          <line x1="192" y1="38" x2="232" y2="38" stroke="currentColor" strokeOpacity="0.22" strokeWidth="1.2" />
+          <rect x="24" y="24" width="64" height="28" rx="4" fill="currentColor" fillOpacity="0.04" stroke="currentColor" strokeOpacity="0.14" />
+          <rect x="34" y="33" width="32" height="3.5" rx="1.5" fill="currentColor" fillOpacity="0.35" />
+          <rect x="34" y="40" width="44" height="3" rx="1.5" fill="currentColor" fillOpacity="0.18" />
+          <rect x="128" y="24" width="64" height="28" rx="4" fill="var(--accent)" fillOpacity="0.10" stroke="var(--accent)" strokeOpacity="0.45" />
+          <rect x="138" y="33" width="38" height="3.5" rx="1.5" fill="var(--accent)" fillOpacity="0.85" />
+          <rect x="138" y="40" width="28" height="3" rx="1.5" fill="currentColor" fillOpacity="0.25" />
+          <rect x="232" y="24" width="64" height="28" rx="4" fill="var(--ok)" fillOpacity="0.08" stroke="var(--ok)" strokeOpacity="0.38" />
+          <rect x="242" y="33" width="36" height="3.5" rx="1.5" fill="var(--ok)" fillOpacity="0.85" />
+          <rect x="242" y="40" width="40" height="3" rx="1.5" fill="currentColor" fillOpacity="0.22" />
+        </svg>
+      );
+    case "Doc":
+    default:
+      return (
+        <svg viewBox="0 0 320 76" fill="none" className="h-full w-full" aria-hidden="true">
+          <rect x="36" y="10" width="248" height="58" rx="4" fill="currentColor" fillOpacity="0.03" stroke="currentColor" strokeOpacity="0.10" />
+          <rect x="52" y="18" width="110" height="5" rx="1.5" fill="currentColor" fillOpacity="0.42" />
+          <rect x="52" y="27" width="76" height="3" rx="1.5" fill="currentColor" fillOpacity="0.20" />
+          <rect x="52" y="36" width="216" height="12" rx="2.5" fill="currentColor" fillOpacity="0.04" />
+          <rect x="52" y="36" width="2.5" height="12" rx="1" fill="var(--accent)" fillOpacity="0.80" />
+          <rect x="61" y="40.5" width="138" height="3" rx="1.5" fill="currentColor" fillOpacity="0.28" />
+          <rect x="52" y="54" width="194" height="3" rx="1.5" fill="currentColor" fillOpacity="0.16" />
+          <rect x="52" y="61" width="152" height="3" rx="1.5" fill="currentColor" fillOpacity="0.14" />
+        </svg>
+      );
+  }
+}
+
 export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
   const router = useRouter();
   const promptInputRef = useRef<HTMLTextAreaElement>(null);
@@ -294,16 +394,18 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
   const [chats, setChats] = useState<AskChat[]>([]);
   const [charts, setCharts] = useState<InsightInfo[]>([]);
   const [jobs, setJobs] = useState<AssistJob[]>([]);
-  const [localArtifacts, setLocalArtifacts] = useState<LocalPinnedArtifact[]>([]);
+  const [spFolders, setSpFolders] = useState<SharePointFolderInfo[]>(FALLBACK_SHAREPOINT_FOLDERS);
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => new Set());
-  const [removedToast, setRemovedToast] = useState<{ artifact: LocalPinnedArtifact; index: number } | null>(null);
+  const [uploadTarget, setUploadTarget] = useState<GalleryArtifact | null>(null);
 
   // Prompt-first studio composer state
   const [selectedFormatId, setSelectedFormatId] = useState<StudioFormatId>("sheets");
   const [promptText, setPromptText] = useState("");
   const [domain, setDomain] = useState<PetraDomain>("Operations");
+  const [domainTouched, setDomainTouched] = useState(false);
   const [sharePointEnabled, setSharePointEnabled] = useState(false);
   const [sharePointFolder, setSharePointFolder] = useState("Shared Documents/Operations");
+  const [sharePointCreateFolder, setSharePointCreateFolder] = useState(true);
 
   const selectedFormat = useMemo(
     () => STUDIO_FORMATS.find((f) => f.id === selectedFormatId) ?? STUDIO_FORMATS[0],
@@ -311,7 +413,6 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
   );
 
   useEffect(() => {
-    setLocalArtifacts(readLocalArtifacts());
     setPinnedIds(readPinnedIds());
   }, []);
 
@@ -326,8 +427,9 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       getAskChats(undefined, ctl.signal),
       getInsights(ctl.signal),
       getAssistJobs(ctl.signal),
+      getSharePointFolders(ctl.signal),
     ])
-      .then(([chatsRes, insightsRes, jobsRes]) => {
+      .then(([chatsRes, insightsRes, jobsRes, spRes]) => {
         if (ctl.signal.aborted) return;
         if (chatsRes.status === "fulfilled" && Array.isArray(chatsRes.value?.chats)) {
           setChats(chatsRes.value.chats);
@@ -337,6 +439,9 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
         }
         if (jobsRes.status === "fulfilled" && Array.isArray(jobsRes.value?.jobs)) {
           setJobs(jobsRes.value.jobs);
+        }
+        if (spRes.status === "fulfilled" && Array.isArray(spRes.value?.folders) && spRes.value.folders.length > 0) {
+          setSpFolders(spRes.value.folders);
         }
       })
       .finally(() => {
@@ -355,37 +460,21 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
     });
   }, []);
 
-  useEffect(() => {
-    if (!removedToast) return;
-    const t = window.setTimeout(() => setRemovedToast(null), 6000);
-    return () => window.clearTimeout(t);
-  }, [removedToast]);
-
-  const removeLocalArtifact = useCallback((id: string) => {
-    setLocalArtifacts((prev) => {
-      const index = prev.findIndex((item) => item.id === id);
-      if (index < 0) return prev;
-      const removed = prev[index];
-      setRemovedToast({ artifact: removed, index });
-      const next = prev.filter((item) => item.id !== id);
-      writeLocalStorage(LOCAL_ARTIFACTS_KEY, next);
-      return next;
-    });
-  }, []);
-
-  const undoRemoveLocalArtifact = useCallback(() => {
-    setRemovedToast((cur) => {
-      if (!cur) return null;
-      setLocalArtifacts((prev) => {
-        if (prev.some((item) => item.id === cur.artifact.id)) return prev;
-        const next = [...prev];
-        next.splice(Math.min(cur.index, next.length), 0, cur.artifact);
-        writeLocalStorage(LOCAL_ARTIFACTS_KEY, next);
-        return next;
-      });
-      return null;
-    });
-  }, []);
+  const selectFormatCard = useCallback(
+    (fmt: StudioFormatOption, focusComposer = false) => {
+      setSelectedFormatId(fmt.id);
+      if (!domainTouched) {
+        setDomain(fmt.defaultDomain);
+        if (sharePointFolder.startsWith("Shared Documents/")) {
+          setSharePointFolder(`Shared Documents/${fmt.defaultDomain}`);
+        }
+      }
+      if (focusComposer) {
+        promptInputRef.current?.focus();
+      }
+    },
+    [domainTouched, sharePointFolder],
+  );
 
   const submitCreate = useCallback(
     (e: React.FormEvent) => {
@@ -399,31 +488,15 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
         selectedFormat,
         raw,
         domain,
-        sharePointEnabled ? { enabled: true, folder: sharePointFolder } : undefined,
+        sharePointEnabled
+          ? { enabled: true, folder: sharePointFolder, createIfMissing: sharePointCreateFolder }
+          : undefined,
       );
       const href = `/ask?q=${encodeURIComponent(prompt)}`;
-
-      const created: LocalPinnedArtifact = {
-        id: `local:${Date.now()}`,
-        title: formatDeliverableTitle(summarizeTitle(raw)),
-        subtitle: sharePointEnabled
-          ? `${domain}, ${selectedFormat.label}, SharePoint`
-          : `${domain}, ${selectedFormat.label}`,
-        type: selectedFormat.badgeType,
-        date: new Date().toISOString(),
-        href,
-        domain,
-      };
-      setLocalArtifacts((prev) => {
-        const next = [created, ...prev].slice(0, 40);
-        writeLocalStorage(LOCAL_ARTIFACTS_KEY, next);
-        return next;
-      });
-
       setPromptText("");
       router.push(href);
     },
-    [domain, promptText, router, selectedFormat, sharePointEnabled, sharePointFolder],
+    [domain, promptText, router, selectedFormat, sharePointCreateFolder, sharePointEnabled, sharePointFolder],
   );
 
   const hiddenThreadCount = useMemo(
@@ -434,28 +507,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
   const allArtifacts = useMemo<GalleryArtifact[]>(() => {
     const items: GalleryArtifact[] = [];
 
-    // 1. User-created deliverables from this studio
-    for (const loc of localArtifacts) {
-      const parts = loc.subtitle
-        .split(/\s*(?:·|,)\s*/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-      items.push({
-        id: loc.id,
-        title: formatDeliverableTitle(loc.title),
-        subtitle: parts.join(" "),
-        subtitleParts: parts,
-        type: loc.type,
-        date: loc.date,
-        href: loc.href,
-        openLabel: "Open in Ask",
-        sourceKind: "local",
-        domain: loc.domain,
-        pinned: true,
-      });
-    }
-
-    // 2. Saved/pinned Insights charts ONLY (never dump all 80 catalog templates)
+    // 1. Saved/pinned Insights charts ONLY (never dump unsaved catalog templates)
     for (const info of charts) {
       if (!info.saved) continue;
       const id = `chart:${info.id}`;
@@ -486,7 +538,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       });
     }
 
-    // 3. Assist jobs ONLY if they produced real prepared deliverables/pieces
+    // 2. Assist jobs ONLY if they produced real prepared deliverables/pieces
     for (const job of jobs) {
       const preparedCount = (job.pieces ?? []).filter((p) => p.status === "prepared").length;
       if (preparedCount === 0) continue;
@@ -506,7 +558,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       });
     }
 
-    // 4. Ask chats ONLY when they represent real files/reports/charts, unless user opts into all threads
+    // 3. Ask chats ONLY when they represent real files/reports/charts, unless user opts into all threads
     for (const chat of chats) {
       const isRealDeliverable = isDeliverableChat(chat);
       if (!isRealDeliverable && !includeAskThreads) continue;
@@ -518,7 +570,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       ];
       items.push({
         id,
-        title: formatDeliverableTitle(chat.title || "Untitled thread", !isRealDeliverable),
+        title: cleanChatTitle(chat.title || "Untitled thread", Boolean(chat.named)),
         subtitle: subtitleParts.join(" "),
         subtitleParts,
         type: inferChatArtifactType(chat.title || ""),
@@ -536,7 +588,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       const tb = b.date ? Date.parse(b.date) || 0 : 0;
       return tb - ta;
     });
-  }, [charts, chats, includeAskThreads, jobs, localArtifacts, pinnedIds]);
+  }, [charts, chats, includeAskThreads, jobs, pinnedIds]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -570,27 +622,90 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
       {intro}
 
       <div className="mx-auto w-full max-w-[1160px] flex-1 space-y-9 px-4 py-6 sm:px-6 lg:px-8">
-        {/* Prompt-first "Create new deliverable" Studio Composer */}
+        {/* Editorial Visual Showcase + Prompt-First "Create a deliverable" Studio */}
         <section
           aria-labelledby="create-deliverable-heading"
           data-testid="create-deliverable-studio"
-          className="space-y-3"
+          className="space-y-4"
         >
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2
               id="create-deliverable-heading"
               className="text-[18px] font-semibold tracking-[-0.02em] text-fg"
             >
-              Create new deliverable
+              Create a deliverable
             </h2>
             <span className="text-[12.5px] text-faint">
-              Built from live company records in Ask, with optional SharePoint handoff
+              Pick a format or describe any custom workbook, brief, deck, quote, or export
             </span>
           </div>
 
+          {/* 5 Bespoke Editorial Dark-Mode Document Preview Cards */}
+          <div
+            role="radiogroup"
+            aria-label="Deliverable format showcase"
+            data-testid="deliverable-showcase"
+            className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5"
+          >
+            {STUDIO_FORMATS.map((fmt) => {
+              const active = fmt.id === selectedFormatId;
+              return (
+                <button
+                  key={fmt.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  data-selected={active ? "true" : "false"}
+                  data-testid={`showcase-card-${fmt.id}`}
+                  onClick={() => selectFormatCard(fmt, true)}
+                  className={cn(
+                    "group relative flex cursor-pointer flex-col overflow-hidden rounded-xl border text-left transition-[border-color,background-color,box-shadow] duration-150",
+                    "bg-[#141519] text-[#F1F5F9]",
+                    active
+                      ? "liquid-glass-active border-white/25 shadow-[0_10px_28px_-10px_rgba(0,0,0,0.65),inset_0_1px_0.5px_rgba(255,255,255,0.38)] ring-1 ring-white/20"
+                      : "border-white/10 hover:border-white/22 hover:shadow-[0_10px_22px_-12px_rgba(0,0,0,0.55)]",
+                  )}
+                >
+                  {/* Specular Liquid Glass Top Edge Catchlight */}
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "pointer-events-none absolute inset-x-0 top-0 h-px transition-opacity",
+                      active
+                        ? "bg-white/30 opacity-100"
+                        : "bg-white/15 opacity-30 group-hover:opacity-70",
+                    )}
+                  />
+
+                  <div className="aspect-[220/124] w-full overflow-hidden border-b border-white/[0.07] bg-[#141519] p-1.5">
+                    <div className="h-full w-full transition-opacity duration-200 group-hover:opacity-95">
+                      <DeliverableArtwork id={fmt.id} active={active} />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-1 flex-col justify-between gap-1 px-3 py-2.5">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="truncate text-[13px] font-semibold tracking-[-0.01em] text-[#F8FAFC]">
+                        {fmt.title}
+                      </span>
+                      <span className="shrink-0 rounded bg-white/[0.07] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#CBD5E1]">
+                        {fmt.extension}
+                      </span>
+                    </div>
+                    <p className="line-clamp-2 text-[11.5px] leading-[1.45] text-[#94A3B8]">
+                      {fmt.subtitle}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Sleek Elevated Studio Dock: 5 preview cards above own format selection */}
           <form
             onSubmit={submitCreate}
-            className="rounded-xl border border-border-strong bg-surface p-4 shadow-sm transition-colors focus-within:border-accent/60"
+            data-testid="studio-composer-dock"
+            className="rounded-xl border border-border/80 bg-surface dark:bg-[#14161b] p-4 shadow-sm transition-colors duration-150 focus-within:border-border-strong"
           >
             <label htmlFor="artifact-prompt-input" className="sr-only">
               Describe what you want to create
@@ -607,38 +722,20 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                   submitCreate(e);
                 }
               }}
-              placeholder="Describe what you want to create (Excel tracker, Word brief, slide deck, chart, PO/quote, or any custom file)..."
+              placeholder={selectedFormat.placeholder}
               data-testid="artifact-prompt-input"
               className="w-full resize-none bg-transparent text-[14.5px] leading-[1.6] text-fg placeholder:text-faint focus:outline-none"
             />
 
-            {/* Liquid Glass Format Selector + Controls Row */}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3">
+            {/* Single Clean Bottom Toolbar: Active format indicator + Domain + SharePoint + Create */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border/70 pt-3">
               <div
-                role="group"
-                aria-label="Deliverable format"
-                className="liquid-glass-pill inline-flex flex-wrap items-center gap-0.5 rounded-lg p-0.5"
-                data-testid="artifact-format-pills"
+                className="inline-flex items-center gap-2 text-[12.5px] text-muted"
+                data-testid="studio-active-format"
               >
-                {STUDIO_FORMATS.map((fmt) => {
-                  const active = fmt.id === selectedFormatId;
-                  return (
-                    <button
-                      key={fmt.id}
-                      type="button"
-                      aria-pressed={active}
-                      onClick={() => setSelectedFormatId(fmt.id)}
-                      data-testid={`studio-format-${fmt.id}`}
-                      className={cn(
-                        "inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition-all cursor-pointer",
-                        active ? "liquid-glass-active" : "text-muted hover:text-fg",
-                      )}
-                    >
-                      <FormatIcon id={fmt.id} className="size-3.5" />
-                      <span>{fmt.label}</span>
-                    </button>
-                  );
-                })}
+                <FormatIcon id={selectedFormat.id} className="size-3.5 text-fg" />
+                <span className="font-medium text-fg">{selectedFormat.title}</span>
+                <span className="font-mono text-[11px] text-faint">{selectedFormat.extension}</span>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -650,12 +747,13 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                     onChange={(e) => {
                       const next = e.target.value as PetraDomain;
                       setDomain(next);
+                      setDomainTouched(true);
                       if (sharePointFolder.startsWith("Shared Documents/")) {
                         setSharePointFolder(`Shared Documents/${next}`);
                       }
                     }}
                     data-testid="artifact-domain-select"
-                    className="h-8 cursor-pointer rounded-md border border-border bg-surface px-2.5 text-[12.5px] font-medium text-fg hover:border-border-strong focus:border-accent/60 focus:outline-none"
+                    className="h-8 cursor-pointer rounded-md border border-border bg-bg px-2.5 text-[12.5px] font-medium text-fg transition-colors duration-150 hover:border-border-strong focus:border-accent/60 focus:outline-none"
                   >
                     {PETRA_DOMAINS.map((d) => (
                       <option key={d} value={d} className="bg-raised text-fg">
@@ -672,7 +770,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                   onClick={() => setSharePointEnabled((v) => !v)}
                   data-testid="artifact-sharepoint-toggle"
                   className={cn(
-                    "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-medium transition-colors cursor-pointer",
+                    "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-medium transition-colors duration-150 cursor-pointer",
                     sharePointEnabled
                       ? "border-border-strong bg-surface-2 text-fg"
                       : "border-border bg-bg text-muted hover:border-border-strong hover:text-fg",
@@ -696,29 +794,69 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
             </div>
 
             {sharePointEnabled && (
-              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-[12.5px]">
-                <label htmlFor="artifact-sp-folder" className="shrink-0 font-medium text-muted">
-                  SharePoint folder
-                </label>
-                <input
-                  id="artifact-sp-folder"
-                  type="text"
-                  value={sharePointFolder}
-                  onChange={(e) => setSharePointFolder(e.target.value)}
-                  placeholder="Shared Documents/Operations"
-                  data-testid="artifact-sharepoint-folder"
-                  className="h-8 min-w-[220px] flex-1 rounded-md border border-border-strong bg-bg px-2.5 text-[12.5px] text-fg placeholder:text-faint focus:border-accent/60 focus:outline-none"
-                />
-                <span className="text-[11.5px] text-faint">
-                  Prepares an upload draft for your confirmation
-                </span>
+              <div className="mt-3 space-y-2.5 border-t border-border/70 pt-3 text-[12.5px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label htmlFor="artifact-sp-folder" className="shrink-0 font-medium text-muted">
+                    SharePoint folder
+                  </label>
+                  <input
+                    id="artifact-sp-folder"
+                    list="artifact-sp-folder-list"
+                    type="text"
+                    value={sharePointFolder}
+                    onChange={(e) => setSharePointFolder(e.target.value)}
+                    placeholder="Shared Documents/Operations"
+                    data-testid="artifact-sharepoint-folder"
+                    className="h-8 min-w-[220px] flex-1 rounded-md border border-border-strong bg-bg px-2.5 font-mono text-[12px] text-fg placeholder:text-faint focus:border-accent/60 focus:outline-none"
+                  />
+                  <datalist id="artifact-sp-folder-list">
+                    {spFolders.map((f) => (
+                      <option key={f.path} value={f.path} />
+                    ))}
+                  </datalist>
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-[12px] text-muted select-none hover:text-fg">
+                    <input
+                      type="checkbox"
+                      checked={sharePointCreateFolder}
+                      onChange={(e) => setSharePointCreateFolder(e.target.checked)}
+                      data-testid="artifact-sharepoint-create-folder"
+                      className="size-3.5 cursor-pointer rounded border-border-strong accent-[var(--accent)]"
+                    />
+                    <FolderPlus className="size-3.5" aria-hidden />
+                    <span>Create if missing</span>
+                  </label>
+                </div>
+
+                {spFolders.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]" data-testid="artifact-sp-folder-chips">
+                    <span className="text-faint">Known folders:</span>
+                    {spFolders.slice(0, 6).map((f) => {
+                      const active = f.path.toLowerCase() === sharePointFolder.trim().toLowerCase();
+                      return (
+                        <button
+                          key={f.path}
+                          type="button"
+                          onClick={() => setSharePointFolder(f.path)}
+                          className={cn(
+                            "cursor-pointer font-mono text-[11.5px] underline-offset-4 transition-colors duration-150",
+                            active
+                              ? "font-medium text-fg underline"
+                              : "text-muted hover:text-fg hover:underline",
+                          )}
+                        >
+                          {f.path}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </form>
 
-          {/* Quiet spaced clickable starter pills */}
-          <div className="flex flex-wrap items-center gap-2 pt-0.5">
-            <span className="text-[12px] text-faint">Try:</span>
+          {/* Clean unboxed quick-start prompt links */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-0.5 text-[12.5px]" data-testid="studio-starter-links">
+            <span className="text-[12px] text-faint">Quick start:</span>
             {STARTER_PROMPTS.map((starter) => (
               <button
                 key={starter.label}
@@ -726,13 +864,14 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                 onClick={() => {
                   setSelectedFormatId(starter.format);
                   setDomain(starter.domain);
+                  setDomainTouched(true);
                   setPromptText(starter.prompt);
                   if (sharePointFolder.startsWith("Shared Documents/")) {
                     setSharePointFolder(`Shared Documents/${starter.domain}`);
                   }
                   promptInputRef.current?.focus();
                 }}
-                className="cursor-pointer rounded-md border border-border/70 px-2.5 py-1 text-left text-[12px] text-muted transition-colors hover:border-border-strong hover:text-fg"
+                className="cursor-pointer text-left text-[12.5px] text-muted underline-offset-4 transition-colors duration-150 hover:text-fg hover:underline"
               >
                 {starter.label}
               </button>
@@ -834,35 +973,6 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
             </div>
           </div>
 
-          {removedToast && (
-            <div
-              role="status"
-              data-testid="artifact-removed-toast"
-              className="flex items-center justify-between gap-3 rounded-lg border border-border bg-surface px-3.5 py-2 text-[12.5px] text-fg"
-            >
-              <span className="truncate">Removed &ldquo;{removedToast.artifact.title}&rdquo;</span>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={undoRemoveLocalArtifact}
-                  data-testid="artifact-removed-undo"
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-border-strong bg-bg px-2 text-[12px] font-medium text-fg transition-colors hover:bg-hover cursor-pointer"
-                >
-                  <RotateCcw className="size-3" strokeWidth={2} aria-hidden />
-                  <span>Undo</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Dismiss notice"
-                  onClick={() => setRemovedToast(null)}
-                  className="inline-flex size-5 items-center justify-center rounded text-muted hover:bg-hover hover:text-fg cursor-pointer"
-                >
-                  <X className="size-3" aria-hidden />
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Liquid Glass format filter */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div
@@ -881,7 +991,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                     onClick={() => setFormatFilter(f.id)}
                     data-testid={`artifacts-format-${f.id.toLowerCase()}`}
                     className={cn(
-                      "inline-flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium transition-all cursor-pointer",
+                      "inline-flex h-7 items-center rounded-md px-2.5 text-[12px] font-medium transition-colors cursor-pointer",
                       active ? "liquid-glass-active" : "text-muted hover:text-fg",
                     )}
                   >
@@ -895,10 +1005,15 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
           {loading ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true" data-testid="artifacts-loading">
               {[0, 1, 2, 3, 4, 5].map((idx) => (
-                <div key={idx} className="space-y-3 rounded-lg border border-border bg-surface p-4">
-                  <div className="h-3 w-16 rounded bg-surface-2 skeleton-shimmer" />
-                  <div className="h-4 w-3/4 rounded bg-surface-2 skeleton-shimmer" />
-                  <div className="h-3 w-1/2 rounded bg-surface-2 skeleton-shimmer" />
+                <div key={idx} className="overflow-hidden rounded-xl border border-border/80 bg-surface dark:bg-[#14161b]">
+                  <div className="h-[76px] border-b border-border/60 bg-bg-subtle dark:bg-[#111317] p-3">
+                    <div className="h-full w-full rounded bg-surface-2/60 skeleton-shimmer" />
+                  </div>
+                  <div className="space-y-2.5 p-4">
+                    <div className="h-3 w-16 rounded bg-surface-2 skeleton-shimmer" />
+                    <div className="h-4 w-3/4 rounded bg-surface-2 skeleton-shimmer" />
+                    <div className="h-3 w-1/2 rounded bg-surface-2 skeleton-shimmer" />
+                  </div>
                 </div>
               ))}
             </div>
@@ -914,7 +1029,7 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
               <p className="mt-1 max-w-[44ch] text-[13px] text-muted">
                 {query.trim() || formatFilter !== "all"
                   ? "Clear the search or switch format filters to browse everything available."
-                  : "Describe an Excel tracker, Word brief, slide deck, or chart above to generate your first deliverable."}
+                  : "Pick a format card or describe an Excel tracker, Word brief, slide deck, or quote above to generate your first deliverable."}
               </p>
               {(query.trim() || formatFilter !== "all") && (
                 <div className="mt-4">
@@ -937,68 +1052,78 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                 <article
                   key={item.id}
                   data-testid="artifact-card"
-                  className="group flex flex-col justify-between gap-4 rounded-lg border border-border bg-surface p-4 transition-[border-color] duration-150 hover:border-border-strong"
+                  className="group flex flex-col overflow-hidden rounded-xl border border-border/80 bg-surface dark:bg-[#14161b] transition-[border-color] duration-150 hover:border-border-strong"
                 >
-                  <div className="space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted">
-                        <ArtifactTypeIcon type={item.type} className="size-3.5 text-muted" />
-                        <span>{item.type}</span>
-                      </span>
-                      {item.sourceKind === "local" ? (
-                        <button
-                          type="button"
-                          onClick={() => removeLocalArtifact(item.id)}
-                          aria-label={`Remove ${item.title}`}
-                          title="Remove"
-                          className="flex size-6 shrink-0 items-center justify-center rounded-md text-faint opacity-70 transition-colors hover:bg-hover hover:text-late hover:opacity-100 cursor-pointer"
-                        >
-                          <Trash2 className="size-3.5" aria-hidden />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => togglePin(item.id)}
-                          aria-label={item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
-                          title={item.pinned ? "Unpin" : "Pin"}
-                          className={cn(
-                            "flex size-6 shrink-0 items-center justify-center rounded-md transition-colors cursor-pointer",
-                            item.pinned
-                              ? "text-fg hover:bg-hover"
-                              : "text-faint opacity-70 hover:bg-hover hover:text-fg hover:opacity-100",
-                          )}
-                        >
-                          {item.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
-                        </button>
+                  {/* Visual Format Preview Header Strip */}
+                  <div className="relative h-[76px] w-full overflow-hidden border-b border-border/70 bg-bg-subtle dark:bg-[#111317] text-fg">
+                    <DeliverableShelfPreview type={item.type} />
+                    <button
+                      type="button"
+                      onClick={() => togglePin(item.id)}
+                      aria-label={item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
+                      title={item.pinned ? "Unpin" : "Pin"}
+                      className={cn(
+                        "absolute top-2 right-2 flex size-6 items-center justify-center rounded-md border border-transparent transition-colors duration-150 cursor-pointer",
+                        item.pinned
+                          ? "bg-surface/90 text-fg border-border/80 hover:bg-hover"
+                          : "text-faint opacity-75 hover:bg-surface/80 hover:text-fg hover:opacity-100",
                       )}
-                    </div>
+                    >
+                      {item.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
+                    </button>
+                  </div>
 
-                    <div className="space-y-1">
-                      <h3 className="line-clamp-2 text-[14.5px] leading-[20px] font-semibold tracking-[-0.01em] text-fg">
+                  {/* Card Body + 1-Click SharePoint & Open Footer */}
+                  <div className="flex flex-1 flex-col justify-between gap-3.5 p-4">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between gap-2 text-[11.5px]">
+                        <span className="inline-flex items-center gap-1.5 font-medium text-muted">
+                          <ArtifactTypeIcon type={item.type} className="size-3.5 text-muted" />
+                          <span>{item.type}</span>
+                        </span>
+                        <span className="num text-faint">
+                          {item.date ? formatDate(item.date, { short: true }) : "Saved"}
+                        </span>
+                      </div>
+
+                      <h3 className="line-clamp-2 text-[14.5px] leading-[1.38] font-semibold tracking-[-0.015em] text-fg">
                         {item.title}
                       </h3>
+
                       {item.subtitleParts.length > 0 && (
-                        <p className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[12px] leading-[18px] text-muted">
+                        <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] leading-[18px] text-muted">
                           {item.subtitleParts.map((part, idx) => (
-                            <span key={`${part}-${idx}`}>{part}</span>
+                            <span key={`${part}-${idx}`} className="inline-flex items-center gap-2">
+                              {idx > 0 && <span className="h-2.5 w-px bg-border-strong" aria-hidden />}
+                              <span>{part}</span>
+                            </span>
                           ))}
                         </p>
                       )}
                     </div>
-                  </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/80 pt-2.5">
-                    <span className="num text-[11.5px] text-faint">
-                      {item.date ? formatDate(item.date, { short: true }) : "Saved"}
-                    </span>
+                    <div className="flex items-center justify-between gap-2 border-t border-border/70 pt-2.5">
+                      <button
+                        type="button"
+                        onClick={() => setUploadTarget(item)}
+                        data-testid="artifact-save-sharepoint"
+                        aria-label={`Save ${item.title} to SharePoint`}
+                        title="Save to SharePoint"
+                        className="inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] font-medium text-muted transition-colors duration-150 hover:border-border-strong hover:bg-surface-2 hover:text-fg"
+                      >
+                        <FolderUp className="size-3.5" aria-hidden />
+                        <span>SharePoint</span>
+                      </button>
 
-                    <Link
-                      href={item.href}
-                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2"
-                    >
-                      <span>{item.openLabel}</span>
-                      <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
-                    </Link>
+                      <Link
+                        href={item.href}
+                        aria-label={`${item.openLabel}: ${item.title}`}
+                        className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium text-fg transition-colors duration-150 hover:bg-surface-2"
+                      >
+                        <span>Open</span>
+                        <ArrowUpRight className="size-3.5 text-muted" aria-hidden />
+                      </Link>
+                    </div>
                   </div>
                 </article>
               ))}
@@ -1031,27 +1156,26 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
                   <span className="num hidden w-20 text-right text-[12px] text-faint sm:inline">
                     {item.date ? formatDate(item.date, { short: true }) : "Saved"}
                   </span>
-                  {item.sourceKind === "local" ? (
-                    <button
-                      type="button"
-                      onClick={() => removeLocalArtifact(item.id)}
-                      aria-label={`Remove ${item.title}`}
-                      title="Remove"
-                      className="inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-late cursor-pointer"
-                    >
-                      <Trash2 className="size-3.5" aria-hidden />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => togglePin(item.id)}
-                      aria-label={item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
-                      title={item.pinned ? "Unpin" : "Pin"}
-                      className="inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg cursor-pointer"
-                    >
-                      {item.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setUploadTarget(item)}
+                    data-testid="artifact-save-sharepoint"
+                    aria-label={`Save ${item.title} to SharePoint`}
+                    title="Save to SharePoint"
+                    className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border border-border px-2 text-[11.5px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-surface-2 hover:text-fg"
+                  >
+                    <FolderUp className="size-3" aria-hidden />
+                    <span>SharePoint</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => togglePin(item.id)}
+                    aria-label={item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
+                    title={item.pinned ? "Unpin" : "Pin"}
+                    className="inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-fg cursor-pointer"
+                  >
+                    {item.pinned ? <PinOff className="size-3.5" aria-hidden /> : <Pin className="size-3.5" aria-hidden />}
+                  </button>
                   <Link
                     href={item.href}
                     className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-fg transition-colors hover:bg-surface-2"
@@ -1079,6 +1203,14 @@ export function ArtifactsStudio({ intro }: { intro?: React.ReactNode } = {}) {
           )}
         </section>
       </div>
+
+      {uploadTarget && (
+        <SharePointUploadPopover
+          artifact={uploadTarget}
+          folders={spFolders}
+          onClose={() => setUploadTarget(null)}
+        />
+      )}
     </div>
   );
 }

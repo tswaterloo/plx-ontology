@@ -1150,5 +1150,517 @@ class InstructMixin(ia.InstructAssistMixin):
         kind = rows[-1]["kind"] if rows else "docx"
         return data, kind, str(rows[-1].get("name") or "") if rows else f"{file_id}.{kind}"
 
+    # ---- SharePoint folder discovery & artifact upload -----------------------------------
+
+    DEFAULT_SHAREPOINT_FOLDERS: tuple[str, ...] = (
+        "Shared Documents/Operations",
+        "Shared Documents/Finance",
+        "Shared Documents/Purchasing",
+        "Shared Documents/Quality",
+        "Shared Documents/Sales",
+    )
+
+    _FORMAT_MAP: Mapping[str, str] = {
+        "xlsx": "xlsx",
+        "excel": "xlsx",
+        "sheet": "xlsx",
+        "sheets": "xlsx",
+        "chart": "xlsx",
+        "charts": "xlsx",
+        "docx": "docx",
+        "doc": "docx",
+        "docs": "docx",
+        "word": "docx",
+        "custom": "docx",
+        "workflow": "docx",
+        "quote": "docx",
+        "pptx": "pptx",
+        "ppt": "pptx",
+        "slide": "pptx",
+        "slides": "pptx",
+        "csv": "csv",
+        "pdf": "pdf",
+    }
+
+    def _sharepoint_scope_drives(self) -> list[dict[str, str]]:
+        """Known drive ids from SHAREPOINT_DRIVE_ID env or integrations/sharepoint_capture_scope.json."""
+        import os
+        out: list[dict[str, str]] = []
+        env_drive = str(os.environ.get("SHAREPOINT_DRIVE_ID") or "").strip()
+        if env_drive:
+            out.append({"drive_id": env_drive, "site": "Default", "prefix": ""})
+        scope_path = Path(__file__).resolve().parent.parent / "integrations" / "sharepoint_capture_scope.json"
+        try:
+            if scope_path.is_file():
+                raw = json.loads(scope_path.read_text("utf-8"))
+                for target in raw.get("targets") or ():
+                    if isinstance(target, Mapping) and target.get("drive_id"):
+                        folders = target.get("folders") or ()
+                        prefix = str(folders[0]).strip("/") if folders else ""
+                        out.append({
+                            "drive_id": str(target["drive_id"]).strip(),
+                            "site": str(target.get("site") or target.get("id") or "").strip(),
+                            "prefix": prefix,
+                        })
+        except (OSError, ValueError, TypeError):
+            pass
+        return out
+
+    def sharepoint_folders(self, reader: Reader, *, limit: int = 80) -> list[dict[str, Any]]:
+        """Known SharePoint document folders from Postgres (``biz.sharepoint_files``) and the
+        SharePoint capture store, merged with curated default library paths."""
+        from urllib.parse import unquote
+        seen: dict[str, dict[str, Any]] = {}
+        cap = max(1, min(int(limit), 200))
+
+        def _record(path_raw: str, *, drive_id: str = "", parent_id: str = "",
+                    site: str = "", file_count: int = 0, source: str = "default") -> None:
+            cleaned = str(path_raw or "").replace("\\", "/").strip().strip("/")
+            if not cleaned or ".." in cleaned:
+                return
+            key = cleaned.lower()
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = {
+                    "path": cleaned,
+                    "label": cleaned.rsplit("/", 1)[-1] or cleaned,
+                    "drive_id": drive_id,
+                    "parent_id": parent_id,
+                    "site": site,
+                    "file_count": int(file_count or 0),
+                    "source": source,
+                }
+            else:
+                if drive_id and not existing["drive_id"]:
+                    existing["drive_id"] = drive_id
+                if parent_id and not existing["parent_id"]:
+                    existing["parent_id"] = parent_id
+                if site and not existing["site"]:
+                    existing["site"] = site
+                if file_count > existing["file_count"]:
+                    existing["file_count"] = int(file_count)
+                if source == "postgres" and existing["source"] != "postgres":
+                    existing["source"] = "postgres"
+
+        # 1. Postgres biz.sharepoint_files distinct parent folders (fast indexed aggregation)
+        pool = getattr(getattr(self, "memory", None), "pool", None) or getattr(self, "pool", None)
+        if pool is not None:
+            try:
+                with pool.connection() as pg:
+                    rows = pg.execute(
+                        "SELECT regexp_replace(btrim(path), '/[^/]+$', '') AS folder_path, "
+                        "COUNT(*)::int AS file_count, "
+                        "MAX(handle) AS sample_handle "
+                        "FROM biz.sharepoint_files "
+                        "WHERE path IS NOT NULL AND position('/' IN btrim(path)) > 0 "
+                        "GROUP BY 1 "
+                        "ORDER BY file_count DESC, folder_path ASC "
+                        "LIMIT %s",
+                        (cap,),
+                    ).fetchall()
+                for row in rows:
+                    folder_val = str(row[0] or "").strip("/")
+                    cnt = int(row[1] or 0)
+                    sample_handle = str(row[2] or "")
+                    drive_id = ""
+                    if sample_handle.startswith("sharepoint://"):
+                        rest = sample_handle[len("sharepoint://"):]
+                        drive_id = unquote(rest.split("/", 1)[0])
+                    if folder_val:
+                        _record(folder_val, drive_id=drive_id, file_count=cnt, source="postgres")
+            except Exception:  # noqa: BLE001 - fall back to capture store + defaults
+                pass
+
+        # 2. Local SharePoint capture sqlite walked_folders (enriches drive_id & folder_id)
+        cap_dir = getattr(self, "sharepoint_capture_dir", None)
+        if cap_dir:
+            try:
+                from integrations import capture_sharepoint as cs
+                if cs.store_exists(Path(cap_dir)):
+                    store = cs.SharePointCaptureStore.open_read_only(Path(cap_dir))
+                    try:
+                        wrows = store.db.execute(
+                            "SELECT drive_id, folder_id, path FROM walked_folders "
+                            "WHERE path IS NOT NULL AND path <> '' LIMIT ?",
+                            (cap,),
+                        ).fetchall()
+                    finally:
+                        close = getattr(store, "close", None)
+                        if close is not None:
+                            close()
+                    for wrow in wrows:
+                        _record(
+                            str(wrow[2] or ""),
+                            drive_id=str(wrow[0] or ""),
+                            parent_id=str(wrow[1] or ""),
+                            source="capture",
+                        )
+            except Exception:  # noqa: BLE001 - optional enrichment only
+                pass
+
+        # 3. Ensure curated default library paths are always selectable
+        default_drives = self._sharepoint_scope_drives()
+        fallback_drive = default_drives[0]["drive_id"] if default_drives else ""
+        for default_path in self.DEFAULT_SHAREPOINT_FOLDERS:
+            _record(default_path, drive_id=fallback_drive, site="Company Library", source="default")
+
+        ordered = sorted(
+            seen.values(),
+            key=lambda item: (
+                0 if item["source"] == "postgres" else (1 if item["source"] == "capture" else 2),
+                -int(item["file_count"]),
+                item["path"].lower(),
+            ),
+        )
+        return ordered[:cap]
+
+    def _artifact_markdown_fallback(self, reader: Reader, *, title: str, kind: str,
+                                    folder_path: str, artifact_id: Optional[str]) -> str:
+        """Build clean structured markdown when uploading an artifact without explicit body text."""
+        if artifact_id and artifact_id.startswith("chat:") and getattr(self, "work_log", None) is not None:
+            conv_id = artifact_id[len("chat:"):]
+            try:
+                rows, _total = self.work_log.events(reader=reader.key, thread=f"ask:{conv_id}", limit=20)
+                for ev in rows:
+                    detail = ev.get("detail") or {}
+                    answer = detail.get("answer") if isinstance(detail, Mapping) else None
+                    if isinstance(answer, Mapping):
+                        text = str(answer.get("answer") or answer.get("summary") or "").strip()
+                        if text:
+                            return f"# {title}\n\n{text}\n"
+            except Exception:  # noqa: BLE001 - fall back to clean structured deliverable
+                pass
+        if kind in ("xlsx", "csv"):
+            return (
+                f"{title}\n"
+                "| Field | Value |\n"
+                "|---|---|\n"
+                f"| Deliverable | {title} |\n"
+                f"| Format | .{kind} |\n"
+                f"| Destination | {folder_path} |\n"
+                "| Status | Prepared for SharePoint |\n"
+            )
+        if kind == "pptx":
+            return (
+                f"# {title}\n\n"
+                f"- Destination folder: {folder_path}\n"
+                "- Prepared from Artifacts Studio for review and SharePoint publishing\n"
+            )
+        return (
+            f"# {title}\n\n"
+            f"Target SharePoint folder: {folder_path}\n\n"
+            "## Summary\n\n"
+            "Prepared from Artifacts Studio for review and SharePoint publishing.\n"
+        )
+
+    def _queue_sharepoint_assist_draft(self, reader: Reader, *, upload_id: str, file_id: str,
+                                       filename: str, folder_path: str,
+                                       create_folder_if_missing: bool, size_bytes: int,
+                                       digest: str, download_url: str,
+                                       missing_for_live: list[str],
+                                       artifact_id: Optional[str]) -> str:
+        """Persist a durable Assist approval draft in Postgres (assist.matters or assist.job_log)
+        when available; returns the durable draft_id (falling back to upload_id if offline)."""
+        import hashlib
+        from datetime import datetime, timezone
+        pool = getattr(getattr(self, "memory", None), "pool", None) or getattr(self, "pool", None)
+        if pool is None:
+            return upload_id
+        me = sorted(self._apa_me(reader)) if hasattr(self, "_apa_me") else [reader.key]
+        owner = next((i for i in me if "@" in i), me[0] if me else reader.key)
+        now = datetime.now(timezone.utc)
+        folder_note = " (create folder if missing)" if create_folder_if_missing else ""
+        detail_text = (
+            f"Upload {filename} ({size_bytes:,} bytes) to SharePoint folder "
+            f"\"{folder_path}\"{folder_note}."
+        )
+        plan_payload = {
+            "action": "sharepoint_upload",
+            "upload_id": upload_id,
+            "file_id": file_id,
+            "filename": filename,
+            "folder_path": folder_path,
+            "create_folder_if_missing": bool(create_folder_if_missing),
+            "size_bytes": size_bytes,
+            "sha256": digest,
+            "download_url": download_url,
+            "artifact_id": artifact_id,
+            "missing_for_live": list(missing_for_live),
+        }
+
+        # 1. Try assist.matters + assist.matter_log when the DB role permits it
+        subject_key = f"sharepoint_upload:{upload_id}"
+        matter_id = hashlib.sha256(f"{owner}|routine|{subject_key}".encode()).hexdigest()[:24]
+        try:
+            with pool.connection() as pg:
+                pg.execute(
+                    "INSERT INTO assist.matters "
+                    "(matter_id, owner_person, kind, subject_key, sources, basis_at, title, detail, "
+                    "next_act, counterpart, audiences, markings, state, plan, plan_status, plan_reason, plan_at) "
+                    "VALUES (%s, %s, 'routine', %s, %s::jsonb, %s, %s, %s, 'system_write', 'SharePoint', "
+                    "'[]'::jsonb, '[]'::jsonb, 'open', %s::jsonb, 'drafted', 'sharepoint_approval_required', %s) "
+                    "ON CONFLICT (matter_id) DO UPDATE SET plan = EXCLUDED.plan, detail = EXCLUDED.detail",
+                    (
+                        matter_id,
+                        owner,
+                        subject_key,
+                        json.dumps({"records": [], "upload_id": upload_id, "file_id": file_id}),
+                        now,
+                        f"Upload {filename} to SharePoint",
+                        detail_text,
+                        json.dumps(plan_payload),
+                        now,
+                    ),
+                )
+                pg.execute(
+                    "INSERT INTO assist.matter_log (matter_id, what, detail) VALUES (%s, %s, %s::jsonb)",
+                    (matter_id, "requested", json.dumps(plan_payload)),
+                )
+                pg.commit()
+            lock = getattr(self, "_lock", None)
+            if lock is not None:
+                with lock:
+                    self._assist_drafts_ver = int(getattr(self, "_assist_drafts_ver", 0)) + 1
+            return matter_id
+        except Exception:  # noqa: BLE001 - plx_api role uses append-only assist.job_log + matter_log
+            pass
+
+        # 2. Append-only assist.job_log (permitted for plx_api under migration 0082)
+        job_id = f"sp_{upload_id[-12:]}"
+        try:
+            with pool.connection() as pg:
+                pg.execute(
+                    "INSERT INTO assist.job_log (job_id, person, what, detail) "
+                    "VALUES (%s, %s, 'requested', %s::jsonb)",
+                    (job_id, owner, json.dumps({"text": detail_text, **plan_payload})),
+                )
+                pg.execute(
+                    "INSERT INTO assist.job_log (job_id, person, what, detail) "
+                    "VALUES (%s, %s, 'prepared', %s::jsonb)",
+                    (job_id, owner, json.dumps({"piece": 1, "index": 0, "prepared_id": upload_id, **plan_payload})),
+                )
+                pg.commit()
+            return job_id
+        except Exception:  # noqa: BLE001 - fall back to durable UploadDesk upload_id
+            return upload_id
+
+    def sharepoint_upload_artifact(
+        self,
+        reader: Reader,
+        *,
+        title: str,
+        fmt: str,
+        folder_path: str,
+        create_folder_if_missing: bool = True,
+        content_markdown: str = "",
+        artifact_id: Optional[str] = None,
+        source_url: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Generate or locate an artifact's file bytes and upload to SharePoint (creating missing
+        folders when live SharePoint writes are enabled), or queue a durable Assist approval draft
+        with an immediate download link when SharePoint writes are in pilot approval mode."""
+        import base64
+        from operating import autopilot_write_adapters as wa
+        from operating.card_text import mask_served
+
+        clean_title = str(title or "").strip()
+        if not clean_title:
+            raise UserFacing("invalid_request", "A title is required to upload an artifact.", 422)
+
+        try:
+            segments = wa.SharePointAdapter.normalize_folder_path(folder_path)
+        except wa.AdapterRefused as err:
+            raise UserFacing("invalid_request", err.problems[0], 422) from None
+        normalized_folder = "/".join(segments)
+
+        kind = self._FORMAT_MAP.get(str(fmt or "").strip().lower(), "docx")
+        if kind not in files.KINDS:
+            kind = "docx"
+
+        # 1. Locate existing generated file bytes if source_url or artifact_id names one of theirs
+        existing_fid = None
+        if source_url and "/api/instruct/files/" in source_url:
+            candidate = source_url.rsplit("/api/instruct/files/", 1)[-1].split("?", 1)[0].strip()
+            if re.fullmatch(r"f_[0-9a-f]{24}", candidate):
+                existing_fid = candidate
+        elif artifact_id and re.fullmatch(r"f_[0-9a-f]{24}", str(artifact_id).strip()):
+            existing_fid = str(artifact_id).strip()
+
+        data: Optional[bytes] = None
+        filename = files.file_name(clean_title, kind)
+        people: list[str] = []
+
+        if existing_fid:
+            try:
+                data, existing_kind, existing_name = self.instruct_file(reader, existing_fid)
+                kind = existing_kind
+                filename = existing_name or files.file_name(clean_title, kind)
+            except UserFacing:
+                data = None
+
+        if data is None:
+            raw_md = str(content_markdown or "").strip()
+            if not raw_md:
+                raw_md = self._artifact_markdown_fallback(
+                    reader, title=clean_title, kind=kind,
+                    folder_path=normalized_folder, artifact_id=artifact_id,
+                )
+            guard = self._instruct_guard()
+            if guard is not None:
+                from .feedback import clean
+                raw_md = clean(raw_md, guard, max(len(raw_md), 1)) or raw_md
+            raw_md = mask_served(raw_md)
+            people = sorted({a.lower() for a in _ADDRESS.findall(raw_md)})
+            try:
+                data = files.make(kind, raw_md)
+            except files.FileRefused as refused:
+                if refused.code == "pdf_unavailable":
+                    kind = "docx"
+                    filename = files.file_name(clean_title, kind)
+                    data = files.make("docx", raw_md)
+                else:
+                    raise UserFacing("invalid_request", f"Could not build .{kind} file.", 422) from None
+
+        # Ensure SharePoint-safe filename
+        if wa.SharePointAdapter.file_name_refused(filename):
+            filename = files.file_name(re.sub(r"[^A-Za-z0-9 ._()-]+", " ", clean_title), kind)
+
+        # 2. Resolve drive_id from known folders or configured SharePoint scope
+        known = self.sharepoint_folders(reader, limit=100)
+        matched = next((f for f in known if f["path"].lower() == normalized_folder.lower()), None)
+        if matched is None:
+            matched = next(
+                (f for f in known if f.get("drive_id") and normalized_folder.lower().startswith(f["path"].lower() + "/")),
+                None,
+            )
+        drive_id = str((matched or {}).get("drive_id") or "").strip()
+        if not drive_id:
+            scopes = self._sharepoint_scope_drives()
+            drive_id = scopes[0]["drive_id"] if scopes else ""
+
+        # Keep durable copy in UploadDesk so the reader can download immediately
+        target_obj = files.Target(
+            anchor=f"sharepoint://{drive_id}/root" if drive_id else f"sharepoint://pending/{normalized_folder}",
+            drive=drive_id,
+            folder=normalized_folder,
+            label=filename,
+            parent=str((matched or {}).get("parent_id") or "root"),
+        )
+        row = self._uploads().prepare(
+            reader.key, name=filename, kind=kind, data=data, target=target_obj, people=people,
+        )
+        file_id = str(row["file_id"])
+        upload_id = str(row["upload_id"])
+        download_url = f"/api/instruct/files/{file_id}"
+        digest = str(row["digest"])
+
+        # 3. Check live SharePoint write gate (PLX_APPROVED_WRITES + Graph adapter readiness)
+        missing_reasons: list[str] = []
+        state = self._apa_state() if hasattr(self, "_apa_state") else None  # type: ignore[attr-defined]
+        executor = self._apa_executor(state) if state is not None and hasattr(self, "_apa_executor") else None  # type: ignore[attr-defined]
+        adapter = executor.adapters.get("sharepoint_write") if executor is not None else None
+        live_ready = False
+
+        if not drive_id:
+            missing_reasons.append("SharePoint target drive is not configured.")
+        if executor is None:
+            missing_reasons.append("SharePoint live write executor is not active on this server.")
+        else:
+            me = tuple(sorted(self._apa_me(reader))) if hasattr(self, "_apa_me") else (reader.key,)  # type: ignore[attr-defined]
+            owner = next((i for i in me if "@" in i), me[0])
+            probe_item = {
+                "item_id": upload_id,
+                "autopilot": "instruction",
+                "owner": owner,
+                "title": f"Upload {filename}",
+                "body": {"prepared": {"write": {"system": "sharepoint", "operation": "upload_document"}}},
+            }
+            if "sharepoint_write" not in executor.live_kinds(probe_item):
+                missing_reasons.append("SharePoint writes require approval (PLX_APPROVED_WRITES lacks sharepoint_write).")
+            why = adapter.unavailable() if adapter is not None else "SharePoint write adapter unavailable."
+            if why:
+                missing_reasons.append(str(why))
+            if not missing_reasons and adapter is not None:
+                live_ready = True
+
+        # 4. Live Graph upload (auto-creating missing nested folders when requested)
+        if live_ready and adapter is not None:
+            action = {
+                "system": "sharepoint",
+                "operation": "upload_document",
+                "target": {"drive_id": drive_id, "parent_id": "root"},
+                "payload": {
+                    "name": filename,
+                    "content_b64": base64.b64encode(data).decode("ascii"),
+                    "content_type": files.MEDIA.get(kind, "application/octet-stream").split(";", 1)[0],
+                    "folder_path": normalized_folder,
+                    "create_folders": bool(create_folder_if_missing),
+                    "conflict_behavior": "rename",
+                },
+            }
+            try:
+                req = adapter.request(action)
+            except wa.AdapterRefused as err:
+                raise UserFacing("invalid_request", err.problems[0], 422) from None
+            result = adapter.perform(req, f"artifact:{upload_id}")
+            if result.get("status") == "done":
+                resp = result.get("response") if isinstance(result.get("response"), Mapping) else {}
+                web_url = str(resp.get("webUrl") or result.get("destination_url") or "")
+                self._uploads().record_outcome(reader.key, upload_id, "done", [])
+                return {
+                    "status": "uploaded",
+                    "web_url": web_url,
+                    "folder_path": normalized_folder,
+                    "create_folder_if_missing": bool(create_folder_if_missing),
+                    "filename": filename,
+                    "file_id": file_id,
+                    "size_bytes": len(data),
+                    "download_url": download_url,
+                    "folders_created": list(result.get("folders_created") or ()),
+                    "message": f"Uploaded {filename} to {normalized_folder}.",
+                }
+            if result.get("status") != "not_performed":
+                detail = str(result.get("detail") or result.get("http_status") or "upload failed")
+                self._uploads().record_outcome(reader.key, upload_id, str(result.get("status")), [detail])
+                raise UserFacing(
+                    "sharepoint_upload_failed",
+                    f"SharePoint could not accept {filename} ({detail}). You can still download the file locally.",
+                    502,
+                )
+            missing_reasons.extend(str(m) for m in (result.get("missing") or ()))
+
+        # 5. Pilot approval gate: queue a durable Assist approval draft + local download link
+        draft_id = self._queue_sharepoint_assist_draft(
+            reader,
+            upload_id=upload_id,
+            file_id=file_id,
+            filename=filename,
+            folder_path=normalized_folder,
+            create_folder_if_missing=bool(create_folder_if_missing),
+            size_bytes=len(data),
+            digest=digest,
+            download_url=download_url,
+            missing_for_live=missing_reasons,
+            artifact_id=artifact_id,
+        )
+        folder_clause = " (missing folders will be created on approval)" if create_folder_if_missing else ""
+        return {
+            "status": "approval_queued",
+            "draft_id": draft_id,
+            "upload_id": upload_id,
+            "file_id": file_id,
+            "folder_path": normalized_folder,
+            "create_folder_if_missing": bool(create_folder_if_missing),
+            "filename": filename,
+            "size_bytes": len(data),
+            "download_url": download_url,
+            "assist_url": "/assist",
+            "missing_for_live": missing_reasons,
+            "message": (
+                f"Prepared {filename} for SharePoint folder \"{normalized_folder}\"{folder_clause}. "
+                "Download now or approve in Assist."
+            ),
+        }
+
 
 __all__ = ["InstructMixin", "REFUSED"]

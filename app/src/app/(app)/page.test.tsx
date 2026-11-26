@@ -89,7 +89,7 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
-describe("Executive Home workspace bento strip, deduplication, layouts, and customization", () => {
+describe("Executive Home workspace: command bar, spotlight + action stream, schedule rail, and customization", () => {
   const sampleItems = (): HomeNeedItem[] => [
     item(1, {
       id: "matter:r1",
@@ -110,9 +110,9 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
       kind: "waiting",
       source: "teams",
       source_label: "Teams",
-      person: "Ricardo",
-      title: "No answer yet from Ricardo",
-      line: "Ricardo: Portal write endpoints and key in staging (no typical reply time on record yet)\nOnly you can see this.",
+      person: "Elena",
+      title: "No answer yet from Elena",
+      line: "Elena: Portal write endpoints and key in staging (no typical reply time on record yet)\nOnly you can see this.",
       basis_at: "2026-11-18T12:00:00Z",
       action: "check",
       action_label: "Check",
@@ -122,8 +122,8 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
       id: "alert:a1",
       kind: "alert",
       source: "alerts",
-      source_label: "Alerts",
-      title: "Vendor ETA slipped",
+      source_label: "bc",
+      title: "Supplier ETA slipped",
       line: "Shipment moved out by 4 days.",
       action: "decide",
       action_label: "Decide",
@@ -162,57 +162,93 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     }),
   ];
 
-  it("renders clean architectural header (no top Ask box), Executive Pulse Strip, liquid-glass section switcher with exact count parity, and Today's schedule", async () => {
+  it("renders compact masthead, Command Ask bar, zero 4-column hero KPI strip, Spotlight + Action Stream, properly capitalized BC source, Today rail, and non-zero Focus card", async () => {
     api.needs.mockResolvedValue(needs(sampleItems()));
     render(<HomePage />);
 
     await screen.findByTestId("home-grouped-view");
     expect(screen.getByTestId("today-schedule-card")).toBeInTheDocument();
+    expect(screen.getByTestId("home-focus-card")).toBeInTheDocument();
 
-    // No random Ask box or duplicate Ctrl+K button in Home header (Search or ask lives in the sidebar).
-    expect(screen.queryByTestId("home-quick-ask")).toBeNull();
-    expect(screen.queryByTestId("home-cmd-k")).toBeNull();
+    // Banned 4-column hero metric strip and old empty Watching box are gone.
+    expect(screen.queryByTestId("home-pulse-strip")).toBeNull();
+    expect(screen.queryByTestId("home-watching-card")).toBeNull();
 
-    // Executive Pulse Strip shows exact counts across all 4 tiles.
-    const pulse = screen.getByTestId("home-pulse-strip");
-    expect(within(pulse).getByTestId("pulse-tile-replies")).toHaveTextContent("1");
-    expect(within(pulse).getByTestId("pulse-tile-decisions")).toHaveTextContent("2");
-    expect(within(pulse).getByTestId("pulse-tile-late")).toHaveTextContent("1");
-    expect(within(pulse).getByTestId("pulse-tile-schedule")).toHaveTextContent("Today's schedule");
+    // Unified Command / Ask-or-Jump bar routes Enter / Ask to /ask?q=...
+    const cmdBar = screen.getByTestId("home-command-bar");
+    const cmdInput = within(cmdBar).getByTestId("home-command-input");
+    fireEvent.change(cmdInput, { target: { value: "open orders for Acme" } });
+    fireEvent.submit(cmdInput.closest("form")!);
+    expect(nav.push).toHaveBeenCalledWith("/ask?q=open%20orders%20for%20Acme");
 
-    // Clicking "Late supply" tile filters strictly to the late PO item (1:1 parity).
-    fireEvent.click(within(pulse).getByTestId("pulse-tile-late"));
-    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(1));
-    expect(screen.getByTestId("need-row")).toHaveTextContent("PO 90412");
+    // Top 2 highest-urgency items appear in Priority Spotlight; remaining non-hold items appear in Action Stream.
+    const spotlight = screen.getByTestId("home-spotlight");
+    expect(within(spotlight).getAllByTestId("spotlight-card")).toHaveLength(2);
+    expect(spotlight).toHaveTextContent("Re: packing slip");
+    expect(spotlight).toHaveTextContent("Supplier ETA slipped");
 
-    // Clicking the active tile again restores all 5 items.
-    fireEvent.click(within(pulse).getByTestId("pulse-tile-late"));
-    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(5));
+    // Source label "bc" is always capitalized as "BC".
+    const sources = screen.getAllByTestId("need-source").map((el) => el.textContent);
+    expect(sources).toContain("BC");
+    expect(sources).not.toContain("bc");
 
     // Header total, "All" pill, and sum of section filter pills are mathematically identical (5 = 1 + 3 + 1).
     expect(screen.getByTestId("needs-total")).toHaveTextContent("5");
     const strip = screen.getByTestId("section-filters");
     expect(within(strip).getByTestId("filter-section-all")).toHaveTextContent("All5");
     expect(within(strip).getByTestId("filter-section-replies")).toHaveTextContent("Replies1");
-    expect(within(strip).getByTestId("filter-section-holds_alerts")).toHaveTextContent("Alerts & Supply3");
+    expect(within(strip).getByTestId("filter-section-holds_alerts")).toHaveTextContent("Alerts3");
     expect(within(strip).getByTestId("filter-section-waiting")).toHaveTextContent("Waiting1");
 
-    // Verify grouped section headings render cleanly.
-    expect(screen.getByTestId("section-replies-toggle")).toHaveTextContent("Needs your reply");
-    expect(screen.getByTestId("section-holds-alerts-toggle")).toHaveTextContent("Alerts & late supply");
-    expect(screen.getByTestId("section-waiting-toggle")).toHaveTextContent("Waiting on others");
-
-    // Clicking "Waiting" filters directly to Ricardo's item with promoted topic headline.
+    // Clicking "Waiting" filters directly to Elena's item with promoted topic headline.
     fireEvent.click(within(strip).getByTestId("filter-section-waiting"));
     await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(1));
     expect(screen.getByTestId("needs-total")).toHaveTextContent("1");
     expect(screen.getByTestId("need-row")).toHaveTextContent("Portal write endpoints and key in staging");
-    expect(screen.getByTestId("need-row")).toHaveTextContent("Waiting on Ricardo");
+    expect(screen.getByTestId("need-row")).toHaveTextContent("Waiting on Elena");
 
-    // Clicking the active pill again clears the filter back to all 5 items.
+    // Clicking the active filter again restores all 5 items.
     fireEvent.click(within(strip).getByTestId("filter-section-waiting"));
     await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(5));
     expect(screen.getByTestId("needs-total")).toHaveTextContent("5");
+
+    // Right Focus card shows only non-zero counters (no 0/0/0/0 empty table).
+    const attentionList = screen.getByTestId("home-attention-list");
+    expect(attentionList).toHaveTextContent("Overdue items");
+    expect(attentionList).toHaveTextContent("Active QC holds");
+    expect(attentionList).not.toHaveTextContent("Drafts ready to send");
+  });
+
+  it("hides zero counters cleanly in the right focus rail when all operational queues are empty", async () => {
+    api.needs.mockResolvedValue(needs([]));
+    render(<HomePage />);
+
+    await screen.findByTestId("home-empty");
+    const focusCard = screen.getByTestId("home-focus-card");
+    expect(focusCard).toHaveTextContent("Quick access");
+    expect(within(focusCard).queryByTestId("home-attention-list")).toBeNull();
+    expect(focusCard).toHaveTextContent("Assist queue");
+    expect(focusCard).toHaveTextContent("View dashboard");
+    expect(focusCard).toHaveTextContent("Weekly review");
+  });
+
+  it("caps long lists to top 7 scannable rows by default with a clean Show more expander", async () => {
+    const manyTasks = Array.from({ length: 12 }, (_, idx) =>
+      item(idx + 1, {
+        id: `t${idx + 1}`,
+        kind: "task",
+        title: `Follow up task ${idx + 1}`,
+        line: `Action item details ${idx + 1}`,
+      }),
+    );
+    api.needs.mockResolvedValue(needs(manyTasks));
+    render(<HomePage />);
+
+    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(7));
+    expect(screen.getByTestId("needs-paging")).toHaveTextContent("Showing 7 of 12");
+
+    fireEvent.click(within(screen.getByTestId("needs-paging")).getByRole("button", { name: /Show 5 more/i }));
+    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(12));
   });
 
   it("defensively deduplicates overlapping notifications and shows (+1 update)", async () => {
@@ -224,9 +260,9 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           kind: "waiting",
           source: "teams",
           source_label: "Teams",
-          person: "Ricardo",
-          title: "No answer yet from Ricardo",
-          line: "Ricardo: Portal write endpoints and key in staging (no typical reply time on record yet)",
+          person: "Elena",
+          title: "No answer yet from Elena",
+          line: "Elena: Portal write endpoints and key in staging (no typical reply time on record yet)",
           basis_at: "2026-11-18T12:00:00Z",
           href: "/assist?item=w1",
         }),
@@ -236,9 +272,9 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           kind: "waiting",
           source: "teams",
           source_label: "Teams",
-          person: "Ricardo",
-          title: "No answer yet from Ricardo",
-          line: "Ricardo: Portal write endpoints and key in staging environment",
+          person: "Elena",
+          title: "No answer yet from Elena",
+          line: "Elena: Portal write endpoints and key in staging environment",
           basis_at: "2026-11-23T12:00:00Z",
           href: "/assist?item=w2",
         }),
@@ -280,7 +316,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     expect(badges[1]).toHaveTextContent("(+1 update)");
   });
 
-  it("defensively collapses Vince's same-second promise + conversation pairs, preferring the richer planned item", async () => {
+  it("defensively collapses same-second promise + conversation pairs, preferring the richer planned item", async () => {
     api.needs.mockResolvedValue(
       needs([
         item(1, {
@@ -289,7 +325,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           kind: "task",
           source: "teams",
           source_label: "Teams",
-          person: "Vince",
+          person: "Jordan",
           title: "You said: send the 8oz template to Greg",
           line: "",
           action_label: "Commitment",
@@ -304,7 +340,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           source: "teams",
           source_label: "Teams",
           person: "Greg",
-          title: "Vince has the 8oz template and will send it to Greg.",
+          title: "Jordan has the 8oz template and will send it to Greg.",
           line: "",
           action_label: "Reply",
           plan_status: "planned",
@@ -318,7 +354,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           kind: "task",
           source: "teams",
           source_label: "Teams",
-          person: "Vince",
+          person: "Jordan",
           title: "You said: send his and Greg's lunch order",
           line: "",
           action_label: "Commitment",
@@ -346,7 +382,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
 
     await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(2));
     const rows = screen.getAllByTestId("need-row");
-    expect(rows[0]).toHaveTextContent("Vince has the 8oz template and will send it to Greg.");
+    expect(rows[0]).toHaveTextContent("Jordan has the 8oz template and will send it to Greg.");
     expect(rows[1]).toHaveTextContent("Marco says he is trying to send Giulia his and Greg's lunch orders");
   });
 
@@ -355,13 +391,14 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     const view = render(<HomePage />);
 
     await screen.findByTestId("home-grouped-view");
+    expect(screen.getAllByTestId("need-row")).toHaveLength(5);
 
     // Open Customize popover, switch to Compact density, and hide "Waiting on others".
     fireEvent.click(screen.getAllByTestId("home-customize-trigger")[0]);
     const popover = await screen.findByTestId("home-customize-popover");
     fireEvent.click(within(popover).getByTestId("popover-density-compact"));
     fireEvent.click(within(popover).getByTestId("toggle-section-waiting"));
-    await waitFor(() => expect(screen.queryByTestId("section-waiting")).toBeNull());
+    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(4));
     expect(screen.getByTestId("home-hidden-sections-note")).toHaveTextContent("1 section is hidden");
 
     // Verify persistence in localStorage across remounts.
@@ -372,13 +409,12 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     view.unmount();
     render(<HomePage />);
     await screen.findByTestId("home-grouped-view");
-    expect(screen.queryByTestId("section-waiting")).toBeNull();
+    expect(screen.getAllByTestId("need-row")).toHaveLength(4);
 
     // Reset restores comfortable density and all sections.
     fireEvent.click(screen.getAllByTestId("home-customize-trigger")[0]);
     fireEvent.click(screen.getByTestId("home-customize-reset"));
-    await screen.findByTestId("home-grouped-view");
-    expect(screen.getByTestId("section-waiting")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(5));
   });
 
   it("shows crystal-clear plain-English text for waiting, commitments, and QC holds with zero em dashes", async () => {
@@ -391,8 +427,8 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
           kind: "task",
           source: "teams",
           source_label: "Teams",
-          title: "You said: renew the workbench-host-vince Portal access before Dec 14, 2026",
-          line: "renew the workbench-host-vince Portal access before Dec 14, 2026 (nothing in your mail says how long this usually takes: when should it be looked for?)",
+          title: "You said: renew the staging-host-ops Portal access before Dec 14, 2026",
+          line: "renew the staging-host-ops Portal access before Dec 14, 2026 (nothing in your mail says how long this usually takes: when should it be looked for?)",
           due_at: "2026-12-14T15:00:00Z",
           action: "do",
           action_label: "Do it",
@@ -404,33 +440,30 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
 
     await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(6));
 
-    // No noisy "Private items marked with lock" header text.
     expect(screen.queryByText(/Private items marked with lock/i)).toBeNull();
 
-    // Waiting item: topic promoted to headline, "Waiting on Ricardo · Teams" in metadata, no boilerplate.
-    const waitingRow = within(screen.getByTestId("section-waiting")).getByTestId("need-row");
-    expect(waitingRow).toHaveTextContent("Portal write endpoints and key in staging");
-    expect(waitingRow).toHaveTextContent("Waiting on Ricardo");
-    expect(waitingRow).toHaveTextContent("Teams");
-    expect(waitingRow).not.toHaveTextContent("No answer yet from Ricardo");
-    expect(waitingRow).not.toHaveTextContent("no typical reply time");
-    expect(waitingRow).not.toHaveTextContent("Ricardo:");
+    // Waiting item: topic promoted to headline, "Waiting on Elena" and "Teams" in metadata, no boilerplate.
+    const allRows = screen.getAllByTestId("need-row");
+    const waitingRow = allRows.find((el) => el.textContent?.includes("Portal write endpoints and key in staging"));
+    expect(waitingRow).toBeTruthy();
+    expect(waitingRow!).toHaveTextContent("Waiting on Elena");
+    expect(waitingRow!).toHaveTextContent("Teams");
+    expect(waitingRow!).not.toHaveTextContent("No answer yet from Elena");
+    expect(waitingRow!).not.toHaveTextContent("no typical reply time");
+    expect(waitingRow!).not.toHaveTextContent("Elena:");
 
-    // Commitment item: crisp headline, "Commitment · Due 14 Dec · Teams" metadata, zero echoed subtitle.
-    const tasksSection = screen.getByTestId("section-tasks");
-    const commitmentRow = within(tasksSection)
-      .getAllByTestId("need-row")
-      .find((el) => el.textContent?.includes("workbench-host-vince"));
+    // Commitment item: crisp headline, "Commitment", "Due 14 Dec", "Teams" metadata, zero echoed subtitle.
+    const commitmentRow = allRows.find((el) => el.textContent?.includes("staging-host-ops"));
     expect(commitmentRow).toBeTruthy();
-    expect(commitmentRow!.textContent).toContain("Renew workbench-host-vince Portal access");
+    expect(commitmentRow!.textContent).toContain("Renew staging-host-ops Portal access");
     expect(commitmentRow!.textContent).toContain("Commitment");
     expect(commitmentRow!.textContent).toContain("Due 14 Dec");
     expect(commitmentRow!.textContent).toContain("Teams");
     expect(commitmentRow!.textContent).not.toContain("You said:");
     expect(commitmentRow!.textContent).not.toContain("nothing in your mail");
-    expect(commitmentRow!.textContent!.split("workbench-host-vince").length - 1).toBe(1);
+    expect(commitmentRow!.textContent!.split("staging-host-ops").length - 1).toBe(1);
 
-    // QC Hold item: "Lot BC-25295D rejected (AA-NA650)" + "1 open order affected · Tiger Hospitality LLC".
+    // QC Hold item: "Lot BC-25295D rejected (AA-NA650)" + "1 open order affected" + "Tiger Hospitality LLC".
     const holdRow = within(screen.getByTestId("holds-list")).getByTestId("need-row");
     expect(holdRow).toHaveTextContent("Lot BC-25295D rejected (AA-NA650)");
     expect(holdRow).toHaveTextContent("1 open order affected");
@@ -442,7 +475,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     expect(container.textContent).not.toContain("\u2014");
   });
 
-  it("supports universal 1-click Close and Snooze with Undo on every row via setHomeItemState", async () => {
+  it("supports universal 1-click Done and Snooze with Liquid Glass Undo on every row via setHomeItemState", async () => {
     api.homeState.mockResolvedValue({ item_id: "late:po1", state: "closed" });
     api.needs.mockResolvedValue(
       needs([
@@ -480,7 +513,6 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
 
     expect(screen.getAllByTestId("row-quick-open")[0]).toHaveAttribute("href", "/assist?item=r1");
     expect(screen.getAllByTestId("row-quick-ask")[0].getAttribute("href")).toContain("/ask?q=");
-    // Every row (including plain late_po without matter_id) has Close item and Snooze 1 day.
     expect(screen.getAllByRole("button", { name: "Close item" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Snooze 1 day" })).toHaveLength(2);
 
@@ -492,7 +524,7 @@ describe("Executive Home workspace bento strip, deduplication, layouts, and cust
     await waitFor(() => expect(screen.getAllByTestId("need-row")).toHaveLength(1));
     expect(screen.getByTestId("home-action-status")).toHaveTextContent("Snoozed Re: packing slip for 1 day");
 
-    // 1-click Close on the non-matter late_po row optimistically removes it and calls setHomeItemState("late:po1", "closed").
+    // 1-click Done on the non-matter late_po row optimistically removes it and calls setHomeItemState("late:po1", "closed").
     fireEvent.click(screen.getByTestId("row-quick-dismiss"));
     await waitFor(() => expect(api.homeState).toHaveBeenCalledWith("late:po1", "closed", undefined));
     await waitFor(() => expect(screen.queryAllByTestId("need-row")).toHaveLength(0));

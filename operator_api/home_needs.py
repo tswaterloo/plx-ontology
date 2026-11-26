@@ -76,17 +76,45 @@ LEGACY_ZOMBIE_DAYS = 365
 FINANCIALS_EVENTS = frozenset({"price_below_cost", "customer_price_drop", "customer_demand_drop", "price_below_typical"})
 HOLD_EVENTS = frozenset({"lot_on_hold", "quality_hold_aging", "qc_hold", "batch_hold", "order_hold"})
 QC_HOLD_EVENTS = frozenset({"quality_hold", "qc_hold", "lot_on_hold", "batch_hold", "quality_hold_aging"})
+PURCHASING_BROADCAST_EVENTS = frozenset({
+    "po_late", "late_po", "po_due", "po_undated", "eta_slipped", "vendor_no_reply",
+})
+SALES_BROADCAST_EVENTS = frozenset({
+    "customer_order_at_risk", "customer_order_late", "customer_order_open_long",
+    "customer_order_slower_than_usual", "price_below_cost", "price_below_typical",
+    "customer_demand_drop", "customer_price_drop", "negative_margin",
+})
+RECENT_OVERDUE_DAYS = 30
 _QC_ROLE_RE = re.compile(r"\b(?:qa\s*/\s*qc|qa|qc|quality|lab(?:oratory)?|regulatory)\b", re.I)  # guard-ok: org-chart QA/QC/lab/regulatory department/title check for QC hold routing
+_PURCHASING_ROLE_RE = re.compile(  # guard-ok: org-chart purchasing/supply-chain/operations department/title check for purchasing broadcast alerts
+    r"\b(?:purchasing|procurement|supply\s+chain|sourcing|buyer|operations|ops|"
+    r"warehouse|inventory|materials?|logistics|receiving|planning|scheduler)\b",
+    re.I,
+)
+_SALES_FINANCE_ROLE_RE = re.compile(  # guard-ok: org-chart sales/finance/customer-service department/title check for sales/margin broadcast alerts
+    r"\b(?:sales|account\s+manag(?:er|ement)|customer\s+service|client\s+service|csr|"
+    r"finance|accounting|accountant|controller|billing|accounts?\s+(?:payable|receivable)|"
+    r"revenue|pricing|commercial|marketing)\b",
+    re.I,
+)
 _NOREPLY_SENDER_RE = re.compile(  # guard-ok: RFC/operational automated no-reply mailbox addresses excluded from reply-owed items
     r"(?:^(?:no-?reply|do-?not-?reply|updates|newsletter|notifications?|microsoftstore|"
     r"mailer-daemon|postmaster|bounces?|digest|automated|account-security-noreply|security-noreply)@"
     r"|@(?:microsoftstore\.com|(?:email|e|mail|notifications)\.microsoft\.com)$)",
     re.IGNORECASE,
 )
+_CALENDAR_AUTO_RESPONSE_RE = re.compile(  # guard-ok: standard calendar RSVP auto-response subject prefixes excluded from reply-owed items
+    r"^(?:(?:re|fw|fwd)\s*:\s*)*(?:accepted|declined|tentative|cancell?ed|invitation)\s*:",
+    re.IGNORECASE,
+)
+_NULL_ORDER_NUMBER_RE = re.compile(
+    r"(?:\border\s+with\s+no\s+order\s+number\b|^salesorder$|^purchaseorder$|^order$)",
+    re.IGNORECASE,
+)
 _COS_SYSTEM_RE = re.compile(  # guard-ok: operational system monitoring subjects from cos@petrasoap.com excluded from human reply queue
-    r"\b(?:health|sync|monitor(?:ing)?|digest|cron|pipeline|ci\s+red|merge[- ]class|relay|"
-    r"stale\s+views?|unavailable|status\s+report|on\s+staging|storage[- ]finalize|"
-    r"gha\s+dispatch|work[- ]routing)\b",
+    r"\b(?:health|sync|monitor(?:ing)?|digest|cron|pipeline|ci\s+red|merge[- ](?:class|gate)|relay|"
+    r"stale\s+views?|unavailable|status\s+report|(?:on\s+)?staging|storage[- ]finalize|"
+    r"gha(?:\s+dispatch)?|github\s+actions?|work[- ]routing|smoke|canary|automated)\b",
     re.IGNORECASE,
 )
 _HEX24_RE = re.compile(r"^[0-9a-f]{24}$")
@@ -1224,14 +1252,20 @@ def _filtered_reply_matter(item: Mapping[str, Any], *, now: Optional[datetime] =
     is_reply_alert = bool(markers & REPLY_ALERT_NAMES)
     if is_reply_alert and is_stale_reply_alert(item.get("basis_at"), now=now):
         return True
+    sender_raw = str(item.get("sender") or "").strip().lower()
+    subject_raw = str(item.get("subject") or "").strip()
+    summary_raw = str(item.get("summary") or "").strip()
+    if sender_raw == "cos@petrasoap.com":
+        cos_text = " ".join(str(x) for x in (subject_raw, summary_raw, item.get("note")) if x)
+        if _COS_SYSTEM_RE.search(cos_text):
+            return True
     if is_reply_alert or item.get("channel") in ("mail", "teams") or _matter_kind(item) in ("reply", "alert"):
-        sender_raw = str(item.get("sender") or "").strip().lower()
         if sender_raw and _NOREPLY_SENDER_RE.search(sender_raw):
             return True
-        if sender_raw == "cos@petrasoap.com":
-            cos_text = " ".join(str(x) for x in (item.get("subject"), item.get("summary"), item.get("note")) if x)
-            if _COS_SYSTEM_RE.search(cos_text):
-                return True
+        if (subject_raw and _CALENDAR_AUTO_RESPONSE_RE.match(subject_raw)) or (
+            summary_raw and _CALENDAR_AUTO_RESPONSE_RE.match(summary_raw)
+        ):
+            return True
         text = " ".join(
             str(x) for x in (item.get("summary"), item.get("note"), item.get("message")) if x
         )
@@ -1280,17 +1314,27 @@ def _load_staff_rows(backend: Any) -> list[dict[str, Any]]:
     return rows or roster._load_staff_rows()
 
 
-def _reader_receives_qc_holds(backend: Any, reader: Any) -> bool:
-    """True when ``reader`` is the company owner/executive (``owner_open``, ``EXEC`` dept,
-    or ``reports_count >= 5``) or explicit Quality/QA/QC/Lab/Regulatory staff. Non-owner
-    IT/Production/Engineering/Admin/Sales/Finance staff never receive broadcast QC holds."""
+ALL_BROADCAST_SCOPES = frozenset({"qc", "purchasing", "sales"})
+
+
+def _reader_broadcast_scopes(backend: Any, reader: Any) -> frozenset[str]:
+    """Which company-wide broadcast alert scopes (``qc``, ``purchasing``, ``sales``) this
+    reader should receive when an alert is not explicitly addressed to their own mailbox:
+    - Company owner (``owner_open``), Executives (``EXEC``), or org leaders (``reports_count >= 5``)
+      receive all broadcast scopes.
+    - Purchasing / Operations / Supply Chain staff (and non-IT people managers with direct reports)
+      receive ``purchasing`` broadcasts; individual-contributor Software/IT/Production engineers do not.
+    - Sales / Finance / Accounting / Customer Service staff receive ``sales`` broadcasts;
+      Software/IT engineers do not.
+    - Quality / QA / QC / Lab / Regulatory staff receive ``qc`` broadcasts.
+    - Unmatched fixture readers (no staff row) keep all scopes so isolated tests stay intact."""
     from operating import autopilot_roster as roster
     from . import feedback as fb
     if fb.owner_open(getattr(reader, "session", None)):
-        return True
+        return ALL_BROADCAST_SCOPES
     idents = _reader_identities(reader)
     if not idents:
-        return True
+        return ALL_BROADCAST_SCOPES
     staff = _load_staff_rows(backend)
     matched = [
         r for r in staff
@@ -1298,19 +1342,58 @@ def _reader_receives_qc_holds(backend: Any, reader: Any) -> bool:
         or (r.get("email") and str(r["email"]).strip().lower() in idents)
     ]
     if not matched:
-        return True
+        return ALL_BROADCAST_SCOPES
+    scopes: set[str] = set()
     for r in matched:
         dept = str(r.get("department") or "").strip()
         title = str(r.get("title") or "").strip()
         reports_count = int(r.get("reports_count") or 0)
         if dept.lower() in ("exec", "executive") or reports_count >= 5:
-            return True
-        if not roster.is_non_operational_staff(department=dept, title=title) and (
-            roster.staff_matches_role("quality", department=dept, title=title)
-            or bool(_QC_ROLE_RE.search(f"{dept} {title}"))
+            return ALL_BROADCAST_SCOPES
+        if roster.is_non_operational_staff(department=dept, title=title):
+            continue
+        combined = f"{dept} {title}".strip()
+        if roster.staff_matches_role("quality", department=dept, title=title) or _QC_ROLE_RE.search(combined):
+            scopes.add("qc")
+        if (
+            reports_count > 0
+            or roster.staff_matches_role("purchasing", department=dept, title=title)
+            or roster.staff_matches_role("production_planning", department=dept, title=title)
+            or _PURCHASING_ROLE_RE.search(combined)
         ):
-            return True
-    return False
+            scopes.add("purchasing")
+        if (
+            roster.staff_matches_role("customer_service", department=dept, title=title)
+            or roster.staff_matches_role("finance", department=dept, title=title)
+            or roster.staff_matches_role("receivables", department=dept, title=title)
+            or _SALES_FINANCE_ROLE_RE.search(combined)
+        ):
+            scopes.add("sales")
+    return frozenset(scopes)
+
+
+def _reader_receives_qc_holds(backend: Any, reader: Any) -> bool:
+    """True when ``reader`` is the company owner/executive (``owner_open``, ``EXEC`` dept,
+    or ``reports_count >= 5``) or explicit Quality/QA/QC/Lab/Regulatory staff. Non-owner
+    IT/Production/Engineering/Admin/Sales/Finance staff never receive broadcast QC holds."""
+    return "qc" in _reader_broadcast_scopes(backend, reader)
+
+
+def _broadcast_scope_of_event(event_type: str, alert_kind: str = "") -> Optional[str]:
+    ev = str(event_type or "").strip().lower()
+    ak = str(alert_kind or "").strip().lower()
+    if ev in QC_HOLD_EVENTS or ak in QC_HOLD_EVENTS:
+        return "qc"
+    if ev in PURCHASING_BROADCAST_EVENTS or ak in PURCHASING_BROADCAST_EVENTS:
+        return "purchasing"
+    if (
+        ev in SALES_BROADCAST_EVENTS
+        or ak in SALES_BROADCAST_EVENTS
+        or ev.startswith(("customer_order_", "price_below_"))
+        or ak.startswith(("customer_order_", "price_below_"))
+    ):
+        return "sales"
+    return None
 
 
 def _is_qc_hold_matter(item: Mapping[str, Any]) -> bool:
@@ -1325,35 +1408,79 @@ def _is_qc_hold_matter(item: Mapping[str, Any]) -> bool:
     return bool(markers & QC_HOLD_EVENTS)
 
 
+def _matter_broadcast_scope(item: Mapping[str, Any]) -> Optional[str]:
+    detail = item.get("sources_detail") if isinstance(item.get("sources_detail"), Mapping) else {}
+    for ev in (
+        item.get("event_type"),
+        item.get("alert_kind"),
+        detail.get("event_type"),
+        detail.get("alert_kind"),
+        detail.get("autopilot"),
+    ):
+        scope = _broadcast_scope_of_event(str(ev or ""))
+        if scope:
+            return scope
+    return None
+
+
 def _is_qc_hold_alert(item: Any) -> bool:
     ev = str(getattr(item, "event_type", "") or "").strip().lower()
     ak = str(getattr(item, "alert_kind", "") or "").strip().lower()
     return ev in QC_HOLD_EVENTS or ak in QC_HOLD_EVENTS
 
 
+def _alert_broadcast_scope(item: Any) -> Optional[str]:
+    return _broadcast_scope_of_event(
+        str(getattr(item, "event_type", "") or ""),
+        str(getattr(item, "alert_kind", "") or ""),
+    )
+
+
 def _explicitly_addressed_to_reader(item: Any, reader: Any) -> bool:
     idents = _reader_identities(reader)
     if isinstance(item, Mapping):
-        if item.get("handed"):
+        if item.get("handed") or item.get("followed"):
             return True
         detail = item.get("sources_detail") if isinstance(item.get("sources_detail"), Mapping) else {}
-        vals = [item.get("mailbox"), item.get("concerns"), detail.get("mailbox"), detail.get("assigned_to")]
+        vals = [
+            item.get("mailbox"), item.get("concerns"),
+            detail.get("mailbox"), detail.get("assigned_to"), detail.get("concerns"),
+        ]
     else:
-        vals = [getattr(item, "mailbox", None), getattr(item, "concerns", None)]
+        if getattr(item, "followed", False):
+            return True
+        vals = [
+            getattr(item, "mailbox", None),
+            getattr(item, "concerns", None),
+            getattr(item, "buyer", None),
+            getattr(item, "owner", None),
+        ]
     return any(str(v).strip().lower() in idents for v in vals if v)
+
+
+def _is_null_order_number_item(row: m.HomeNeedItem) -> bool:
+    """True for ERP order rows with no order number (e.g. 'Order with no order number')
+    which should never hijack top urgent Home positions."""
+    title = str(row.title or "").strip()
+    line = str(row.line or "").strip()
+    if _NULL_ORDER_NUMBER_RE.search(title) or "order with no order number" in line.lower():
+        return True
+    return False
 
 
 def _matters(backend: Any, reader: Any) -> tuple[list[m.HomeNeedItem], m.HomeNeedPart]:
     from . import open_work_tool
     got = open_work_tool.store(backend, reader)
     now = _et_now()[0]
-    qc_ok = _reader_receives_qc_holds(backend, reader)
-    raw = [
-        i for i in got.get("items") or ()
-        if not _mc_approval_matter(i)
-        and not _filtered_reply_matter(i, now=now)
-        and (qc_ok or not _is_qc_hold_matter(i) or _explicitly_addressed_to_reader(i, reader))
-    ]
+    scopes = _reader_broadcast_scopes(backend, reader)
+    raw = []
+    for i in got.get("items") or ():
+        if _mc_approval_matter(i) or _filtered_reply_matter(i, now=now):
+            continue
+        scope = _matter_broadcast_scope(i)
+        if scope and scope not in scopes and not _explicitly_addressed_to_reader(i, reader):
+            continue
+        raw.append(i)
     qmap = _queue_items_for_matters(backend, raw)
     rows = [
         _matter_item(
@@ -1405,6 +1532,9 @@ def _is_legacy_zombie_po(po: m.LatePo, *, now: Optional[datetime] = None) -> boo
 
 
 def _late(backend: Any, reader: Any) -> tuple[list[m.HomeNeedItem], m.HomeNeedPart]:
+    scopes = _reader_broadcast_scopes(backend, reader)
+    if "purchasing" not in scopes:
+        return [], _part("pos", "ok", total=0)
     now = _et_now()[0]
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="home-needs-late") as pool:
         current = pool.submit(_late_all, backend, reader)
@@ -1426,10 +1556,19 @@ def _filtered_reply_alert_item(item: Any, *, now: Optional[datetime] = None) -> 
         is_filtered_reply_alert,
         is_legacy_stale_order_alert,
     )
+    sender = str(getattr(item, "counterpart", "") or "").strip()
+    subject = str(getattr(item, "subject_label", "") or "").strip()
+    summary = str(getattr(item, "summary", "") or "").strip()
     if is_automated_system_alert(
-        sender=getattr(item, "counterpart", "") or "",
-        subject=getattr(item, "subject_label", "") or "",
-        summary=getattr(item, "summary", "") or "",
+        sender=sender,
+        subject=subject,
+        summary=summary,
+    ):
+        return True
+    if sender.lower() == "cos@petrasoap.com" or "cos@petrasoap.com" in summary.lower():
+        return True
+    if (subject and _CALENDAR_AUTO_RESPONSE_RE.match(subject)) or (
+        summary and _CALENDAR_AUTO_RESPONSE_RE.match(summary)
     ):
         return True
     ev = str(getattr(item, "event_type", "") or "").strip().lower()
@@ -1441,7 +1580,7 @@ def _filtered_reply_alert_item(item: Any, *, now: Optional[datetime] = None) -> 
         kind=ak,
         since=getattr(item, "first_seen", None) or getattr(item, "since", None),
         days=getattr(item, "days", None),
-        text=getattr(item, "summary", "") or "",
+        text=summary,
         now=now,
     ):
         return True
@@ -1450,8 +1589,8 @@ def _filtered_reply_alert_item(item: Any, *, now: Optional[datetime] = None) -> 
         kind=ak,
         since=getattr(item, "first_seen", None),
         days=getattr(item, "days", None),
-        text=getattr(item, "summary", "") or "",
-        subject=getattr(item, "subject_label", "") or "",
+        text=summary,
+        subject=subject,
         now=now,
     )
 
@@ -1465,20 +1604,31 @@ def _alerts(backend: Any, reader: Any) -> tuple[list[m.HomeNeedItem], m.HomeNeed
     found: dict[str, m.BriefingItem] = {}
     failures: list[str] = []
     now = _et_now()[0]
-    qc_ok = _reader_receives_qc_holds(backend, reader)
+    scopes = _reader_broadcast_scopes(backend, reader)
     SKIP_ALERT_EVENTS = frozenset({LATE_PO_EVENT, MC_APPROVAL_EVENT, "needs_my_reply", "reply_owed"})
+
+    def _allowed_alert(item: Any) -> bool:
+        scope = _alert_broadcast_scope(item)
+        if not scope or scope in scopes:
+            return True
+        return _explicitly_addressed_to_reader(item, reader)
+
     for item in brief.items or ():
         if (
             item.event_type not in SKIP_ALERT_EVENTS
             and not _mc_approval_alert(item)
             and not _filtered_reply_alert_item(item, now=now)
-            and (qc_ok or not _is_qc_hold_alert(item) or _explicitly_addressed_to_reader(item, reader))
+            and _allowed_alert(item)
         ):
             found[item.id] = item
     for group in brief.groups or ():
         if str(group.event_type) in SKIP_ALERT_EVENTS:
             continue
-        if not qc_ok and str(group.event_type or "").strip().lower() in QC_HOLD_EVENTS:
+        group_scope = _broadcast_scope_of_event(str(group.event_type or ""))
+        if group_scope and group_scope not in scopes:
+            # Skip fetching company-wide broadcast groups outside this reader's role scope;
+            # any item explicitly addressed to the reader's own mailbox was already included
+            # in brief.items above.
             continue
         if getattr(group, "unavailable", False):
             failures.append(clean_alert_label(group.event_type, group.label))
@@ -1498,9 +1648,7 @@ def _alerts(backend: Any, reader: Any) -> tuple[list[m.HomeNeedItem], m.HomeNeed
                 failures.append(clean_alert_label(group.event_type, group.label))
                 break
             for item in page.items:
-                if not _filtered_reply_alert_item(item, now=now) and (
-                    qc_ok or not _is_qc_hold_alert(item) or _explicitly_addressed_to_reader(item, reader)
-                ):
+                if not _filtered_reply_alert_item(item, now=now) and _allowed_alert(item):
                     found.setdefault(item.id, item)
             if not page.more or not page.items:
                 break
@@ -1848,8 +1996,10 @@ def _impact(row: m.HomeNeedItem) -> Decimal:
 
 
 def rank(rows: list[m.HomeNeedItem], *, now: Optional[datetime] = None) -> list[m.HomeNeedItem]:
-    """Deterministic ordering by typed urgency: overdue first (oldest due first), then due today,
-    then waiting/gone quiet, then newest; impact breaks ties within the same currency."""
+    """Deterministic ordering by typed urgency: recent actionable overdue items (1-30 days,
+    most recent first), then due today, then waiting/gone quiet, then newest current work,
+    then stale overdue (>30 days), then demoted incomplete rows (such as orders with no
+    order number); impact breaks ties within the same currency."""
     now, today = _et_now() if now is None else (now, now.date())
     by_currency: dict[str, list[Decimal]] = {}
     for row in rows:
@@ -1865,16 +2015,23 @@ def rank(rows: list[m.HomeNeedItem], *, now: Optional[datetime] = None) -> list[
     def key(row: m.HomeNeedItem) -> tuple:
         due = _moment(row.due_at)
         basis = _moment(row.basis_at) or datetime.min.replace(tzinfo=timezone.utc)
+        if _is_null_order_number_item(row):
+            return (5, -basis.timestamp(), -float(impact(row)), -basis.timestamp(), row.title.lower(), row.id)
         due_day = due.date() if due else None
         overdue = due_day is not None and due_day < today
+        overdue_days = (today - due_day).days if overdue and due_day is not None else 0
+        recent_overdue = overdue and overdue_days <= RECENT_OVERDUE_DAYS
+        stale_overdue = overdue and overdue_days > RECENT_OVERDUE_DAYS
         due_today = due_day == today
         quiet = bool(row.still_open or row.kind == "waiting") and not overdue and not due_today
-        if overdue:
-            bucket, first = 0, due.timestamp() if due else 0.0
+        if recent_overdue:
+            bucket, first = 0, -(due.timestamp() if due else 0.0)
         elif due_today:
             bucket, first = 1, due.timestamp() if due else 0.0
         elif quiet:
             bucket, first = 2, basis.timestamp()
+        elif stale_overdue:
+            bucket, first = 4, -(due.timestamp() if due else 0.0)
         else:
             bucket, first = 3, -basis.timestamp()
         return (bucket, first, -float(impact(row)), -basis.timestamp(), row.title.lower(), row.id)
@@ -1934,6 +2091,8 @@ def split_older(
             (at is not None and at < cutoff)
             or (at is None and row.days_late is not None and row.days_late > OLDER_NEEDS_AFTER_DAYS)
         )
+        if not is_old and _is_null_order_number_item(row):
+            is_old = True
         if not is_old and (row.kind in ("alert", "late_po") or row.source == "alerts"):
             is_old = (
                 (row.days_late is not None and row.days_late > STALE_ALERT_DAYS)

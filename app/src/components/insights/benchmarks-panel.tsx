@@ -12,6 +12,8 @@ import {
   Flag,
   Loader2,
   MessageSquareWarning,
+  Pause,
+  PauseCircle,
   Play,
   Plus,
   Search,
@@ -21,8 +23,22 @@ import {
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { extractKpiSummary } from "@/components/insights/bento-layout";
+import { CreateTriggerModal } from "@/components/insights/create-trigger-modal";
 import { FeedbackTriagePanel } from "@/components/insights/genie-panel";
-import { getGaps, getInsight, getObserved, sendNoteFeedback } from "@/lib/api";
+import {
+  deleteAssistWorkflow,
+  deleteInsight,
+  getAssistWorkflows,
+  getGaps,
+  getInsight,
+  getObserved,
+  pauseAssistWorkflow,
+  resumeAssistWorkflow,
+  runAssistWorkflow,
+  sendNoteFeedback,
+  setInsightSchedule,
+  type AssistWorkflow,
+} from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { ApiError, plainError } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -130,9 +146,23 @@ function summarizeInsightResult(item: InsightInfo, res: InsightResult): { headli
   return { headline: null, rowCount };
 }
 
+function deliveryLabelForWorkflow(instruction: string): string {
+  const lower = instruction.toLowerCase();
+  const hasHome = lower.includes("home");
+  const hasEmail = lower.includes("email");
+  if (hasHome && hasEmail) return "Home + Email";
+  if (hasEmail) return "Email digest";
+  return "Home alert";
+}
+
+function deliveryLabelForMonitor(notify: InsightInfo["notify"]): string {
+  if (notify === "never") return "Silent";
+  return "Home alert";
+}
+
 /**
- * Pure: build honest accuracy checks ONLY from real catalog insights, real measures, and user-added checks.
- * Every check starts as `not_run` until actually executed or manually marked by a human — ZERO fake Checked states, ZERO fabricated SQL.
+ * Pure: build honest accuracy checks ONLY from real catalog tiles, real measures, and user-added checks.
+ * Every check starts as `not_run` until actually executed or manually marked by a human.
  */
 export function buildAccuracyChecks(
   measures: readonly MeasureItem[],
@@ -155,7 +185,6 @@ export function buildAccuracyChecks(
     return { status: "not_run", lastRun: null, lastCheckedAt: null };
   };
 
-  // 1. User-added custom checks first
   for (const c of stored.custom) {
     const st = resolveStatus(c.id);
     seenIds.add(c.id);
@@ -172,7 +201,6 @@ export function buildAccuracyChecks(
     });
   }
 
-  // 2. Real governed measures (linked to their real tile id when one exists)
   for (const m of measures) {
     const id = `measure_check_${m.id}`;
     if (seenIds.has(id)) continue;
@@ -194,7 +222,6 @@ export function buildAccuracyChecks(
     });
   }
 
-  // 3. Real catalog insight tiles (not already covered by measures)
   for (const it of items) {
     if (it.measure && seenMeasureIds.has(it.measure.id)) continue;
     const id = `tile_check_${it.id}`;
@@ -218,12 +245,12 @@ export function buildAccuracyChecks(
   return out;
 }
 
-/** Calm inline status label + 6px dot or 12px icon — ZERO colored status boxes. */
+/** Crisp semantic status icon + label (no glowing dots, no colored boxes). */
 function CheckStatusInline({ status, lastRun }: { status: BenchmarkStatus; lastRun?: BenchmarkRunRecord | null }) {
   if (status === "verified") {
     return (
       <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ok whitespace-nowrap">
-        <CheckCircle2 className="size-3 shrink-0" strokeWidth={2.2} aria-hidden />
+        <CheckCircle2 className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
         Verified
       </span>
     );
@@ -231,7 +258,7 @@ function CheckStatusInline({ status, lastRun }: { status: BenchmarkStatus; lastR
   if (status === "flagged") {
     return (
       <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-late whitespace-nowrap">
-        <Flag className="size-3 shrink-0" strokeWidth={2.2} aria-hidden />
+        <Flag className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
         Flagged
       </span>
     );
@@ -242,7 +269,7 @@ function CheckStatusInline({ status, lastRun }: { status: BenchmarkStatus; lastR
         className="inline-flex items-center gap-1.5 text-[12px] font-medium text-late whitespace-nowrap"
         title={lastRun?.error ?? "Run failed"}
       >
-        <AlertCircle className="size-3 shrink-0" strokeWidth={2.2} aria-hidden />
+        <AlertCircle className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
         Error
       </span>
     );
@@ -250,8 +277,8 @@ function CheckStatusInline({ status, lastRun }: { status: BenchmarkStatus; lastR
   if (status === "ran") {
     return (
       <span className="inline-flex items-center gap-2 text-[12px] text-fg whitespace-nowrap tabular-nums">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="size-1.5 rounded-full bg-dot-ok shrink-0" aria-hidden />
+        <span className="inline-flex items-center gap-1.5 text-ok font-medium">
+          <CheckCircle2 className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
           Ran
         </span>
         {lastRun ? <span className="text-muted">{lastRun.rowCount} rows</span> : null}
@@ -260,7 +287,7 @@ function CheckStatusInline({ status, lastRun }: { status: BenchmarkStatus; lastR
   }
   return (
     <span className="inline-flex items-center gap-1.5 text-[12px] text-faint whitespace-nowrap">
-      <CircleDashed className="size-3 shrink-0" strokeWidth={2} aria-hidden />
+      <CircleDashed className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
       Not run
     </span>
   );
@@ -277,12 +304,17 @@ interface MonitorLiveRun {
   error?: string | null;
 }
 
+interface TriggerActionState {
+  busy?: "run" | "toggle" | "delete";
+  message?: string;
+  error?: string;
+}
+
 /**
- * Monitors & Quality Workspace:
- * 3 crisp, genuinely functional tabs via Liquid Glass switcher:
- *   1. Monitors (Scheduled alerts & watches with REAL working Run now)
- *   2. Accuracy checks (Honest Not run default, real Run & Run visible, real Verify / Flag issue)
- *   3. Data gaps & feedback (Live getGaps() + Ask telemetry + FeedbackTriagePanel)
+ * Unified Triggers & Accuracy Console:
+ * - Scheduled triggers & monitors in clean flush hairline tables with Run now / Pause / Delete
+ * - Secondary Accuracy checks tab for live SQL verification (Verified / Flagged / Ran / Not run)
+ * - Secondary Data gaps & feedback tab
  */
 export function BenchmarksPanel({
   list,
@@ -303,10 +335,35 @@ export function BenchmarksPanel({
   const [gapsAccess, setGapsAccess] = useState<"loading" | "ok" | "restricted" | "error">("loading");
   const [waitingFeedbackCount, setWaitingFeedbackCount] = useState(0);
 
-  // Monitors tab state
+  // Triggers & monitors state
   const [monitorRuns, setMonitorRuns] = useState<Record<string, MonitorLiveRun>>({});
+  const [monitorScheduleOverrides, setMonitorScheduleOverrides] = useState<Record<string, InsightInfo["schedule"]>>({});
+  const [deletedMonitorIds, setDeletedMonitorIds] = useState<Record<string, boolean>>({});
+  const [monitorActionBusy, setMonitorActionBusy] = useState<Record<string, boolean>>({});
+  const [triggerActions, setTriggerActions] = useState<Record<string, TriggerActionState>>({});
   const [watchPrompt, setWatchPrompt] = useState("");
+  const [triggerModalOpen, setTriggerModalOpen] = useState(false);
+  const [triggerInitialPrompt, setTriggerInitialPrompt] = useState<string | undefined>(undefined);
+  const [triggerInitialMeasure, setTriggerInitialMeasure] = useState<string | undefined>(undefined);
+  const [triggers, setTriggers] = useState<AssistWorkflow[]>([]);
   const activeAbortsRef = useRef<Set<AbortController>>(new Set());
+
+  const loadTriggers = (signal?: AbortSignal, ensureWorkflow?: AssistWorkflow) => {
+    if (typeof getAssistWorkflows !== "function") return;
+    getAssistWorkflows(signal)
+      .then((got) => {
+        if (signal?.aborted) return;
+        if (got && Array.isArray(got.workflows)) {
+          const next = ensureWorkflow && !got.workflows.some((w) => w.workflow_id === ensureWorkflow.workflow_id)
+            ? [ensureWorkflow, ...got.workflows]
+            : got.workflows;
+          setTriggers(next);
+        }
+      })
+      .catch(() => {
+        // Keep console usable even if workflows endpoint is unavailable.
+      });
+  };
 
   useEffect(() => {
     const aborts = activeAbortsRef.current;
@@ -358,11 +415,22 @@ export function BenchmarksPanel({
         else setGapsAccess("error");
       },
     );
+    loadTriggers(ctl.signal);
     return () => ctl.abort();
   }, []);
 
   const measures = list.measures ?? [];
-  const savedItems = useMemo(() => list.items.filter((i) => i.saved), [list.items]);
+  const savedItems = useMemo(
+    () =>
+      list.items
+        .filter((i) => i.saved && !deletedMonitorIds[i.id])
+        .map((i) =>
+          monitorScheduleOverrides[i.id] !== undefined
+            ? { ...i, schedule: monitorScheduleOverrides[i.id] }
+            : i,
+        ),
+    [list.items, deletedMonitorIds, monitorScheduleOverrides],
+  );
   const scheduledItems = useMemo(() => savedItems.filter((i) => Boolean(i.schedule)), [savedItems]);
   const catalogExamples = useMemo(() => list.items.filter((i) => !i.saved).slice(0, 5), [list.items]);
 
@@ -410,7 +478,75 @@ export function BenchmarksPanel({
     });
   };
 
-  /** Live-run a monitor insight via getInsight(item.id) */
+  /** Live-run an Assist workflow trigger */
+  const handleRunTrigger = async (wf: AssistWorkflow) => {
+    if (typeof runAssistWorkflow !== "function") return;
+    setTriggerActions((prev) => ({ ...prev, [wf.workflow_id]: { busy: "run" } }));
+    try {
+      const res = await runAssistWorkflow(wf.workflow_id);
+      if (res?.workflow) {
+        setTriggers((prev) => prev.map((w) => (w.workflow_id === wf.workflow_id ? res.workflow : w)));
+      }
+      setTriggerActions((prev) => ({
+        ...prev,
+        [wf.workflow_id]: { message: "Run queued" },
+      }));
+    } catch (e) {
+      setTriggerActions((prev) => ({
+        ...prev,
+        [wf.workflow_id]: { error: plainError(e) },
+      }));
+    }
+  };
+
+  /** Pause or resume an Assist workflow trigger */
+  const handleToggleTrigger = async (wf: AssistWorkflow) => {
+    const isPaused = wf.status !== "active";
+    const fn = isPaused ? resumeAssistWorkflow : pauseAssistWorkflow;
+    if (typeof fn !== "function") return;
+    setTriggerActions((prev) => ({ ...prev, [wf.workflow_id]: { busy: "toggle" } }));
+    try {
+      const updated = await fn(wf.workflow_id);
+      setTriggers((prev) =>
+        prev.map((w) =>
+          w.workflow_id === wf.workflow_id
+            ? updated ?? { ...w, status: isPaused ? "active" : "paused" }
+            : w,
+        ),
+      );
+      setTriggerActions((prev) => ({
+        ...prev,
+        [wf.workflow_id]: { message: isPaused ? "Resumed" : "Paused" },
+      }));
+    } catch (e) {
+      setTriggerActions((prev) => ({
+        ...prev,
+        [wf.workflow_id]: { error: plainError(e) },
+      }));
+    }
+  };
+
+  /** Delete an Assist workflow trigger */
+  const handleDeleteTrigger = async (wf: AssistWorkflow) => {
+    if (typeof deleteAssistWorkflow !== "function") return;
+    setTriggerActions((prev) => ({ ...prev, [wf.workflow_id]: { busy: "delete" } }));
+    try {
+      await deleteAssistWorkflow(wf.workflow_id);
+      setTriggers((prev) => prev.filter((w) => w.workflow_id !== wf.workflow_id));
+      setTriggerActions((prev) => {
+        const next = { ...prev };
+        delete next[wf.workflow_id];
+        return next;
+      });
+    } catch (e) {
+      setTriggerActions((prev) => ({
+        ...prev,
+        [wf.workflow_id]: { error: plainError(e) },
+      }));
+    }
+  };
+
+  /** Live-run a saved chart monitor via getInsight(item.id) */
   const runMonitorNow = async (item: InsightInfo) => {
     const ctl = new AbortController();
     activeAbortsRef.current.add(ctl);
@@ -447,6 +583,45 @@ export function BenchmarksPanel({
       }));
     } finally {
       activeAbortsRef.current.delete(ctl);
+    }
+  };
+
+  /** Pause or resume a saved chart monitor's schedule */
+  const handleToggleMonitorSchedule = async (item: InsightInfo) => {
+    if (typeof setInsightSchedule !== "function") return;
+    setMonitorActionBusy((prev) => ({ ...prev, [item.id]: true }));
+    const nextSchedule: InsightInfo["schedule"] = item.schedule ? "" : "daily";
+    try {
+      await setInsightSchedule(item.id, {
+        schedule: nextSchedule,
+        notify: item.notify === "never" && nextSchedule ? "new_rows" : item.notify,
+        watch: item.watch ?? null,
+      });
+      setMonitorScheduleOverrides((prev) => ({ ...prev, [item.id]: nextSchedule }));
+    } catch (e) {
+      setMonitorRuns((prev) => ({
+        ...prev,
+        [item.id]: { running: false, ok: false, error: plainError(e) },
+      }));
+    } finally {
+      setMonitorActionBusy((prev) => ({ ...prev, [item.id]: false }));
+    }
+  };
+
+  /** Delete a saved chart monitor */
+  const handleDeleteMonitor = async (item: InsightInfo) => {
+    if (typeof deleteInsight !== "function") return;
+    setMonitorActionBusy((prev) => ({ ...prev, [item.id]: true }));
+    try {
+      await deleteInsight(item.id);
+      setDeletedMonitorIds((prev) => ({ ...prev, [item.id]: true }));
+    } catch (e) {
+      setMonitorRuns((prev) => ({
+        ...prev,
+        [item.id]: { running: false, ok: false, error: plainError(e) },
+      }));
+    } finally {
+      setMonitorActionBusy((prev) => ({ ...prev, [item.id]: false }));
     }
   };
 
@@ -497,7 +672,6 @@ export function BenchmarksPanel({
     }
   };
 
-  /** Run every tile-backed check currently visible in the Accuracy Checks table */
   const runVisibleChecks = async () => {
     const runnable = pagedChecks.filter((c) => Boolean(c.tileId));
     if (runnable.length === 0) return;
@@ -599,17 +773,40 @@ export function BenchmarksPanel({
     if (s === "hourly") return "Hourly";
     if (s === "daily") return "Daily";
     if (s === "weekly") return "Weekly";
-    return "Manual";
+    return "Paused";
   };
+
+  const openTriggerBuilder = (opts?: { prompt?: string; measureName?: string }) => {
+    setTriggerInitialPrompt(opts?.prompt);
+    setTriggerInitialMeasure(opts?.measureName);
+    setTriggerModalOpen(true);
+  };
+
+  const handleTriggerCreated = (workflow: AssistWorkflow) => {
+    setTriggers((prev) => [workflow, ...prev.filter((w) => w.workflow_id !== workflow.workflow_id)]);
+    setWatchPrompt("");
+    loadTriggers(undefined, workflow);
+  };
+
+  const totalMonitorCount = savedItems.length + triggers.length;
 
   return (
     <div className="space-y-5" data-testid="benchmarks-panel">
-      {/* Top Bar: Quiet hairline underline sub-tabs + Inline Telemetry */}
+      <CreateTriggerModal
+        open={triggerModalOpen}
+        onClose={() => setTriggerModalOpen(false)}
+        measures={measures}
+        initialMeasureName={triggerInitialMeasure}
+        initialPrompt={triggerInitialPrompt}
+        onCreated={handleTriggerCreated}
+      />
+
+      {/* Quiet Hairline Sub-Navigation + Inline Telemetry */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/80">
         <div
           role="tablist"
-          aria-label="Monitors and quality sections"
-          className="-mb-px inline-flex items-center gap-4"
+          aria-label="Triggers and accuracy sections"
+          className="-mb-px inline-flex items-center gap-5"
           data-testid="monitors-subview-tabs"
         >
           <button
@@ -619,15 +816,15 @@ export function BenchmarksPanel({
             onClick={() => setSubTab("monitors")}
             data-testid="subtab-monitors"
             className={cn(
-              "inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-[13px] font-medium transition-colors cursor-pointer",
+              "inline-flex h-9 items-center gap-1.5 border-b-2 px-0.5 text-[13px] font-medium transition-colors cursor-pointer",
               subTab === "monitors"
                 ? "border-fg text-fg"
                 : "border-transparent text-muted hover:border-border-strong hover:text-fg",
             )}
           >
             <Bell className="size-3.5 shrink-0" strokeWidth={1.9} aria-hidden />
-            Monitors
-            <span className="num text-[11px] opacity-75">{savedItems.length}</span>
+            Triggers
+            <span className="num text-[11px] opacity-75">{totalMonitorCount}</span>
           </button>
           <button
             type="button"
@@ -636,7 +833,7 @@ export function BenchmarksPanel({
             onClick={() => setSubTab("checks")}
             data-testid="subtab-accuracy"
             className={cn(
-              "inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-[13px] font-medium transition-colors cursor-pointer",
+              "inline-flex h-9 items-center gap-1.5 border-b-2 px-0.5 text-[13px] font-medium transition-colors cursor-pointer",
               subTab === "checks"
                 ? "border-fg text-fg"
                 : "border-transparent text-muted hover:border-border-strong hover:text-fg",
@@ -653,7 +850,7 @@ export function BenchmarksPanel({
             onClick={() => setSubTab("gaps")}
             data-testid="subtab-gaps-feedback"
             className={cn(
-              "inline-flex h-9 items-center gap-1.5 border-b-2 px-1 text-[13px] font-medium transition-colors cursor-pointer",
+              "inline-flex h-9 items-center gap-1.5 border-b-2 px-0.5 text-[13px] font-medium transition-colors cursor-pointer",
               subTab === "gaps"
                 ? "border-fg text-fg"
                 : "border-transparent text-muted hover:border-border-strong hover:text-fg",
@@ -667,7 +864,7 @@ export function BenchmarksPanel({
           </button>
         </div>
 
-        {/* Quiet Inline Telemetry Readout (zero boxed KPI cards) */}
+        {/* Quiet Inline Telemetry Readout */}
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 pb-1.5 text-[12px] text-muted tabular-nums">
           <span data-testid="bench-kpi-accuracy">
             {observedAccess === "loading"
@@ -697,81 +894,215 @@ export function BenchmarksPanel({
         </div>
       </div>
 
-      {/* TAB 1: MONITORS (Scheduled alerts & watches with REAL Run now) */}
+      {/* TAB 1: SCHEDULED TRIGGERS & MONITORS */}
       {subTab === "monitors" && (
-        <section className="space-y-4" aria-label="Scheduled alerts and watches" data-testid="monitors-tab-panel">
+        <section className="space-y-4" aria-label="Scheduled triggers" data-testid="monitors-tab-panel">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-[15px] font-semibold tracking-[-0.015em] text-fg">
-                Scheduled alerts &amp; watches
+                Scheduled triggers
               </h2>
               <p className="text-[12.5px] text-muted">
-                Saved charts and threshold monitors that run live against warehouse views as you.
+                Automated threshold rules and scheduled chart checks that run live against governed warehouse views.
               </p>
             </div>
-            <Link
-              prefetch={false}
-              href={`/ask?q=${encodeURIComponent("Set up a daily monitor for late purchase orders over 10")}`}
-              data-testid="new-monitor-link"
-              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12.5px] font-medium text-bg hover:opacity-90"
+            <button
+              type="button"
+              onClick={() => openTriggerBuilder()}
+              data-testid="new-monitor-btn"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12.5px] font-medium text-bg transition-opacity hover:opacity-90 cursor-pointer"
             >
               <Plus className="size-3.5 shrink-0" strokeWidth={2.2} aria-hidden />
-              New monitor
-            </Link>
+              New trigger
+            </button>
           </div>
 
-          {/* Quick natural-language monitor bar */}
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg p-2 focus-within:border-border-strong">
-            <Bell className="ml-1 size-4 shrink-0 text-faint" strokeWidth={1.8} aria-hidden />
+          {/* Quick natural-language trigger composer */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              openTriggerBuilder({ prompt: trimmedWatch || undefined });
+            }}
+            className="flex flex-wrap items-center gap-2 rounded-lg border border-border/80 bg-bg px-2.5 py-2 focus-within:border-border-strong dark:bg-[#14161b]"
+          >
+            <Bell className="ml-0.5 size-4 shrink-0 text-faint" strokeWidth={1.8} aria-hidden />
             <input
               type="text"
               value={watchPrompt}
               onChange={(e) => setWatchPrompt(e.target.value)}
-              placeholder="Tell me when USD monthly revenue drops under 400k, or late POs exceed 15"
-              aria-label="Create proactive monitor"
+              placeholder="Alert me when late POs exceed 10, QC holds open, or monthly revenue drops below target"
+              aria-label="Describe a new trigger"
               className="min-w-[220px] flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-faint"
             />
-            {trimmedWatch.length > 2 ? (
-              <Link
-                prefetch={false}
-                href={`/ask?q=${encodeURIComponent(/^tell me when\b/i.test(trimmedWatch) ? trimmedWatch : `Tell me when ${trimmedWatch}`)}`}
-                className="inline-flex h-7 items-center gap-1 rounded-md bg-fg px-3 text-[12px] font-medium text-bg hover:opacity-90"
-              >
-                Create in Ask
-                <ArrowUpRight className="size-3" strokeWidth={2} aria-hidden />
-              </Link>
-            ) : (
-              <span className="inline-flex h-7 items-center rounded-md border border-border px-3 text-[12px] font-medium text-faint">
-                Create in Ask
-              </span>
-            )}
-          </div>
+            <button
+              type="submit"
+              data-testid="quick-create-trigger-btn"
+              className={cn(
+                "inline-flex h-7 items-center gap-1 rounded-md px-3 text-[12px] font-medium transition-colors cursor-pointer",
+                trimmedWatch.length > 2
+                  ? "bg-fg text-bg hover:opacity-90"
+                  : "border border-border bg-surface text-fg hover:border-border-strong hover:bg-hover",
+              )}
+            >
+              <Plus className="size-3" strokeWidth={2.2} aria-hidden />
+              Configure trigger
+            </button>
+          </form>
 
-          {savedItems.length === 0 ? (
+          {/* Flush Hairline Table: Active Workflow Triggers */}
+          {triggers.length > 0 && (
+            <div className="space-y-2" data-testid="active-triggers-section">
+              <div className="inline-flex items-center gap-2.5 text-[12px] text-muted tabular-nums">
+                <span className="font-medium text-fg">Active triggers</span>
+                <span className="h-3 w-px bg-border" aria-hidden />
+                <span>{triggers.length} configured</span>
+              </div>
+              <div className="overflow-x-auto border-y border-border/80">
+                <table className="w-full border-collapse text-left text-[12.5px]" data-testid="triggers-table">
+                  <thead className="border-b border-border text-[11.5px] text-faint">
+                    <tr>
+                      <th className="py-2 pr-3 font-medium">Trigger name</th>
+                      <th className="px-3 py-2 font-medium">Condition &amp; schedule</th>
+                      <th className="px-3 py-2 font-medium">Delivery</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
+                      <th className="py-2 pl-3 text-right font-medium">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {triggers.map((wf) => {
+                      const actionState = triggerActions[wf.workflow_id];
+                      const isActive = wf.status === "active";
+                      const busy = Boolean(actionState?.busy);
+                      return (
+                        <tr
+                          key={wf.workflow_id}
+                          className="align-top transition-colors hover:bg-hover/40"
+                          data-testid={`trigger-row-${wf.workflow_id}`}
+                        >
+                          <td className="py-2.5 pr-3">
+                            <div className="font-medium text-fg">{wf.name}</div>
+                            {actionState?.message && (
+                              <div className="mt-0.5 text-[11.5px] text-ok">{actionState.message}</div>
+                            )}
+                            {actionState?.error && (
+                              <div className="mt-0.5 text-[11.5px] text-late">{actionState.error}</div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-muted">
+                            <div className="inline-flex items-center gap-1.5 text-fg whitespace-nowrap">
+                              <Clock className="size-3 text-faint" strokeWidth={1.9} aria-hidden />
+                              <span>{wf.trigger_summary || wf.trigger_kind}</span>
+                            </div>
+                            {wf.instruction && (
+                              <p className="mt-0.5 max-w-md line-clamp-1 text-[11.5px] text-faint">
+                                {wf.instruction}
+                              </p>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-[12px] text-muted whitespace-nowrap">
+                            {deliveryLabelForWorkflow(wf.instruction || "")}
+                          </td>
+                          <td className="px-3 py-2.5 whitespace-nowrap">
+                            {isActive ? (
+                              <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ok">
+                                <CheckCircle2 className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                                Active
+                              </span>
+                            ) : wf.status === "paused" ? (
+                              <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-risk">
+                                <PauseCircle className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                                Paused
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-[12px] text-faint capitalize">
+                                <CircleDashed className="size-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                                {wf.status}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pl-3 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleRunTrigger(wf)}
+                                data-testid={`run-trigger-${wf.workflow_id}`}
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover disabled:opacity-50 cursor-pointer"
+                              >
+                                {actionState?.busy === "run" ? (
+                                  <Loader2 className="size-3 animate-spin" aria-hidden />
+                                ) : (
+                                  <Play className="size-3" strokeWidth={2.2} aria-hidden />
+                                )}
+                                Run now
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleToggleTrigger(wf)}
+                                data-testid={`toggle-trigger-${wf.workflow_id}`}
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer"
+                              >
+                                {isActive ? (
+                                  <>
+                                    <Pause className="size-3" strokeWidth={2} aria-hidden />
+                                    Pause
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="size-3" strokeWidth={2} aria-hidden />
+                                    Resume
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleDeleteTrigger(wf)}
+                                data-testid={`delete-trigger-${wf.workflow_id}`}
+                                aria-label={`Delete trigger ${wf.name}`}
+                                title="Delete trigger"
+                                className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-late disabled:opacity-50 cursor-pointer"
+                              >
+                                <Trash2 className="size-3.5" strokeWidth={2} aria-hidden />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Flush Hairline Table: Saved Chart Monitors */}
+          {savedItems.length === 0 && triggers.length === 0 ? (
             <div
-              className="space-y-4 rounded-lg border border-border/80 bg-surface/50 p-5"
+              className="space-y-4 rounded-xl border border-border/80 bg-bg p-5 dark:bg-[#14161b]"
               data-testid="monitors-empty-state"
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
-                  <p className="text-[13.5px] font-medium text-fg">No monitors saved yet</p>
+                  <p className="text-[13.5px] font-medium text-fg">No triggers configured yet</p>
                   <p className="text-[12.5px] text-muted">
-                    Ask any question and pin the chart, or start from one of your live catalog views below to watch it on a schedule.
+                    Create a scheduled threshold trigger in-page, or start from one of your live catalog views below.
                   </p>
                 </div>
-                <Link
-                  prefetch={false}
-                  href={`/ask?q=${encodeURIComponent("Track late purchase orders by supplier daily and alert me when new ones appear")}`}
-                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-fg px-3 text-[12px] font-medium text-bg hover:opacity-90"
+                <button
+                  type="button"
+                  onClick={() => openTriggerBuilder()}
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-fg px-3 text-[12px] font-medium text-bg transition-opacity hover:opacity-90 cursor-pointer"
                 >
                   <Plus className="size-3.5" strokeWidth={2.2} aria-hidden />
-                  Create a monitor
-                </Link>
+                  New trigger
+                </button>
               </div>
 
               {catalogExamples.length > 0 && (
                 <div className="space-y-2 border-t border-border/70 pt-3">
-                  <div className="text-[11.5px] font-medium uppercase tracking-[0.04em] text-faint">
+                  <div className="text-[12px] font-medium text-muted">
                     Quick-start from live catalog views
                   </div>
                   <ul className="divide-y divide-border/60">
@@ -786,7 +1117,7 @@ export function BenchmarksPanel({
                               <div className="mt-0.5 text-[12px] tabular-nums">
                                 {run.ok ? (
                                   <span className="inline-flex items-center gap-2 text-muted">
-                                    <span className="size-1.5 rounded-full bg-dot-ok" aria-hidden />
+                                    <CheckCircle2 className="size-3 text-ok" strokeWidth={2.2} aria-hidden />
                                     {run.headline ? <strong className="font-medium text-fg">{run.headline}</strong> : null}
                                     <span>{run.rowCount} {run.rowCount === 1 ? "row" : "rows"}</span>
                                     <span className="h-3 w-px bg-border" aria-hidden />
@@ -804,7 +1135,7 @@ export function BenchmarksPanel({
                               disabled={run?.running}
                               onClick={() => void runMonitorNow(it)}
                               data-testid={`run-monitor-${it.id}`}
-                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover disabled:opacity-50 cursor-pointer"
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover disabled:opacity-50 cursor-pointer"
                             >
                               {run?.running ? (
                                 <Loader2 className="size-3 animate-spin" aria-hidden />
@@ -813,14 +1144,13 @@ export function BenchmarksPanel({
                               )}
                               Run now
                             </button>
-                            <Link
-                              prefetch={false}
-                              href={`/ask?q=${encodeURIComponent(`Monitor "${it.title}" daily and alert me on changes`)}`}
-                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-muted hover:border-border-strong hover:text-fg"
+                            <button
+                              type="button"
+                              onClick={() => openTriggerBuilder({ measureName: it.title })}
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:text-fg cursor-pointer"
                             >
-                              Schedule in Ask
-                              <ArrowUpRight className="size-3" aria-hidden />
-                            </Link>
+                              Set trigger
+                            </button>
                           </div>
                         </li>
                       );
@@ -829,20 +1159,23 @@ export function BenchmarksPanel({
                 </div>
               )}
             </div>
-          ) : (
+          ) : savedItems.length > 0 ? (
             <div className="space-y-2">
               <div className="inline-flex items-center gap-2.5 text-[12px] text-muted tabular-nums">
+                <span className="font-medium text-fg">Saved chart monitors</span>
+                <span className="h-3 w-px bg-border" aria-hidden />
                 <span>{scheduledItems.length} scheduled</span>
                 <span className="h-3 w-px bg-border" aria-hidden />
-                <span>{savedItems.length} total saved</span>
+                <span>{savedItems.length} saved</span>
               </div>
               <div className="overflow-x-auto border-y border-border/80">
                 <table className="w-full border-collapse text-left text-[12.5px]" data-testid="monitors-table">
                   <thead className="border-b border-border text-[11.5px] text-faint">
                     <tr>
-                      <th className="py-2 pr-3 font-medium">Monitor</th>
-                      <th className="px-3 py-2 font-medium">Cadence &amp; rule</th>
-                      <th className="px-3 py-2 font-medium">Last run / Live check</th>
+                      <th className="py-2 pr-3 font-medium">Trigger name</th>
+                      <th className="px-3 py-2 font-medium">Condition &amp; schedule</th>
+                      <th className="px-3 py-2 font-medium">Delivery</th>
+                      <th className="px-3 py-2 font-medium">Status</th>
                       <th className="py-2 pl-3 text-right font-medium">Actions</th>
                     </tr>
                   </thead>
@@ -850,26 +1183,21 @@ export function BenchmarksPanel({
                     {savedItems.map((it) => {
                       const run = monitorRuns[it.id];
                       const active = Boolean(it.schedule);
+                      const busy = Boolean(run?.running || monitorActionBusy[it.id]);
                       return (
                         <tr key={it.id} className="align-top transition-colors hover:bg-hover/40" data-testid={`monitor-row-${it.id}`}>
                           <td className="py-2.5 pr-3">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={cn("size-1.5 shrink-0 rounded-full", active ? "bg-dot-ok" : "bg-dot-neutral")}
-                                aria-hidden
-                              />
-                              {onJumpToTile ? (
-                                <button
-                                  type="button"
-                                  onClick={() => onJumpToTile(it.id)}
-                                  className="font-medium text-fg hover:underline cursor-pointer text-left"
-                                >
-                                  {it.title}
-                                </button>
-                              ) : (
-                                <span className="font-medium text-fg">{it.title}</span>
-                              )}
-                            </div>
+                            {onJumpToTile ? (
+                              <button
+                                type="button"
+                                onClick={() => onJumpToTile(it.id)}
+                                className="font-medium text-fg hover:underline cursor-pointer text-left"
+                              >
+                                {it.title}
+                              </button>
+                            ) : (
+                              <span className="font-medium text-fg">{it.title}</span>
+                            )}
                           </td>
                           <td className="px-3 py-2.5 text-muted">
                             <div className="inline-flex items-center gap-1.5 text-fg">
@@ -880,6 +1208,9 @@ export function BenchmarksPanel({
                               <div className="mt-0.5 text-[11.5px] text-faint">{monitorLine(it)}</div>
                             )}
                           </td>
+                          <td className="px-3 py-2.5 text-[12px] text-muted whitespace-nowrap">
+                            {deliveryLabelForMonitor(it.notify)}
+                          </td>
                           <td className="px-3 py-2.5 text-[12px] tabular-nums" data-testid={`monitor-result-${it.id}`}>
                             {run?.running ? (
                               <span className="inline-flex items-center gap-1.5 text-muted">
@@ -889,8 +1220,8 @@ export function BenchmarksPanel({
                             ) : run ? (
                               run.ok ? (
                                 <div className="space-y-0.5">
-                                  <div className="inline-flex items-center gap-2 text-fg">
-                                    <span className="size-1.5 rounded-full bg-dot-ok" aria-hidden />
+                                  <div className="inline-flex items-center gap-1.5 text-fg">
+                                    <CheckCircle2 className="size-3.5 shrink-0 text-ok" strokeWidth={2.1} aria-hidden />
                                     {run.headline && <span className="font-semibold">{run.headline}</span>}
                                     <span className="text-muted">
                                       {run.rowCount} {run.rowCount === 1 ? "row" : "rows"}
@@ -904,24 +1235,35 @@ export function BenchmarksPanel({
                                 </div>
                               ) : (
                                 <span className="inline-flex items-center gap-1 text-late">
-                                  <AlertCircle className="size-3 shrink-0" aria-hidden />
+                                  <AlertCircle className="size-3.5 shrink-0" aria-hidden />
                                   {run.error}
                                 </span>
                               )
+                            ) : active ? (
+                              <div className="space-y-0.5">
+                                <span className="inline-flex items-center gap-1.5 font-medium text-ok">
+                                  <CheckCircle2 className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                                  Active
+                                </span>
+                                <div className="text-[11px] text-faint">
+                                  {it.last_run ? formatDateTime(it.last_run) : "Awaiting first run"}
+                                </div>
+                              </div>
                             ) : (
-                              <span className="text-faint">
-                                {it.last_run ? formatDateTime(it.last_run) : active ? "Awaiting first scheduled run" : "Not run yet"}
+                              <span className="inline-flex items-center gap-1.5 text-risk">
+                                <PauseCircle className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                                Paused
                               </span>
                             )}
                           </td>
                           <td className="py-2.5 pl-3 text-right whitespace-nowrap">
-                            <div className="inline-flex items-center gap-1.5">
+                            <div className="inline-flex items-center gap-1">
                               <button
                                 type="button"
-                                disabled={run?.running}
+                                disabled={busy}
                                 onClick={() => void runMonitorNow(it)}
                                 data-testid={`run-monitor-${it.id}`}
-                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover disabled:opacity-50 cursor-pointer"
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover disabled:opacity-50 cursor-pointer"
                               >
                                 {run?.running ? (
                                   <Loader2 className="size-3 animate-spin" aria-hidden />
@@ -930,12 +1272,42 @@ export function BenchmarksPanel({
                                 )}
                                 Run now
                               </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleToggleMonitorSchedule(it)}
+                                data-testid={`toggle-monitor-${it.id}`}
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[12px] font-medium text-muted transition-colors hover:border-border-strong hover:bg-hover hover:text-fg disabled:opacity-50 cursor-pointer"
+                              >
+                                {active ? (
+                                  <>
+                                    <Pause className="size-3" strokeWidth={2} aria-hidden />
+                                    Pause
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="size-3" strokeWidth={2} aria-hidden />
+                                    Resume
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => void handleDeleteMonitor(it)}
+                                data-testid={`delete-monitor-${it.id}`}
+                                aria-label={`Delete monitor ${it.title}`}
+                                title="Delete monitor"
+                                className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-late disabled:opacity-50 cursor-pointer"
+                              >
+                                <Trash2 className="size-3.5" strokeWidth={2} aria-hidden />
+                              </button>
                               <Link
                                 prefetch={false}
                                 href={`/ask?q=${encodeURIComponent(it.question || `Explain recent changes in "${it.title}"`)}`}
-                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-muted hover:border-border-strong hover:text-fg"
+                                className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
                               >
-                                Open in Ask
+                                Ask
                                 <ArrowUpRight className="size-3" aria-hidden />
                               </Link>
                             </div>
@@ -947,11 +1319,11 @@ export function BenchmarksPanel({
                 </table>
               </div>
             </div>
-          )}
+          ) : null}
         </section>
       )}
 
-      {/* TAB 2: ACCURACY CHECKS (Honest Not run default, real Run & Run visible, Verify / Flag issue) */}
+      {/* TAB 2: ACCURACY CHECKS */}
       {subTab === "checks" && (
         <section className="space-y-4" aria-label="Accuracy checks" data-testid="accuracy-checks-panel">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -960,7 +1332,7 @@ export function BenchmarksPanel({
                 Accuracy checks
               </h2>
               <p className="text-[12.5px] text-muted">
-                Execute live insight queries or test questions in Ask, then mark checks Verified or Flag an issue.
+                Run golden SQL queries against live warehouse views, then mark checks Verified or Flag an issue.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -970,7 +1342,7 @@ export function BenchmarksPanel({
                   disabled={runningBatch}
                   onClick={() => void runVisibleChecks()}
                   data-testid="run-visible-checks"
-                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-bg px-3 text-[12px] font-medium text-fg hover:bg-hover disabled:opacity-50 cursor-pointer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-strong bg-bg px-3 text-[12px] font-medium text-fg transition-colors hover:bg-hover disabled:opacity-50 cursor-pointer"
                 >
                   {runningBatch ? (
                     <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -985,7 +1357,7 @@ export function BenchmarksPanel({
                 onClick={() => setFormOpen((v) => !v)}
                 aria-expanded={formOpen}
                 data-testid="add-benchmark-toggle"
-                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12px] font-medium text-bg hover:opacity-90 cursor-pointer"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12px] font-medium text-bg transition-opacity hover:opacity-90 cursor-pointer"
               >
                 <Plus className="size-3.5 shrink-0" strokeWidth={2.2} aria-hidden />
                 Add check
@@ -1002,7 +1374,7 @@ export function BenchmarksPanel({
           {formOpen && (
             <form
               onSubmit={handleAddCheck}
-              className="space-y-3 rounded-lg border border-border/80 bg-surface/50 p-4"
+              className="space-y-3 rounded-xl border border-border/80 bg-bg p-4 dark:bg-[#14161b]"
               data-testid="add-benchmark-form"
             >
               <div className="grid grid-cols-1 gap-3 md:grid-cols-12">
@@ -1070,14 +1442,14 @@ export function BenchmarksPanel({
                   <button
                     type="button"
                     onClick={() => setFormOpen(false)}
-                    className="h-8 rounded-md border border-border px-3 text-[12px] font-medium text-muted hover:bg-hover hover:text-fg cursor-pointer"
+                    className="h-8 rounded-md border border-border px-3 text-[12px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={submitting || !newQuestion.trim()}
-                    className="h-8 rounded-md bg-fg px-3 text-[12px] font-medium text-bg hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="h-8 rounded-md bg-fg px-3 text-[12px] font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {submitting ? "Saving" : "Save check"}
                   </button>
@@ -1125,7 +1497,7 @@ export function BenchmarksPanel({
             </div>
           </div>
 
-          {/* Flush Table of Accuracy Checks */}
+          {/* Flush Hairline Table of Accuracy Checks */}
           {filteredChecks.length === 0 ? (
             <p className="py-8 text-center text-[13px] text-muted">
               No accuracy checks match this filter.
@@ -1190,7 +1562,7 @@ export function BenchmarksPanel({
                               <span className="text-late">{b.lastRun.error}</span>
                             )
                           ) : (
-                            <span className="text-faint">—</span>
+                            <span className="text-faint">-</span>
                           )}
                         </td>
                         <td className="py-2.5 pl-3 text-right whitespace-nowrap">
@@ -1201,7 +1573,7 @@ export function BenchmarksPanel({
                                 disabled={isRunning}
                                 onClick={() => void runCheck(b)}
                                 data-testid={`run-check-${b.id}`}
-                                className="inline-flex h-7 items-center gap-1 rounded-md bg-fg px-2.5 text-[11.5px] font-medium text-bg hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                                className="inline-flex h-7 items-center gap-1 rounded-md bg-fg px-2.5 text-[11.5px] font-medium text-bg transition-opacity hover:opacity-90 disabled:opacity-50 cursor-pointer"
                               >
                                 {isRunning ? (
                                   <Loader2 className="size-3 animate-spin" aria-hidden />
@@ -1215,7 +1587,7 @@ export function BenchmarksPanel({
                                 prefetch={false}
                                 href={`/ask?q=${encodeURIComponent(b.question)}`}
                                 data-testid={`test-in-ask-${b.id}`}
-                                className="inline-flex h-7 items-center gap-1 rounded-md bg-fg px-2.5 text-[11.5px] font-medium text-bg hover:opacity-90"
+                                className="inline-flex h-7 items-center gap-1 rounded-md bg-fg px-2.5 text-[11.5px] font-medium text-bg transition-opacity hover:opacity-90"
                               >
                                 <Play className="size-3" strokeWidth={2.2} aria-hidden />
                                 Run in Ask
@@ -1227,7 +1599,7 @@ export function BenchmarksPanel({
                                 type="button"
                                 aria-expanded={sqlOpen}
                                 onClick={() => setExpandedSql((prev) => ({ ...prev, [b.id]: !prev[b.id] }))}
-                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted hover:border-border-strong hover:text-fg cursor-pointer"
+                                className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted transition-colors hover:border-border-strong hover:text-fg cursor-pointer"
                               >
                                 <Code2 className="size-3" strokeWidth={2} aria-hidden />
                                 SQL
@@ -1239,7 +1611,7 @@ export function BenchmarksPanel({
                               onClick={() => void setCheckVerdict(b, b.status === "verified" ? "clear" : "verified")}
                               data-testid={`verify-check-${b.id}`}
                               className={cn(
-                                "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11.5px] font-medium cursor-pointer",
+                                "inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11.5px] font-medium transition-colors cursor-pointer",
                                 b.status === "verified"
                                   ? "border-border-strong bg-surface-2 text-fg"
                                   : "border-border bg-bg text-muted hover:border-border-strong hover:text-fg",
@@ -1253,7 +1625,7 @@ export function BenchmarksPanel({
                               type="button"
                               onClick={() => void setCheckVerdict(b, "flagged")}
                               data-testid={`flag-check-${b.id}`}
-                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted hover:border-border-strong hover:text-late cursor-pointer"
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-bg px-2 text-[11.5px] font-medium text-muted transition-colors hover:border-border-strong hover:text-late cursor-pointer"
                             >
                               <Flag className="size-3" strokeWidth={2} aria-hidden />
                               Flag issue
@@ -1265,7 +1637,7 @@ export function BenchmarksPanel({
                                 href={`/ask?q=${encodeURIComponent(b.question)}`}
                                 data-testid={`test-in-ask-${b.id}`}
                                 title="Open question in Ask"
-                                className="inline-flex h-7 items-center rounded-md px-1.5 text-[11.5px] font-medium text-muted hover:bg-hover hover:text-fg"
+                                className="inline-flex h-7 items-center rounded-md px-1.5 text-[11.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
                               >
                                 Ask
                               </Link>
@@ -1276,7 +1648,7 @@ export function BenchmarksPanel({
                                 type="button"
                                 onClick={() => removeCustom(b.id)}
                                 aria-label={`Delete check ${b.question}`}
-                                className="inline-flex size-7 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-late cursor-pointer"
+                                className="inline-flex size-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-late cursor-pointer"
                               >
                                 <Trash2 className="size-3.5" strokeWidth={2} aria-hidden />
                               </button>
@@ -1299,7 +1671,7 @@ export function BenchmarksPanel({
               <button
                 type="button"
                 onClick={() => setVisibleLimit((n) => n + BENCHMARK_PAGE_SIZE)}
-                className="h-7 rounded-md border border-border bg-bg px-3 text-[12px] font-medium text-fg hover:border-border-strong hover:bg-hover cursor-pointer"
+                className="h-7 rounded-md border border-border bg-bg px-3 text-[12px] font-medium text-fg transition-colors hover:border-border-strong hover:bg-hover cursor-pointer"
               >
                 Show {Math.min(BENCHMARK_PAGE_SIZE, remainingChecks)} more
               </button>
@@ -1308,10 +1680,9 @@ export function BenchmarksPanel({
         </section>
       )}
 
-      {/* TAB 3: DATA GAPS & FEEDBACK (Flush list of live getGaps + Ask failures + FeedbackTriagePanel) */}
+      {/* TAB 3: DATA GAPS & FEEDBACK */}
       {subTab === "gaps" && (
         <div className="space-y-6" data-testid="gaps-feedback-panel">
-          {/* Open Definition Gaps */}
           <section className="space-y-3" aria-label="Definition gaps">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <div>
@@ -1351,12 +1722,16 @@ export function BenchmarksPanel({
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {gaps.gaps.slice(0, 20).map((g) => (
-                      <tr key={`${g.kind}-${g.name}`} className="hover:bg-hover/40">
+                      <tr key={`${g.kind}-${g.name}`} className="transition-colors hover:bg-hover/40">
                         <td className="py-2 pr-3 font-medium text-fg">{g.name}</td>
                         <td className="px-3 py-2 text-muted">{g.kind}</td>
                         <td className="px-3 py-2">
-                          <span className={cn("inline-flex items-center gap-1.5 text-[12px]", g.defined ? "text-ok" : "text-muted")}>
-                            <span className={cn("size-1.5 rounded-full", g.defined ? "bg-dot-ok" : "bg-dot-risk")} aria-hidden />
+                          <span className={cn("inline-flex items-center gap-1.5 text-[12px]", g.defined ? "text-ok" : "text-risk")}>
+                            {g.defined ? (
+                              <CheckCircle2 className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                            ) : (
+                              <AlertCircle className="size-3.5 shrink-0" strokeWidth={2.1} aria-hidden />
+                            )}
                             {g.defined ? "Defined" : "Open"}
                           </span>
                         </td>
@@ -1378,7 +1753,6 @@ export function BenchmarksPanel({
             )}
           </section>
 
-          {/* Recent Ask Failures (only shown when present) */}
           {observedAccess === "ok" && observed?.available && observed.failures.length > 0 && (
             <section className="space-y-2.5 border-t border-border pt-6" aria-label="Recent failed Ask questions">
               <div className="flex items-baseline justify-between gap-2">
@@ -1408,7 +1782,6 @@ export function BenchmarksPanel({
             </section>
           )}
 
-          {/* Feedback Triage Queue */}
           <FeedbackTriagePanel onWaitingCount={setWaitingFeedbackCount} />
         </div>
       )}

@@ -170,5 +170,65 @@ class LivePgEnrichment(unittest.TestCase):
         self.assertIn("filemaker", tv.DONE_CHANNELS)
 
 
+class TeamCleanlinessAndCachingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tv.clear_cache()
+
+    def tearDown(self) -> None:
+        tv.clear_cache()
+
+    def test_filters_non_human_and_external_personal_accounts_only(self) -> None:
+        domains = ("acme.example",)
+        self.assertTrue(tv._is_non_human_or_external_account(
+            row("printer", "address", ["printer@acme.example"]), domains))
+        self.assertTrue(tv._is_non_human_or_external_account(
+            row("No Reply", "address", ["no-reply@acme.example"]), domains))
+        self.assertTrue(tv._is_non_human_or_external_account(
+            row("Mailer Daemon", "address", ["mailer-daemon@acme.example"]), domains))
+        self.assertTrue(tv._is_non_human_or_external_account(
+            row("External User", "address", ["outsider@gmail.com"]), domains))
+        self.assertTrue(tv._is_non_human_or_external_account(
+            row("External Yahoo", "address", ["someone@yahoo.com"]), domains))
+        # Real staff member with both company address and personal alias stays visible
+        self.assertFalse(tv._is_non_human_or_external_account(
+            row("Alex Rivera", "teams", ["alex@acme.example", "alex.personal@gmail.com"]), domains))
+        self.assertFalse(tv._is_non_human_or_external_account(
+            row("Jordan Lee", "teams", ["jordan@acme.example"]), domains))
+
+    def test_team_parts_uses_60s_ttl_cache(self) -> None:
+        from unittest import mock
+
+        class Host(tv.TeamViewMixin):
+            store_path = None
+            data_dir = None
+            state_dir = None
+            pg_dsn = None
+            def _team_file(self):
+                return None
+            def _team_scope(self, _r):
+                return (True, frozenset(), lambda _o: False, True)
+            def _workload_grants(self):
+                return None
+
+        host = Host()
+        snap = {
+            "status": "built",
+            "window": {"to": "2026-11-25"},
+            "domains": ["acme.example"],
+            "people": {
+                "a1": row("Alex Rivera", "teams", ["alex@acme.example"]),
+                "p1": row("Printer", "address", ["printer@acme.example"]),
+                "g1": row("Outsider", "address", ["outsider@gmail.com"]),
+            },
+        }
+        with mock.patch.object(tv, "snapshot", return_value=snap) as m_snap:
+            first = host.team_view(None)
+            second = host.team_view(None)
+        self.assertEqual([p.name for p in first.people], ["Alex Rivera"])
+        self.assertEqual([p.name for p in second.people], ["Alex Rivera"])
+        # Snapshot only parsed once because the second call hit the 60s TTL cache
+        self.assertEqual(m_snap.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

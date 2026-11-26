@@ -10,7 +10,7 @@ vi.mock("@/lib/api", async (orig) => ({
 
 import { PreparedView } from "@/components/autopilot/prepared";
 
-const item = (over: Record<string, unknown> = {}) => ({ item_id: "a".repeat(24), sender: "vince@x.example", channel: "mail", subject: "Disk", message: "The disk is done.", kind: "your_call", to: [], cc: [], body: "", edited: false, ask: "What should the reply say?", facts: [], summary: "", note: "", plan_status: "drafted", plan_at: "2026-11-24T14:00:00Z", state: "open", created_at: "2026-11-24T14:00:00Z", ...over }) as never;
+const item = (over: Record<string, unknown> = {}) => ({ item_id: "a".repeat(24), sender: "jordan@x.example", channel: "mail", subject: "Disk", message: "The disk is done.", kind: "your_call", to: [], cc: [], body: "", edited: false, ask: "What should the reply say?", facts: [], summary: "", note: "", plan_status: "drafted", plan_at: "2026-11-24T14:00:00Z", state: "open", created_at: "2026-11-24T14:00:00Z", ...over }) as never;
 
 afterEach(() => {
   vi.useRealTimers();

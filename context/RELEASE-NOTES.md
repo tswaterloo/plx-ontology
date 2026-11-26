@@ -231,6 +231,11 @@ Changed:
 - Filter automated IT alerts for staff mailboxes, dedupe Vince same-event promise+conversation pairs, fix Split View titles and KPI counts, and add Assist Suggestions and Memory tabs
 - Fix hard20 root causes, eliminate 5-12s sync ask_cover drag, fix silent caps and h09 228s SQL stall, and populate live freshness banner
 
+## Update 2026-11-26
+Changed:
+- Redesign Home, Ask, Assist, Insights, Artifacts, Data, and Team workspaces
+- add insight and trigger builders, SharePoint artifact upload, scoped feeds, and fast calendar and team views
+
 ## v0.22 (2026-11-19)
 Changed:
 - Autopilot drafts by default with question cards, looks things up as the person, learns from edits and applies saved preferences; chat drafts read the chat and the person's own replies as style.

@@ -1,7 +1,7 @@
 "use client";
 
-import { ALERTS_HREF, SectionTabs, useHash } from "@/components/shell";
-import { Loader2, RefreshCw } from "lucide-react";
+import { ALERTS_HREF, useHash } from "@/components/shell";
+import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Pending } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { AlertKindsSection, DataHealthSection } from "@/components/watching/alert-kinds";
@@ -181,7 +181,15 @@ export function AlertsView() {
           </>
         }
       />
-      <SectionTabs section="home" />
+      <nav aria-label="Breadcrumb" className="border-b border-border/60 px-6 py-2">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 text-[12.5px] font-medium text-muted transition-colors hover:text-fg"
+        >
+          <ArrowLeft className="size-3.5" aria-hidden />
+          <span>Home</span>
+        </Link>
+      </nav>
       <PageIntro path="/?show=alerts" />
       <div className="w-full overflow-y-auto px-6 py-5">
         {problem ? <LoadProblem message={plainError(problem)} onRetry={load} /> : null}

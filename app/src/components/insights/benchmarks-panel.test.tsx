@@ -6,7 +6,16 @@ import type { InsightInfo, InsightList } from "@/lib/types";
 const getObserved = vi.fn();
 const getGaps = vi.fn();
 const getInsight = vi.fn();
+const saveInsight = vi.fn();
+const deleteInsight = vi.fn();
+const setInsightSchedule = vi.fn();
 const sendNoteFeedback = vi.fn();
+const getAssistWorkflows = vi.fn();
+const createAssistWorkflow = vi.fn();
+const runAssistWorkflow = vi.fn();
+const pauseAssistWorkflow = vi.fn();
+const resumeAssistWorkflow = vi.fn();
+const deleteAssistWorkflow = vi.fn();
 const getMeasureCandidates = vi.fn().mockResolvedValue({ candidates: [], counts: { pending: 0, approved: 0, dismissed: 0 }, total: 0, can_review: true });
 const getFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
 const getAllFeedback = vi.fn().mockResolvedValue({ entries: [], all_readers: false });
@@ -16,7 +25,16 @@ vi.mock("@/lib/api", () => ({
   getObserved: (...a: unknown[]) => getObserved(...a),
   getGaps: (...a: unknown[]) => getGaps(...a),
   getInsight: (...a: unknown[]) => getInsight(...a),
+  saveInsight: (...a: unknown[]) => saveInsight(...a),
+  deleteInsight: (...a: unknown[]) => deleteInsight(...a),
+  setInsightSchedule: (...a: unknown[]) => setInsightSchedule(...a),
   sendNoteFeedback: (...a: unknown[]) => sendNoteFeedback(...a),
+  getAssistWorkflows: (...a: unknown[]) => getAssistWorkflows(...a),
+  createAssistWorkflow: (...a: unknown[]) => createAssistWorkflow(...a),
+  runAssistWorkflow: (...a: unknown[]) => runAssistWorkflow(...a),
+  pauseAssistWorkflow: (...a: unknown[]) => pauseAssistWorkflow(...a),
+  resumeAssistWorkflow: (...a: unknown[]) => resumeAssistWorkflow(...a),
+  deleteAssistWorkflow: (...a: unknown[]) => deleteAssistWorkflow(...a),
   getMeasureCandidates: (...a: unknown[]) => getMeasureCandidates(...a),
   getFeedback: (...a: unknown[]) => getFeedback(...a),
   getAllFeedback: (...a: unknown[]) => getAllFeedback(...a),
@@ -24,6 +42,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { BENCHMARKS_STORAGE_KEY, BenchmarksPanel } from "./benchmarks-panel";
+import { CreateInsightModal } from "./create-insight-modal";
 
 const savedMonitor: InsightInfo = {
   id: "saved_late_pos",
@@ -78,6 +97,93 @@ const list: InsightList = {
 
 beforeEach(() => {
   window.localStorage.clear();
+  getAssistWorkflows.mockReset().mockResolvedValue({
+    workflows: [],
+    routines: [],
+    templates: [],
+    status: "ok",
+    reason: "",
+  });
+  createAssistWorkflow.mockReset().mockResolvedValue({
+    workflow_id: "wf-101",
+    name: "Late purchase orders monitor",
+    instruction: "Check Late purchase orders and alert when it exceeds 15 orders. Surface an alert on Home when triggered.",
+    trigger_kind: "schedule",
+    trigger: { cadence: "daily", hour: 8, minute: 0 },
+    trigger_summary: "Daily at 8:00 AM ET",
+    source_kind: "plain_language",
+    source_ref: "",
+    status: "active",
+    pause_reason: "",
+    created_at: "2026-11-26T12:00:00Z",
+    updated_at: "2026-11-26T12:00:00Z",
+    consecutive_failures: 0,
+    last_error: "",
+    runs: [],
+  });
+  saveInsight.mockReset().mockResolvedValue({
+    ...revenueTile,
+    id: "saved_custom_1",
+    title: "Monthly revenue by customer",
+    saved: true,
+  });
+  deleteInsight.mockReset().mockResolvedValue(undefined);
+  setInsightSchedule.mockReset().mockResolvedValue({ ...savedMonitor, schedule: "" });
+  runAssistWorkflow.mockReset().mockResolvedValue({
+    workflow: {
+      workflow_id: "wf-101",
+      name: "Late purchase orders monitor",
+      instruction: "Check Late purchase orders and alert when it exceeds 15 orders. Surface an alert on Home when triggered.",
+      trigger_kind: "schedule",
+      trigger: { cadence: "daily", hour: 8, minute: 0 },
+      trigger_summary: "Daily at 8:00 AM ET",
+      source_kind: "plain_language",
+      source_ref: "",
+      status: "active",
+      pause_reason: "",
+      created_at: "2026-11-26T12:00:00Z",
+      updated_at: "2026-11-26T12:00:00Z",
+      consecutive_failures: 0,
+      last_error: "",
+      runs: [],
+    },
+    job: { job_id: "j-1", text: "Run", status: "queued" },
+  });
+  pauseAssistWorkflow.mockReset().mockResolvedValue({
+    workflow_id: "wf-101",
+    name: "Late purchase orders monitor",
+    instruction: "Check Late purchase orders and alert when it exceeds 15 orders. Surface an alert on Home when triggered.",
+    trigger_kind: "schedule",
+    trigger: { cadence: "daily", hour: 8, minute: 0 },
+    trigger_summary: "Daily at 8:00 AM ET",
+    source_kind: "plain_language",
+    source_ref: "",
+    status: "paused",
+    pause_reason: "",
+    created_at: "2026-11-26T12:00:00Z",
+    updated_at: "2026-11-26T12:00:00Z",
+    consecutive_failures: 0,
+    last_error: "",
+    runs: [],
+  });
+  resumeAssistWorkflow.mockReset().mockResolvedValue({
+    workflow_id: "wf-101",
+    name: "Late purchase orders monitor",
+    instruction: "Check Late purchase orders and alert when it exceeds 15 orders. Surface an alert on Home when triggered.",
+    trigger_kind: "schedule",
+    trigger: { cadence: "daily", hour: 8, minute: 0 },
+    trigger_summary: "Daily at 8:00 AM ET",
+    source_kind: "plain_language",
+    source_ref: "",
+    status: "active",
+    pause_reason: "",
+    created_at: "2026-11-26T12:00:00Z",
+    updated_at: "2026-11-26T12:00:00Z",
+    consecutive_failures: 0,
+    last_error: "",
+    runs: [],
+  });
+  deleteAssistWorkflow.mockReset().mockResolvedValue({ workflow_id: "wf-101" });
   getObserved.mockReset().mockResolvedValue({
     available: true,
     days: [
@@ -110,7 +216,7 @@ beforeEach(() => {
 });
 
 describe("BenchmarksPanel", () => {
-  it("lists real saved monitors on tab 1 and runs live getInsight on Run now", async () => {
+  it("lists real saved monitors on tab 1, runs live getInsight on Run now, and opens the in-page CreateTriggerModal", async () => {
     render(<BenchmarksPanel list={list} />);
     await waitFor(() => expect(screen.getByTestId("bench-kpi-accuracy")).toHaveTextContent("90%"));
     expect(screen.getByTestId("bench-kpi-speed")).toHaveTextContent("2.4s");
@@ -119,6 +225,40 @@ describe("BenchmarksPanel", () => {
     fireEvent.click(screen.getByTestId("run-monitor-saved_late_pos"));
     await waitFor(() => expect(getInsight).toHaveBeenCalledWith("saved_late_pos", expect.any(AbortSignal), true));
     await waitFor(() => expect(screen.getByTestId("monitor-result-saved_late_pos")).toHaveTextContent("2 rows"));
+
+    // Clicking "New trigger / monitor" opens the in-page builder instead of redirecting to /ask
+    fireEvent.click(screen.getByTestId("new-monitor-btn"));
+    expect(screen.getByTestId("create-trigger-modal")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId("trigger-threshold-input"), { target: { value: "15" } });
+    fireEvent.click(screen.getByTestId("trigger-schedule-daily_8am"));
+    fireEvent.click(screen.getByTestId("trigger-delivery-both"));
+    fireEvent.click(screen.getByTestId("create-trigger-submit"));
+
+    await waitFor(() =>
+      expect(createAssistWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "Late purchase orders monitor",
+          trigger_kind: "schedule",
+          trigger: { cadence: "daily", hour: 8, minute: 0 },
+          instruction: expect.stringContaining("exceeds 15 orders"),
+        }),
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId("create-trigger-success")).toBeInTheDocument());
+    expect(screen.getByTestId("triggers-table")).toHaveTextContent("Late purchase orders monitor");
+
+    // Inline Run now, Pause, and Delete actions work directly on the flush triggers table
+    fireEvent.click(screen.getByTestId("run-trigger-wf-101"));
+    await waitFor(() => expect(runAssistWorkflow).toHaveBeenCalledWith("wf-101"));
+
+    fireEvent.click(screen.getByTestId("toggle-trigger-wf-101"));
+    await waitFor(() => expect(pauseAssistWorkflow).toHaveBeenCalledWith("wf-101"));
+    await waitFor(() => expect(screen.getByTestId("trigger-row-wf-101")).toHaveTextContent("Paused"));
+
+    fireEvent.click(screen.getByTestId("delete-trigger-wf-101"));
+    await waitFor(() => expect(deleteAssistWorkflow).toHaveBeenCalledWith("wf-101"));
+    await waitFor(() => expect(screen.queryByTestId("trigger-row-wf-101")).toBeNull());
   });
 
   it("starts accuracy checks honestly as Not run (never fake Checked), executes real Run, and supports Verify / Flag issue", async () => {
@@ -175,5 +315,67 @@ describe("BenchmarksPanel", () => {
     expect(sendNoteFeedback).toHaveBeenCalledTimes(1);
     const savedRaw = window.localStorage.getItem(BENCHMARKS_STORAGE_KEY);
     expect(savedRaw).toContain("What are the top 5 late suppliers by open value?");
+  });
+});
+
+describe("CreateInsightModal", () => {
+  it("picks a governed measure with chart type and width preset and adds it immediately to My canvas", () => {
+    const onAddTile = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <CreateInsightModal
+        open
+        onClose={onClose}
+        items={list.items}
+        measures={list.measures}
+        canvasIdSet={new Set()}
+        onAddTile={onAddTile}
+      />,
+    );
+
+    expect(screen.getByTestId("create-insight-modal")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("create-insight-option-measure_revenue"));
+    fireEvent.click(screen.getByTestId("create-insight-chart-horizontal_bar"));
+    fireEvent.click(screen.getByTestId("create-insight-width-l"));
+    fireEvent.click(screen.getByTestId("create-insight-submit"));
+
+    expect(onAddTile).toHaveBeenCalledWith("measure_revenue", { size: "l", chartKind: "horizontal_bar" });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("supports plain-English custom chart mode with transparent Instant live tile vs Custom AI query indicator", async () => {
+    const onAddTile = vi.fn();
+    const onCreated = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <CreateInsightModal
+        open
+        onClose={onClose}
+        items={list.items}
+        measures={list.measures}
+        onAddTile={onAddTile}
+        onCreated={onCreated}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("create-insight-mode-custom"));
+    expect(screen.getByTestId("create-insight-mode-badge")).toHaveTextContent("Custom AI query");
+
+    fireEvent.change(screen.getByTestId("create-insight-custom-prompt"), {
+      target: { value: "Monthly revenue by top 10 customers" },
+    });
+    expect(screen.getByTestId("create-insight-ask-handoff").getAttribute("href")).toContain("/ask?q=");
+
+    // Providing SQL upgrades it to an instant live tile saved via /api/insights
+    fireEvent.click(screen.getByRole("button", { name: /Have SQL/i }));
+    fireEvent.change(screen.getByTestId("create-insight-custom-sql"), {
+      target: { value: "SELECT customer, SUM(net_amount) AS value FROM biz.sales_invoices GROUP BY 1 LIMIT 10" },
+    });
+    expect(screen.getByTestId("create-insight-mode-badge")).toHaveTextContent("Instant live tile");
+
+    fireEvent.click(screen.getByTestId("create-insight-submit"));
+    await waitFor(() => expect(saveInsight).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onAddTile).toHaveBeenCalledWith("saved_custom_1", expect.objectContaining({ size: "m" })));
+    expect(onCreated).toHaveBeenCalledTimes(1);
   });
 });

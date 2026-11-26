@@ -1973,42 +1973,88 @@ def _held_indexes(conn: sqlite3.Connection) -> None:
                          f"{table}({', '.join(cols)})")
 
 
+_HELD_KEY_CHUNK = 200_000
+
+
 def _copy_held_keys(cur: Any, conn: sqlite3.Connection, drop_types: Sequence[str],
                     drop_prefixes: Sequence[str], drop_links: Sequence[Sequence[str]]) -> None:
     """Copy into ``conn`` the keys of the served values, identifiers and links of the
     objects outside the temporary ``inp`` (the declared types' objects), leaving out
-    what the unit migration deletes."""
+    what the unit migration deletes.
+
+    Chunks ``outp`` in ``_HELD_KEY_CHUNK``-row slices joining the compact tables
+    (``object_versions -> value_sources -> value_cells -> value_fields`` and
+    ``identifiers``) and queries ``ontology.link_rows`` directly (no self-join to
+    ``ontology.links``) so large stores never spill temp files on Postgres."""
     _held_tables(conn, indexes=False)   # indexed once filled: far fewer page writes
-    cur.execute("CREATE TEMP TABLE outp (object_id text PRIMARY KEY)")
     cur.execute(
-        "INSERT INTO outp SELECT o.object_id FROM ontology.objects o WHERE NOT EXISTS "
+        "CREATE TEMP TABLE outp ("
+        "rn bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+        "object_id text NOT NULL UNIQUE)"
+    )
+    cur.execute(
+        "INSERT INTO outp (object_id) "
+        "SELECT o.object_id FROM ontology.objects o WHERE NOT EXISTS "
         "(SELECT 1 FROM inp WHERE inp.object_id = o.object_id) AND NOT EXISTS "
         "(SELECT 1 FROM unnest(%s::text[], %s::text[]) d(t, p) WHERE o.object_type = d.t "
-        "AND starts_with(o.object_id, d.p))", (drop_types, drop_prefixes))
+        "AND starts_with(o.object_id, d.p))",
+        (drop_types, drop_prefixes),
+    )
     cur.execute("ANALYZE outp")
-    queries = {
-        "held_values": ("SELECT DISTINCT v.object_id, v.property FROM ontology.object_values "
-                        "v JOIN outp USING (object_id)", ()),
-        "held_identifiers": ("SELECT DISTINCT t.identifier_kind, t.normalized, t.object_id, "
-                             "t.property FROM ontology.identifiers t JOIN outp "
-                             "USING (object_id)", ()),
-        "held_links": (
-            "SELECT v.link_id, v.link_type, v.from_object, v.to_object, v.tier, "
-            "v.binding_kind, v.superseded_at FROM ontology.link_rows l JOIN ontology.links v "
-            "USING (link_id) WHERE NOT EXISTS (SELECT 1 FROM inp WHERE inp.object_id = "
-            "l.from_object) AND NOT EXISTS (SELECT 1 FROM inp WHERE inp.object_id = "
-            "l.to_object) AND NOT EXISTS (SELECT 1 FROM "
-            "unnest(%s::text[], %s::text[], %s::text[], %s::text[]) d(t, k, f, o) WHERE "
-            "l.link_type = d.t AND l.binding_kind = d.k AND starts_with(l.from_object, d.f) "
-            "AND starts_with(l.to_object, d.o))",
-            tuple([x[i] for x in drop_links] for i in range(4))),
-    }
-    for table, (sql, params) in queries.items():
-        cols = next(c for _v, t, c, _k in HELD if t == table)
-        with cur.connection.cursor(name=f"held_{table}") as named:
-            for batch in _rows(named, sql, params):
-                conn.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(cols))})",
-                                 [tuple(r[c] for c in cols) for r in batch])
+    cur.execute("SELECT coalesce(max(rn), 0) FROM outp")
+    max_rn = int(cur.fetchone()[0] or 0)
+
+    val_cols = next(c for _v, t, c, _k in HELD if t == "held_values")
+    id_cols = next(c for _v, t, c, _k in HELD if t == "held_identifiers")
+    link_cols = next(c for _v, t, c, _k in HELD if t == "held_links")
+
+    val_sql = (
+        "SELECT DISTINCT ov.object_id, vf.property "
+        "FROM outp o "
+        "JOIN ontology.object_versions ov ON ov.object_id = o.object_id "
+        "JOIN ontology.value_sources vs ON vs.ver = ov.ver "
+        "JOIN ontology.value_cells vc ON vc.src = vs.src "
+        "JOIN ontology.value_fields vf ON vf.field = vc.field "
+        "WHERE o.rn BETWEEN %s AND %s"
+    )
+    id_sql = (
+        "SELECT DISTINCT t.identifier_kind, t.normalized, t.object_id, t.property "
+        "FROM outp o "
+        "JOIN ontology.identifiers t ON t.object_id = o.object_id "
+        "WHERE o.rn BETWEEN %s AND %s"
+    )
+    for lo in range(1, max_rn + 1, _HELD_KEY_CHUNK):
+        hi = lo + _HELD_KEY_CHUNK - 1
+        with cur.connection.cursor(name=f"held_values_{lo}") as named:
+            for batch in _rows(named, val_sql, (lo, hi)):
+                conn.executemany(
+                    f"INSERT INTO held_values VALUES ({', '.join('?' * len(val_cols))})",
+                    [tuple(r[c] for c in val_cols) for r in batch],
+                )
+        with cur.connection.cursor(name=f"held_identifiers_{lo}") as named:
+            for batch in _rows(named, id_sql, (lo, hi)):
+                conn.executemany(
+                    f"INSERT INTO held_identifiers VALUES ({', '.join('?' * len(id_cols))})",
+                    [tuple(r[c] for c in id_cols) for r in batch],
+                )
+
+    link_sql = (
+        "SELECT l.link_id, l.link_type, l.from_object, l.to_object, l.tier, "
+        "l.binding_kind, l.superseded_at FROM ontology.link_rows l "
+        "WHERE NOT EXISTS (SELECT 1 FROM inp WHERE inp.object_id = l.from_object) "
+        "AND NOT EXISTS (SELECT 1 FROM inp WHERE inp.object_id = l.to_object) "
+        "AND NOT EXISTS (SELECT 1 FROM "
+        "unnest(%s::text[], %s::text[], %s::text[], %s::text[]) d(t, k, f, o) WHERE "
+        "l.link_type = d.t AND l.binding_kind = d.k AND starts_with(l.from_object, d.f) "
+        "AND starts_with(l.to_object, d.o))"
+    )
+    link_params = tuple([x[i] for x in drop_links] for i in range(4))
+    with cur.connection.cursor(name="held_links") as named:
+        for batch in _rows(named, link_sql, link_params):
+            conn.executemany(
+                f"INSERT INTO held_links VALUES ({', '.join('?' * len(link_cols))})",
+                [tuple(r[c] for c in link_cols) for r in batch],
+            )
     _held_indexes(conn)
 
 

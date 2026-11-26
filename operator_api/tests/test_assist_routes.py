@@ -265,6 +265,63 @@ class AssistRoutes(unittest.TestCase):
         self.assertTrue(assist_routes.reopen_matter(self.backend, who, M_OK, reason="undo"))
         self.assertIn(M_OK, self.matters(self.listed()))
 
+    def test_mc_merge_gate_spam_filtered_by_default_and_available_via_approvals_flag(self) -> None:
+        m_merge = "1" * 24
+        m_stage = "2" * 24
+        m_cos = "3" * 24
+        self.envelope["items"] = [
+            matter(M_OK, subject="Confirm PO P-1", summary="Confirm PO P-1"),
+            matter(m_merge, kind_of_matter="task", subject="Merge approval for PR 412", summary="Merge approval for PR 412"),
+            matter(m_stage, kind_of_matter="task", subject="stage TASK-5816", summary="stage TASK-5816"),
+            matter(m_cos, kind_of_matter="task", subject="via Chief of Staff: get everything merged", summary="get everything merged"),
+        ]
+        default_ids = self.matters(self.listed())
+        self.assertEqual(default_ids, [M_OK])
+        with_approvals = self.matters(self.listed(include_approvals="true"))
+        self.assertIn(M_OK, with_approvals)
+        self.assertIn(m_merge, with_approvals)
+        self.assertIn(m_stage, with_approvals)
+        only_approvals = self.matters(self.listed(kind="approvals"))
+        self.assertNotIn(M_OK, only_approvals)
+        self.assertIn(m_merge, only_approvals)
+
+    def test_duplicate_task_ids_and_identical_titles_collapse_to_newest(self) -> None:
+        t_old = "4" * 24
+        t_new = "5" * 24
+        dup_old = "6" * 24
+        dup_new = "7" * 24
+        self.envelope["items"] = [
+            matter(t_old, kind_of_matter="task", subject="Fix TASK-5816 build", summary="Fix TASK-5816",
+                   note="First note", basis_at=NOW - timedelta(minutes=10)),
+            matter(t_new, kind_of_matter="task", subject="TASK-5816 follow-up", summary="TASK-5816",
+                   note="Second note", basis_at=NOW),
+            matter(dup_old, subject="Re: Order 42", summary="Confirm order 42",
+                   note="Older", basis_at=NOW - timedelta(minutes=5)),
+            matter(dup_new, subject="Order 42", summary="Confirm order 42",
+                   note="Newer", basis_at=NOW),
+        ]
+        listed = self.matters(self.listed())
+        self.assertIn(t_new, listed)
+        self.assertNotIn(t_old, listed)
+        self.assertIn(dup_new, listed)
+        self.assertNotIn(dup_old, listed)
+
+    def test_already_replied_conversation_matter_is_hidden(self) -> None:
+        from operator_api import assist_routes
+        with patch.object(assist_routes, "_already_replied_matter_ids", return_value={M_OK}):
+            self.assertEqual(self.matters(self.listed()), [])
+
+    def test_non_opted_in_operator_with_open_matters_sees_them_while_unreadable_journal_fails_closed(self) -> None:
+        from operator_api import assist_routes
+        with patch("operating.assist_matters.shown_to", return_value=False), \
+                patch.object(assist_routes, "_has_open_matters", return_value=True):
+            self.listed(COLLEAGUE)
+        self.assertIs(self.calls[-1]["shown"], True)
+        with patch("operating.assist_matters.shown_to", return_value=None), \
+                patch.object(assist_routes, "_has_open_matters", return_value=True):
+            self.listed(COLLEAGUE)
+        self.assertIsNone(self.calls[-1]["shown"])
+
 
 if __name__ == "__main__":
     unittest.main()

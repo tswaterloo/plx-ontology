@@ -22,8 +22,10 @@ may do nothing else to the Assist tables)."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
 import logging
+import re
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from fastapi import Depends
@@ -119,18 +121,265 @@ def _names_of(backend: Any) -> Optional[Callable[[Any], Mapping[str, str]]]:
     return viewing.names_of if viewing is not None and getattr(viewing, "available", False) else None
 
 
+_MC_APPROVAL_AUTOPILOTS = frozenset({"job_approval", "approval_request", "mc_approval_pending"})
+_MC_APPROVAL_SPAM_RE = re.compile(
+    r"(?:\bmerge\s+approval\s+for\b"
+    r"|\bstage\s+task-\d+\b"
+    r"|\bvia\s+chief\s+of\s+staff\s*:\s*get\s+everything\s+merged\b"
+    r"|\bget\s+everything\s+merged\b"
+    r"|\bmerge[- ]gate\b"
+    r"|\bpr\s+merge[- ]class\b"
+    r"|\bautomated\s+ci\s+approval\b)",
+    re.IGNORECASE,
+)
+_TASK_ID_RE = re.compile(r"\b(TASK-\d+)\b", re.IGNORECASE)
+_SUBJECT_PREFIX_RE = re.compile(r"^(?:(?:re|fw|fwd)\s*:\s*)+", re.IGNORECASE)
+
+
+def _norm_subject_key(text: Any) -> str:
+    cleaned = _SUBJECT_PREFIX_RE.sub("", str(text or "").strip())
+    return " ".join(cleaned.lower().split())
+
+
+def _is_mc_approval_spam(item: Any) -> bool:
+    """True when a raw matter dict or ``AutopilotPrepared`` card is a Mission Control
+    approval, merge-gate, or automated CI approval item that should stay out of the
+    default human queue unless explicitly requested."""
+    if isinstance(item, Mapping):
+        if str(item.get("kind_of_matter") or "").strip().lower() == "approval":
+            return True
+        detail = item.get("sources_detail") if isinstance(item.get("sources_detail"), Mapping) else {}
+        if str(detail.get("autopilot") or "").strip().lower() in _MC_APPROVAL_AUTOPILOTS:
+            return True
+        if str(item.get("autopilot") or "").strip().lower() in _MC_APPROVAL_AUTOPILOTS:
+            return True
+        if str(detail.get("approval") or "").startswith("MCApproval:"):
+            return True
+        fields = (
+            item.get("subject"), item.get("summary"), item.get("note"),
+            item.get("message"), item.get("sender"),
+        )
+    else:
+        if str(getattr(item, "autopilot", "") or "").strip().lower() in _MC_APPROVAL_AUTOPILOTS:
+            return True
+        fields = (
+            getattr(item, "subject", ""),
+            getattr(item, "summary", ""),
+            getattr(item, "note", ""),
+            getattr(item, "message", ""),
+            getattr(item, "sender", ""),
+        )
+    combined = " ".join(str(f or "") for f in fields if f)
+    return bool(combined and _MC_APPROVAL_SPAM_RE.search(combined))
+
+
+def _dedupe_prepared_items(items: Sequence[m.AutopilotPrepared]) -> list[m.AutopilotPrepared]:
+    """Deduplicate identical titles/subjects or repeated ``TASK-NNNN`` items across
+    matters and legacy queue cards, keeping the newest (first after descending sort).
+    A legacy queue card (``ap_...``) with a distinct summary never hides a real matter."""
+    out: list[m.AutopilotPrepared] = []
+    seen_task_ids: set[str] = set()
+    seen_titles: set[tuple[str, str, str]] = set()
+    seen_exact: set[tuple[str, str, str]] = set()
+    for item in items:
+        is_legacy_card = str(item.item_id or "").startswith("ap_")
+        family = "queue" if is_legacy_card else "matter"
+        subj_norm = _norm_subject_key(item.subject)
+        sum_norm = " ".join(str(item.summary or "").lower().split())
+        sender_norm = str(item.sender or "").strip().lower()
+        combined = f"{item.subject or ''} {item.summary or ''}"
+        task_match = _TASK_ID_RE.search(combined)
+        if task_match:
+            tid = task_match.group(1).upper()
+            if tid in seen_task_ids:
+                continue
+            seen_task_ids.add(tid)
+        title_key = subj_norm or sum_norm
+        if title_key:
+            if sum_norm:
+                exact_key = (title_key, sum_norm, sender_norm)
+                if exact_key in seen_exact:
+                    continue
+                seen_exact.add(exact_key)
+            # Collapse repeated identical titles within the same family (matters or queue cards)
+            pair_key = (family, title_key, sender_norm or str(item.channel or ""))
+            if pair_key in seen_titles:
+                continue
+            seen_titles.add(pair_key)
+        out.append(item)
+    return out
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_open_matters(pg: Any, owners: set[str]) -> bool:
+    """True when Postgres ``assist.matter_items`` holds at least one open or unverified
+    matter for ``owners`` (best-effort; returns False on fake pools or absent tables)."""
+    if not owners:
+        return False
+    try:
+        exists = pg.execute("SELECT to_regclass('assist.matter_items') IS NOT NULL").fetchone()
+        if not exists or exists[0] is not True:
+            return False
+        row = pg.execute(
+            "SELECT EXISTS (SELECT 1 FROM assist.matter_items "
+            "WHERE lower(owner_person) = ANY(%s) AND state IN ('open', 'unverified'))",
+            (sorted(o.lower() for o in owners if o),),
+        ).fetchone()
+        return bool(row and row[0] is True)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _already_replied_matter_ids(
+    pg: Any,
+    reader_ids: set[str],
+    reader_emails: set[str],
+    items: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Return ``item_id`` values of open conversation matters where ``assist.readings``,
+    ``biz.emails``, or ``biz.teams_messages`` already records a newer reply sent by the
+    reader on the same thread/subject after the matter's ``basis_at``."""
+    conv = [
+        i for i in items
+        if str(i.get("kind_of_matter") or "").strip().lower() == "conversation"
+        and _as_utc(i.get("basis_at")) is not None
+    ]
+    if not conv or (not reader_ids and not reader_emails):
+        return set()
+    answered: set[str] = set()
+    mids = [str(i["item_id"]) for i in conv if i.get("item_id")]
+    basis_by_id = {str(i["item_id"]): _as_utc(i.get("basis_at")) for i in conv if i.get("item_id")}
+    # 1. Check assist.readings for a newer reading from this reader in the same thread_key
+    try:
+        has_tables = pg.execute(
+            "SELECT to_regclass('assist.matters') IS NOT NULL "
+            "AND to_regclass('assist.readings') IS NOT NULL"
+        ).fetchone()
+        if has_tables and has_tables[0] is True and reader_ids:
+            rows = pg.execute(
+                "SELECT m.matter_id FROM assist.matters m "
+                "WHERE m.matter_id = ANY(%s) AND m.kind = 'conversation' "
+                "AND EXISTS ("
+                "  SELECT 1 FROM assist.readings r "
+                "  WHERE coalesce(r.thread_key, r.message_key) = m.subject_key "
+                "    AND lower(coalesce(r.sender_person, '')) = ANY(%s) "
+                "    AND r.said_at > m.basis_at"
+                ")",
+                (mids, sorted(o.lower() for o in reader_ids if o)),
+            ).fetchall()
+            for r in rows or ():
+                if r and isinstance(r[0], str):
+                    answered.add(r[0])
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2. Check biz.emails for a newer reply sent by this reader on the same normalized subject
+    remaining_mail = [
+        i for i in conv
+        if str(i.get("item_id")) not in answered
+        and str(i.get("channel") or "").lower() == "mail"
+        and _norm_subject_key(i.get("subject"))
+    ]
+    if remaining_mail and reader_emails:
+        try:
+            has_emails = pg.execute("SELECT to_regclass('biz.emails') IS NOT NULL").fetchone()
+            if has_emails and has_emails[0] is True:
+                min_basis = min(basis_by_id[str(i["item_id"])] for i in remaining_mail)
+                sent_rows = pg.execute(
+                    "SELECT subject, coalesce(sent_at, received_at) "
+                    "FROM biz.emails "
+                    "WHERE lower(coalesce(sender, '')) = ANY(%s) "
+                    "  AND coalesce(sent_at, received_at) > %s "
+                    "  AND subject IS NOT NULL AND subject <> ''",
+                    (sorted(reader_emails), min_basis),
+                ).fetchall()
+                latest_by_subj: dict[str, datetime] = {}
+                for subj, at_val in sent_rows or ():
+                    at_dt = _as_utc(at_val)
+                    key = _norm_subject_key(subj)
+                    if key and at_dt is not None:
+                        prev = latest_by_subj.get(key)
+                        if prev is None or at_dt > prev:
+                            latest_by_subj[key] = at_dt
+                for i in remaining_mail:
+                    iid = str(i["item_id"])
+                    key = _norm_subject_key(i.get("subject"))
+                    sent_dt = latest_by_subj.get(key)
+                    b_dt = basis_by_id.get(iid)
+                    if sent_dt is not None and b_dt is not None and sent_dt > b_dt:
+                        answered.add(iid)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 3. Check biz.teams_messages for a newer Teams message from this reader in the same chat
+    remaining_teams = [
+        i for i in conv
+        if str(i.get("item_id")) not in answered
+        and str(i.get("channel") or "").lower() == "teams"
+    ]
+    if remaining_teams and (reader_ids or reader_emails):
+        try:
+            has_teams = pg.execute(
+                "SELECT to_regclass('biz.teams_messages') IS NOT NULL "
+                "AND to_regclass('assist.matters') IS NOT NULL"
+            ).fetchone()
+            if has_teams and has_teams[0] is True:
+                t_mids = [str(i["item_id"]) for i in remaining_teams]
+                sender_tokens = sorted({*(o.lower() for o in reader_ids if o), *reader_emails})
+                rows = pg.execute(
+                    "SELECT m.matter_id FROM assist.matters m "
+                    "WHERE m.matter_id = ANY(%s) AND m.kind = 'conversation' "
+                    "AND EXISTS ("
+                    "  SELECT 1 FROM biz.teams_messages tm "
+                    "  WHERE tm.chat = m.subject_key "
+                    "    AND lower(coalesce(tm.sender, '')) = ANY(%s) "
+                    "    AND tm.sent_at > m.basis_at"
+                    ")",
+                    (t_mids, sender_tokens),
+                ).fetchall()
+                for r in rows or ():
+                    if r and isinstance(r[0], str):
+                        answered.add(r[0])
+        except Exception:  # noqa: BLE001
+            pass
+
+    return answered
+
+
 def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
                  fresh: bool = False, include_queue: bool = True,
-                 matter_id: Optional[str] = None) -> m.AutopilotDrafts:
+                 matter_id: Optional[str] = None,
+                 include_approvals: bool = False,
+                 kind: Optional[str] = None) -> m.AutopilotDrafts:
     """The reader's matters as ``AutopilotDrafts`` (module text); ``fresh``: the queue's
-    cards read now, not from the kept list (an answer to a write)."""
+    cards read now, not from the kept list (an answer to a write). Mission Control
+    merge-gate / automated CI approvals stay out of the default human queue unless
+    ``include_approvals=True`` or ``kind='approvals'``."""
     from operating import assist_matters as am
     from operating import autopilot_engine as ae
+    approvals_only = str(kind or "").strip().lower() == "approvals"
+    show_approvals = bool(include_approvals or approvals_only)
     pool = _pool(backend)
     read_queue = backend._prepared_read if fresh else backend.autopilot_prepared_list
     if pool is None:      # no matters here: the queue's own cards only, and it is said
         queue = read_queue(reader) if include_queue else m.AutopilotDrafts(items=[], never_senders=[])
-        return m.AutopilotDrafts(items=list(queue.items), never_senders=queue.never_senders,
+        qitems = [
+            qi for qi in queue.items
+            if (show_approvals if _is_mc_approval_spam(qi) else not approvals_only)
+        ]
+        qitems = _dedupe_prepared_items(sorted(qitems, key=lambda i: i.created_at, reverse=True))
+        return m.AutopilotDrafts(items=qitems, never_senders=queue.never_senders,
                                  status="not_run", reason="the Assist store is not connected here")
     owner = bool(backend._apa_is_owner(reader))
     ids = _ids(backend, reader)
@@ -147,8 +396,14 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
 
     def read_matters() -> dict[str, Any]:
         with pool.connection() as pg:
-            return am.as_items(pg, ids | pools, shown=shown, owner_view=owner, everyone=owner,
-                               all_ages=all_ages, door=_door(backend, reader),
+            effective_shown = shown
+            # Operators with open assist.matters in Postgres see their own door-checked
+            # matters even if they have not opted into autopilot writes (keep rows=None
+            # strictly fail-closed as opt_in_unreadable).
+            if not owner and effective_shown is False and _has_open_matters(pg, ids | pools):
+                effective_shown = True
+            return am.as_items(pg, ids | pools, shown=effective_shown, owner_view=owner,
+                               everyone=owner, all_ages=all_ages, door=_door(backend, reader),
                                names_of=_names_of(backend), **extra)
 
     if include_queue and matter_id is None:
@@ -170,9 +425,14 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
     seen_sigs: set[tuple[str, str, str, str]] = set()
     kept_raw: list[Mapping[str, Any]] = []
     for i in got["items"]:
-        if i["queue_card"] or i["kind_of_matter"] == am.MC_APPROVAL_KIND:
+        if i["queue_card"]:
             continue
-        if is_automated_system_alert(
+        is_mc_spam = i["kind_of_matter"] == am.MC_APPROVAL_KIND or _is_mc_approval_spam(i)
+        if is_mc_spam and not show_approvals:
+            continue
+        if approvals_only and not is_mc_spam:
+            continue
+        if not is_mc_spam and is_automated_system_alert(
             sender=i.get("sender"),
             subject=i.get("subject"),
             summary=i.get("summary"),
@@ -200,9 +460,35 @@ def matters_list(backend: Any, reader: Reader, *, all_ages: bool = False,
                     kept_raw[dup_idx] = i
                 continue
         kept_raw.append(i)
+
+    # Suppress open conversation matters where the reader already sent a newer reply on the
+    # same thread or subject after basis_at.
+    if matter_id is None and kept_raw:
+        reader_emails = {
+            str(v).strip().lower()
+            for v in (
+                getattr(reader, "email", None),
+                *(getattr(getattr(reader, "session", None), "identities", ()) or ()),
+            )
+            if v and "@" in str(v)
+        }
+        try:
+            with pool.connection() as pg:
+                replied_ids = _already_replied_matter_ids(pg, ids, reader_emails, kept_raw)
+        except Exception:  # noqa: BLE001
+            replied_ids = set()
+        if replied_ids:
+            kept_raw = [i for i in kept_raw if str(i.get("item_id")) not in replied_ids]
+
     items = _put_off(backend, state, [_prepared(i) for i in kept_raw])
     if include_queue:
-        items = sorted(items + queue_items, key=lambda i: i.created_at, reverse=True)
+        filtered_queue = [
+            qi for qi in queue_items
+            if (show_approvals if _is_mc_approval_spam(qi) else not approvals_only)
+        ]
+        items = sorted(items + filtered_queue, key=lambda i: i.created_at, reverse=True)
+    if matter_id is None:
+        items = _dedupe_prepared_items(items)
     return m.AutopilotDrafts(items=items, never_senders=never, older=got["older"],
                              status=got["status"], reason=got["reason"],
                              stale_since=got["as_of"].isoformat()
@@ -344,13 +630,19 @@ def install(app: Any, backend: Any, reader: Callable[..., Reader], notes: Any) -
 
     @app.get("/api/autopilot/drafts", response_model=m.AutopilotDrafts, tags=["actions"],
              responses={401: {"model": m.ErrorResponse}})
-    def assist_list(all_ages: bool = False, who: Reader = Depends(reader)) -> m.AutopilotDrafts:
+    def assist_list(all_ages: bool = False, include_approvals: bool = False,
+                    kind: Optional[str] = None,
+                    who: Reader = Depends(reader)) -> m.AutopilotDrafts:
         """Your open work, newest first: each item kept true against its source; the last
-        14 days unless ``all_ages`` (``older`` says how many more)."""
-        cached = getattr(backend, "assist_drafts", None)
-        if callable(cached):
-            return cached(who, all_ages=all_ages)
-        return matters_list(backend, who, all_ages=all_ages)
+        14 days unless ``all_ages`` (``older`` says how many more). Pass
+        ``include_approvals=true`` or ``kind=approvals`` to inspect Mission Control
+        approvals."""
+        if not include_approvals and not kind:
+            cached = getattr(backend, "assist_drafts", None)
+            if callable(cached):
+                return cached(who, all_ages=all_ages)
+        return matters_list(backend, who, all_ages=all_ages,
+                            include_approvals=include_approvals, kind=kind)
 
     @app.post("/api/autopilot/items/{item_id:matter}/draft", response_model=m.AssistWorking,
               tags=["actions"], responses=_ERR)

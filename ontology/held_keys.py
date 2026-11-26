@@ -36,7 +36,7 @@ from typing import Any, Iterator, Sequence
 from ontology import step_migrate as sm
 
 # sha256 of the source of step_migrate._copy_held_keys, _held_tables, _tripwire, guard_inputs
-GUARD_DIGEST = "c0b31f3339a9c6c1384d8124f36632c87713240f2920764f77632c73b812405b"
+GUARD_DIGEST = "cf9587632151c4b54d312d41c23ef0924c638dc216b90fce5cf22bdb74f7fab6"
 
 
 def source_digest() -> str:

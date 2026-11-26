@@ -99,7 +99,8 @@ describe("a Records list", () => {
     asked.hold = true;
     render(<RecordList view="batches" />);
     expect(screen.getByRole("link", { name: "BC-stored" })).toBeInTheDocument();
-    expect(screen.getByText(/reading it again/)).toBeInTheDocument();
+    expect(screen.getByTestId("stored-age")).toHaveTextContent(/Refreshing/i);
+    expect(screen.queryByText(/reading it again/i)).toBeNull();
     expect(asked.calls[0]).toMatchObject({ facets: true, offset: 0 });
   });
 

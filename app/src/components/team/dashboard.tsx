@@ -34,7 +34,7 @@ const CHANNELS: { key: Channel; short: string; head: string; title: string; syst
 const GROUPS: Record<string, { label: string; tone: string }> = {
   mail: { label: "Mail", tone: "var(--sys-mail)" },
   teams: { label: "Teams", tone: "var(--sys-teams)" },
-  meetings: { label: "Calendar", tone: "#f59e0b" },
+  meetings: { label: "Calendar", tone: "var(--risk)" },
   mc: { label: "Mission Control", tone: "var(--sys-mc)" },
   planner: { label: "Planner", tone: "var(--sys-sage)" },
   sharepoint: { label: "SharePoint", tone: "var(--sys-file)" },
@@ -114,30 +114,39 @@ function Figure({ n, strong }: { n: number | undefined; strong?: boolean }) {
   return n ? (
     <span className={cn("num", strong && "font-semibold text-fg")}>{n.toLocaleString("en-US")}</span>
   ) : (
-    <span className="text-faint/45" aria-label="none">—</span>
+    <span className="text-faint/45" aria-label="none">-</span>
   );
 }
 
-function OutputBar({ mix, maxTotal }: { mix: { comms: number; docs: number; erp: number; sum: number }; maxTotal: number }) {
+function OutputBar({
+  mix,
+  maxTotal,
+  thick = false,
+}: {
+  mix: { comms: number; docs: number; erp: number; sum: number };
+  maxTotal: number;
+  thick?: boolean;
+}) {
+  const heightCls = thick ? "h-3 w-full" : "h-2 w-24";
   if (mix.sum <= 0 || maxTotal <= 0) {
     return (
-      <div className="h-2 w-24 overflow-hidden rounded-xs bg-surface-2" aria-hidden>
+      <div className={cn(heightCls, "overflow-hidden rounded-xs bg-surface-2")} aria-hidden>
         <div className="h-full w-0" />
       </div>
     );
   }
-  const scale = Math.max(8, Math.round((mix.sum / maxTotal) * 100));
+  const scale = Math.max(thick ? 6 : 8, Math.round((mix.sum / maxTotal) * 100));
   const commsPct = (mix.comms / mix.sum) * scale;
   const docsPct = (mix.docs / mix.sum) * scale;
   const erpPct = (mix.erp / mix.sum) * scale;
   return (
     <div
-      className="flex h-2 w-24 overflow-hidden rounded-xs bg-surface-2"
+      className={cn("flex overflow-hidden rounded-xs bg-surface-2", heightCls)}
       title={`Comms ${mix.comms}, Docs & Planner ${mix.docs}, ERP & Ops ${mix.erp}`}
     >
-      {commsPct > 0 && <span className="h-full bg-[#5c9ce6]" style={{ width: `${commsPct}%` }} />}
-      {docsPct > 0 && <span className="h-full bg-[#5da56f]" style={{ width: `${docsPct}%` }} />}
-      {erpPct > 0 && <span className="h-full bg-[#dca138]" style={{ width: `${erpPct}%` }} />}
+      {commsPct > 0 && <span className="h-full bg-accent transition-[width] duration-200" style={{ width: `${commsPct}%` }} />}
+      {docsPct > 0 && <span className="h-full bg-ok transition-[width] duration-200" style={{ width: `${docsPct}%` }} />}
+      {erpPct > 0 && <span className="h-full bg-risk transition-[width] duration-200" style={{ width: `${erpPct}%` }} />}
     </div>
   );
 }
@@ -150,7 +159,7 @@ function Spark({ values, className }: { values: number[]; className?: string }) 
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className={className} aria-hidden>
       <line x1="0" x2={w} y1={h - 0.5} y2={h - 0.5} stroke="var(--border)" />
-      <polyline points={pts} fill="none" stroke="#5c9ce6" strokeWidth="1.5" strokeLinejoin="round" />
+      <polyline points={pts} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -167,7 +176,7 @@ function Hours({ hours, tall }: { hours: number[] | undefined; tall?: boolean })
       {list.map((n, i) => (
         <rect key={i} x={i * (bw + gap)} y={h - Math.max(n ? 1.5 : 0.75, (n / max) * h)} width={bw}
           height={Math.max(n ? 1.5 : 0.75, (n / max) * h)}
-          fill={n ? "#5c9ce6" : "var(--border-strong)"} opacity={n ? 0.35 + 0.65 * (n / max) : 1} />
+          fill={n ? "var(--accent)" : "var(--border-strong)"} opacity={n ? 0.35 + 0.65 * (n / max) : 1} />
       ))}
       {tall && AXIS.map((i, k) => (
         <text key={i} x={k === 0 ? 0 : k === AXIS.length - 1 ? w - gap : i * (bw + gap) + bw / 2} y={h + 12}
@@ -386,10 +395,10 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
       [...rows]
         .filter((p) => total(p, period) > 0)
         .sort((a, b) => total(b, period) - total(a, period) || (a.name ?? "").localeCompare(b.name ?? ""))
-        .slice(0, 5),
+        .slice(0, 6),
     [rows, period],
   );
-  const topActiveMax = Math.max(1, ...topActive.map((p) => total(p, period)));
+  const topActiveMax = Math.max(1, ...topActive.map((p) => outputMix(p, period).sum));
 
   const watchlist = useMemo(
     () =>
@@ -408,9 +417,9 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
 
   const head = (key: SortKey, label: string, title: string, className?: string) => (
     <th key={key} scope="col" title={title} aria-sort={sort.key === key ? (sort.desc ? "descending" : "ascending") : undefined}
-      className={cn("whitespace-nowrap px-2.5 py-2 font-medium", className)}>
+      className={cn("h-9 whitespace-nowrap px-2.5 py-2 font-medium", className)}>
       <button type="button" data-tap="inline" onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : key !== "name" && key !== "team" }))}
-        className={cn("cursor-pointer transition-colors hover:text-fg", sort.key === key && "font-semibold text-fg")}>
+        className={cn("cursor-pointer transition-colors duration-150 hover:text-fg", sort.key === key && "font-semibold text-fg")}>
         {label}{sort.key === key ? (sort.desc ? " ↓" : " ↑") : ""}
       </button>
     </th>
@@ -418,15 +427,26 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
 
   if (data.state !== "ready") {
     return (
-      <p className="text-[13.5px] text-muted" data-testid="team-not-ready">
-        {data.state === "blocked" ? "Activity can't be counted right now. Try again in a few minutes." : "Activity has not been counted yet. It is counted every night."}
-      </p>
+      <div
+        className="max-w-xl rounded-xl border border-border/80 bg-bg-subtle p-6 space-y-2"
+        data-testid="team-not-ready"
+      >
+        <div className="flex items-center gap-2 text-[14px] font-semibold text-fg">
+          <Clock3 className="size-4 text-muted" aria-hidden />
+          <span>{data.state === "blocked" ? "Team counts temporarily unavailable" : "Waiting for nightly snapshot"}</span>
+        </div>
+        <p className="text-[13.5px] leading-[1.55] text-muted">
+          {data.state === "blocked"
+            ? "Activity can't be counted right now. Try again in a few minutes."
+            : "Activity has not been counted yet. It is counted every night."}
+        </p>
+      </div>
     );
   }
 
   return (
     <div className="space-y-5" data-testid="team-dashboard">
-      {/* Top Controls Bar: Liquid Glass Period Switcher + Department / Role / System / Search */}
+      {/* Compact Header Bar: Liquid Glass Period Switcher + Team / Role / System Filters + Inline Search */}
       <div className="flex flex-wrap items-center gap-2.5">
         <div
           role="radiogroup"
@@ -442,7 +462,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
               onClick={() => setPeriod(p)}
               data-testid={`period-${p}`}
               className={cn(
-                "h-full rounded-md px-3 font-medium transition-all cursor-pointer",
+                "h-full rounded-md px-3 font-medium transition-colors duration-150 cursor-pointer",
                 period === p ? "liquid-glass-active" : "text-muted hover:text-fg",
               )}
             >
@@ -476,7 +496,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                   type="button"
                   aria-label="Clear search"
                   onClick={() => setQuery("")}
-                  className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-fg active:scale-[0.95] cursor-pointer"
+                  className="absolute right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
                 >
                   <X className="size-3" aria-hidden />
                 </button>
@@ -492,7 +512,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                   setSystem("");
                   setQuery("");
                 }}
-                className="h-8 rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg cursor-pointer"
+                className="h-8 rounded-md px-2 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg cursor-pointer"
               >
                 Clear filters
               </button>
@@ -504,8 +524,8 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         </span>
       </div>
 
-      {/* Flush Hairline Executive Metric Strip — zero rounded-box slop */}
-      <dl className="grid grid-cols-2 divide-y divide-border border-y border-border lg:grid-cols-4 lg:divide-x lg:divide-y-0" data-testid="team-totals">
+      {/* Flush Hairline Executive Metric Strip */}
+      <dl className="grid grid-cols-2 divide-y divide-border/70 border-y border-border/70 lg:grid-cols-4 lg:divide-x lg:divide-y-0" data-testid="team-totals">
         <div className="py-3.5 pr-4 tabular-nums">
           <dt className="flex items-center justify-between text-[12px] font-medium text-muted">
             People
@@ -527,7 +547,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         <div className="py-3.5 lg:px-5 tabular-nums">
           <dt className="flex items-center justify-between text-[12px] font-medium text-muted">
             <span>Human outputs</span>
-            <Activity className="size-3.5 text-[#5c9ce6]" aria-hidden />
+            <Activity className="size-3.5 text-accent" aria-hidden />
           </dt>
           <dd className="mt-1 text-[24px] leading-7 font-semibold tracking-[-0.02em] text-fg">
             {totalOutputs.toLocaleString("en-US")}
@@ -561,7 +581,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             <span>
               Planner{" "}
               <span data-testid="team-planner-total" className="font-medium text-fg">
-                {planner ? sum(tasksOf).toLocaleString("en-US") : "—"}
+                {planner ? sum(tasksOf).toLocaleString("en-US") : "-"}
               </span>
             </span>
           </dd>
@@ -573,7 +593,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             <Clock3 className="size-3.5 text-faint" aria-hidden />
           </dt>
           <dd className="mt-1 text-[24px] leading-7 font-semibold tracking-[-0.02em] text-fg">
-            {minutes(medianReply) || <span className="text-faint/45">—</span>}
+            {minutes(medianReply) || <span className="text-faint/45" aria-label="none">-</span>}
           </dd>
           <dd className="mt-0.5 text-[11.5px] text-faint">
             {totalMeetings > 0
@@ -583,177 +603,246 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
         </div>
       </dl>
 
-      {/* Productivity & Monitoring Visual Panel — flush 2-column hairline layout */}
+      {/* Asymmetric 2-Column Monitoring Overview */}
       {data.scope === "everyone" && rows.length > 0 && (
         <section
           aria-label="Productivity and monitoring overview"
           data-testid="team-monitoring-panel"
-          className="grid grid-cols-1 divide-y divide-border border-b border-border lg:grid-cols-2 lg:divide-x lg:divide-y-0"
+          className="grid grid-cols-1 gap-5 lg:grid-cols-[1.35fr_1fr]"
         >
-          {/* Left: Top Output & Workload Balance */}
-          <div className="pb-4 lg:pr-6">
-            <div className="mb-2.5 flex items-baseline justify-between gap-2">
-              <h2 className="text-[13px] font-semibold text-fg">Top output &amp; workload</h2>
-              <span className="text-[11.5px] text-faint">Last {period} days</span>
-            </div>
-            {topActive.length === 0 ? (
-              <p className="py-3 text-[12.5px] text-muted">No recorded activity in this window.</p>
-            ) : (
-              <ul className="space-y-1.5" data-testid="team-top-output">
-                {topActive.map((p) => {
-                  const val = total(p, period);
-                  const pct = Math.max(4, Math.round((val / topActiveMax) * 100));
-                  const dept = cleanCsv(p.team);
-                  return (
-                    <li key={p.key}>
-                      <button
-                        type="button"
-                        onClick={() => setOpen(p.key)}
-                        onPointerEnter={() => readAhead(p.key)}
-                        onPointerLeave={readAheadStop}
-                        className="group flex w-full items-center gap-2.5 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-row-on cursor-pointer"
-                      >
-                        <span
-                          className={cn(
-                            "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tracking-tight",
-                            AVATAR_MONO,
-                          )}
-                          aria-hidden
+          {/* Left: Top Output & Channel Mix */}
+          <div className="flex flex-col justify-between gap-4 rounded-xl border border-border/80 bg-bg-subtle p-5">
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div>
+                  <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-fg">
+                    Top output and channel mix
+                  </h2>
+                  <p className="mt-0.5 text-[12px] text-faint">
+                    Last {period} days across active contributors
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-[11.5px] text-muted" data-testid="team-channel-legend">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-xs bg-accent" aria-hidden />
+                    Comms
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-xs bg-ok" aria-hidden />
+                    Docs &amp; Planner
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="h-2.5 w-2.5 rounded-xs bg-risk" aria-hidden />
+                    ERP &amp; Ops
+                  </span>
+                </div>
+              </div>
+
+              {topActive.length === 0 ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 py-5 text-[12.5px] text-muted">
+                  <span>No activity counted in the last {period} days yet. Counts refresh in the nightly snapshot.</span>
+                  {period === 7 && (
+                    <button
+                      type="button"
+                      onClick={() => setPeriod(28)}
+                      className="inline-flex h-7 cursor-pointer items-center rounded-md border border-border bg-bg px-2.5 text-[12px] font-medium text-fg transition-colors duration-150 hover:border-border-strong hover:bg-hover"
+                    >
+                      View 28 days
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <ul className="space-y-2" data-testid="team-top-output">
+                  {topActive.map((p) => {
+                    const val = total(p, period);
+                    const mix = outputMix(p, period);
+                    const dept = cleanCsv(p.team);
+                    return (
+                      <li key={p.key}>
+                        <button
+                          type="button"
+                          onClick={() => setOpen(p.key)}
+                          onPointerEnter={() => readAhead(p.key)}
+                          onPointerLeave={readAheadStop}
+                          className="group flex w-full items-center gap-3 rounded-md px-2 py-1.5 text-left transition-colors duration-150 hover:bg-row-on cursor-pointer"
                         >
-                          {initialsOf(p.name)}
-                        </span>
-                        <span className="w-36 shrink-0 truncate text-[12.5px] font-medium text-fg group-hover:underline">
-                          {displayName(p.name)}
-                        </span>
-                        <span className="h-2 min-w-0 flex-1 overflow-hidden rounded-xs bg-surface-2">
                           <span
-                            className="block h-full rounded-xs bg-[#5c9ce6] transition-[width] duration-200"
-                            style={{ width: `${pct}%` }}
-                          />
-                        </span>
-                        <span className="num w-12 shrink-0 text-right text-[12.5px] font-medium text-fg">
-                          {val.toLocaleString("en-US")}
-                        </span>
-                        {dept && (
-                          <span className="hidden w-24 shrink-0 truncate text-right text-[11.5px] text-faint xl:inline">
-                            {dept}
+                            className={cn(
+                              "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tracking-tight",
+                              AVATAR_MONO,
+                            )}
+                            aria-hidden
+                          >
+                            {initialsOf(p.name)}
                           </span>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                          <div className="w-36 shrink-0 min-w-0">
+                            <span className="block truncate text-[12.5px] font-medium text-fg group-hover:underline">
+                              {displayName(p.name)}
+                            </span>
+                            {dept && (
+                              <span className="block truncate text-[11px] text-faint">
+                                {dept}
+                              </span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <OutputBar mix={mix} maxTotal={topActiveMax} thick />
+                          </div>
+                          <span className="num w-12 shrink-0 text-right text-[13px] font-semibold text-fg">
+                            {val.toLocaleString("en-US")}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
 
-          {/* Right: Needs Attention / Monitoring Watchlist */}
-          <div className="pt-4 lg:pt-0 lg:pl-6">
-            <div className="mb-2.5 flex items-baseline justify-between gap-2">
-              <h2 className="text-[13px] font-semibold text-fg">Needs attention</h2>
-              <span className="text-[11.5px] text-faint">Open replies &amp; alerts</span>
-            </div>
-            {watchlist.length === 0 ? (
-              <p className="py-3 text-[12.5px] text-muted">No open replies or alerts in this view.</p>
-            ) : (
-              <ul className="divide-y divide-border/70" data-testid="team-watchlist">
-                {watchlist.map((p) => {
-                  const replyMins = replyOf(p, period);
-                  const openItems = p.alerts + p.tasks;
-                  return (
-                    <li key={p.key}>
-                      <button
-                        type="button"
-                        onClick={() => setOpen(p.key)}
-                        onPointerEnter={() => readAhead(p.key)}
-                        onPointerLeave={readAheadStop}
-                        className="group flex w-full items-center gap-2.5 px-1.5 py-1.5 text-left transition-colors hover:bg-row-on cursor-pointer"
-                      >
-                        <span
-                          className={cn(
-                            "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tracking-tight",
-                            AVATAR_MONO,
-                          )}
-                          aria-hidden
+          {/* Right: Workload & Attention Watchlist */}
+          <div className="flex flex-col justify-between gap-4 rounded-xl border border-border/80 bg-bg-subtle p-5">
+            <div className="space-y-4">
+              <div className="flex items-baseline justify-between gap-2">
+                <div>
+                  <h2 className="text-[14px] font-semibold tracking-[-0.01em] text-fg">
+                    Workload and attention
+                  </h2>
+                  <p className="mt-0.5 text-[12px] text-faint">
+                    Reply speed and open load needing support
+                  </p>
+                </div>
+              </div>
+
+              <dl className="grid grid-cols-3 divide-x divide-border/70 border-y border-border/70 py-2.5 tabular-nums">
+                <div className="pr-3">
+                  <dt className="text-[11.5px] text-faint">Median reply</dt>
+                  <dd className="mt-0.5 text-[16px] font-semibold text-fg">
+                    {minutes(medianReply) || <span className="text-faint/45" aria-label="none">-</span>}
+                  </dd>
+                </div>
+                <div className="px-3">
+                  <dt className="text-[11.5px] text-faint">Awaiting reply</dt>
+                  <dd className={cn("mt-0.5 text-[16px] font-semibold", totalAwaiting > 15 ? "text-risk" : "text-fg")}>
+                    {totalAwaiting.toLocaleString("en-US")}
+                  </dd>
+                </div>
+                <div className="pl-3">
+                  <dt className="text-[11.5px] text-faint">Needs support</dt>
+                  <dd className="mt-0.5 text-[16px] font-semibold text-fg">
+                    {watchlist.length.toLocaleString("en-US")}
+                  </dd>
+                </div>
+              </dl>
+
+              {watchlist.length === 0 ? (
+                <div className="py-4 text-[12.5px] text-muted" data-testid="team-watchlist-empty">
+                  {totalOutputs === 0
+                    ? "Waiting for the nightly snapshot to populate open reply and alert queues."
+                    : "No open replies or alerts need support in this view."}
+                </div>
+              ) : (
+                <ul className="divide-y divide-border/60" data-testid="team-watchlist">
+                  {watchlist.map((p) => {
+                    const replyMins = replyOf(p, period);
+                    const openItems = p.alerts + p.tasks;
+                    return (
+                      <li key={p.key}>
+                        <button
+                          type="button"
+                          onClick={() => setOpen(p.key)}
+                          onPointerEnter={() => readAhead(p.key)}
+                          onPointerLeave={readAheadStop}
+                          className="group flex w-full items-center gap-2.5 px-1.5 py-2 text-left transition-colors duration-150 hover:bg-row-on cursor-pointer"
                         >
-                          {initialsOf(p.name)}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg group-hover:underline">
-                          {displayName(p.name)}
-                        </span>
-                        <span className="num shrink-0 text-[12px] text-muted">
-                          {p.awaiting_reply > 0 ? (
-                            <span className={cn(p.awaiting_reply > 5 ? "font-semibold text-risk" : "font-medium text-fg")}>
-                              {p.awaiting_reply} {p.awaiting_reply === 1 ? "reply" : "replies"}
-                            </span>
-                          ) : (
-                            <span className="text-faint/45">—</span>
-                          )}
-                        </span>
-                        {openItems > 0 && (
-                          <span className="num shrink-0 text-[12px] text-muted">
-                            {p.alerts > 0 && p.tasks === 0
-                              ? `${p.alerts} ${p.alerts === 1 ? "alert" : "alerts"}`
-                              : p.tasks > 0 && p.alerts === 0
-                                ? `${p.tasks} ${p.tasks === 1 ? "task" : "tasks"}`
-                                : `${openItems} open items`}
+                          <span
+                            className={cn(
+                              "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold tracking-tight",
+                              AVATAR_MONO,
+                            )}
+                            aria-hidden
+                          >
+                            {initialsOf(p.name)}
                           </span>
-                        )}
-                        <span className="num w-14 shrink-0 text-right text-[12px] text-muted">
-                          {minutes(replyMins) || <span className="text-faint/45">—</span>}
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                          <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg group-hover:underline">
+                            {displayName(p.name)}
+                          </span>
+                          <span className="num shrink-0 text-[12px] text-muted">
+                            {p.awaiting_reply > 0 ? (
+                              <span className={cn(p.awaiting_reply > 5 ? "font-semibold text-risk" : "font-medium text-fg")}>
+                                {p.awaiting_reply} {p.awaiting_reply === 1 ? "reply" : "replies"}
+                              </span>
+                            ) : (
+                              <span className="text-faint/45" aria-label="none">-</span>
+                            )}
+                          </span>
+                          {openItems > 0 && (
+                            <span className="num shrink-0 text-[12px] text-muted">
+                              {p.alerts > 0 && p.tasks === 0
+                                ? `${p.alerts} ${p.alerts === 1 ? "alert" : "alerts"}`
+                                : p.tasks > 0 && p.alerts === 0
+                                  ? `${p.tasks} ${p.tasks === 1 ? "task" : "tasks"}`
+                                  : `${openItems} open items`}
+                            </span>
+                          )}
+                          <span className="num w-14 shrink-0 text-right text-[12px] text-muted">
+                            {minutes(replyMins) || <span className="text-faint/45" aria-label="none">-</span>}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
         </section>
       )}
 
-      {/* Output Mix Legend */}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[11.5px] text-faint">
-        <span>Click any person to open their activity timeline, channels, partners, and open items.</span>
-        <div className="flex items-center gap-3">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2.5 rounded-xs bg-[#5c9ce6]" aria-hidden />
-            Comms
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2.5 rounded-xs bg-[#5da56f]" aria-hidden />
-            Docs & Planner
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-2 w-2.5 rounded-xs bg-[#dca138]" aria-hidden />
-            ERP & Ops
-          </span>
+      {/* Full-Width Sortable People Table */}
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-faint">
+          <span>Select any person to open their activity timeline, channels, partners, and open items.</span>
+          {data.scope !== "everyone" && (
+            <div className="flex items-center gap-3">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2.5 rounded-xs bg-accent" aria-hidden />
+                Comms
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2.5 rounded-xs bg-ok" aria-hidden />
+                Docs &amp; Planner
+              </span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2 w-2.5 rounded-xs bg-risk" aria-hidden />
+                ERP &amp; Ops
+              </span>
+            </div>
+          )}
         </div>
-      </div>
 
-      {/* Flush Linear-Style Productivity Table */}
-      <div className="overflow-x-auto border-y border-border">
-        <table className="w-full border-collapse text-[13px]" data-testid="team-table">
-          <thead className="sticky top-0 z-10 bg-surface text-left text-[12px] text-muted">
-            <tr className="border-b border-border bg-surface">
-              {head("name", "Person", "Name", "min-w-[204px] pl-4")}
-              {teams.length > 0 && head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
-              {head("total", "All", "Everything they did in the period except mail received", "text-right")}
-              <th scope="col" className="whitespace-nowrap px-2.5 py-2 font-medium" title="Output mix across Comms, Docs/Planner, and ERP/Ops">
-                Output mix
-              </th>
-              {has.week && head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
-              {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
-              {shown.map((ch) => head(ch.key, ch.head, ch.title, cn("text-right", system === ch.system && "text-fg")))}
-              {has.awaiting_reply && head("awaiting_reply", "Replies", "Threads awaiting their reply", "text-right")}
-              {has.tasks && head("tasks", "Tasks", "Open Planner tasks assigned to them", "text-right")}
-              {has.alerts && head("alerts", "Alerts", "Other open alerts on them, stuck or overdue tasks among them", "text-right")}
-              {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
-              {has.trend && <th scope="col" className="whitespace-nowrap px-2.5 py-2 font-medium" title="Everything they did per day, last 28 days">28-day trend</th>}
-              {has.hours && <th scope="col" className="whitespace-nowrap px-2.5 py-2 pr-4 font-medium" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
+        <div className="overflow-x-auto border-y border-border/70">
+          <table className="w-full border-collapse text-[13px]" data-testid="team-table">
+            <thead className="sticky top-0 z-10 bg-bg-subtle text-left text-[12px] text-muted">
+              <tr className="border-b border-border/70">
+                {head("name", "Person", "Name", "min-w-[204px] pl-4")}
+                {teams.length > 0 && head("team", "Team", "Team, from the owner's assignment, the directory or the role the work shows")}
+                {head("total", "All", "Everything they did in the period except mail received", "text-right")}
+                <th scope="col" className="h-9 whitespace-nowrap px-2.5 py-2 font-medium" title="Output mix across Comms, Docs/Planner, and ERP/Ops">
+                  Output mix
+                </th>
+                {has.week && head("week", "Week", "Work done this week so far (Monday on): everything but mail received", "text-right")}
+                {savedShown && head("saved", "Saved", "Time the Workbench saved them this week (the work log's estimate)", "text-right")}
+                {shown.map((ch) => head(ch.key, ch.head, ch.title, cn("text-right", system === ch.system && "text-fg")))}
+                {has.awaiting_reply && head("awaiting_reply", "Replies", "Threads awaiting their reply", "text-right")}
+                {has.tasks && head("tasks", "Tasks", "Open Planner tasks assigned to them", "text-right")}
+                {has.alerts && head("alerts", "Alerts", "Other open alerts on them, stuck or overdue tasks among them", "text-right")}
+                {has.reply && head("reply", "Median", "Median time to reply to a message addressed to them", "text-right")}
+                {has.trend && <th scope="col" className="h-9 whitespace-nowrap px-2.5 py-2 font-medium" title="Everything they did per day, last 28 days">28-day trend</th>}
+                {has.hours && <th scope="col" className="h-9 whitespace-nowrap px-2.5 py-2 pr-4 font-medium" title="Messages sent per hour of the day, Eastern time, last 28 days">Busiest hours</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/60">
             {rows.map((p) => {
               const c = counts(p, period);
               const mix = outputMix(p, period);
@@ -808,7 +897,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                   </td>
                   {teams.length > 0 && (
                     <td className="whitespace-nowrap px-2.5 py-2 text-[12.5px] text-muted">
-                      {cleanCsv(p.team) || <span className="text-faint/45">—</span>}
+                      {cleanCsv(p.team) || <span className="text-faint/45" aria-label="none">-</span>}
                     </td>
                   )}
                   <td className="px-2.5 py-2 text-right">
@@ -828,7 +917,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                   )}
                   {savedShown && (
                     <td className="whitespace-nowrap px-2.5 py-2 text-right num">
-                      {thisWeek(p)?.saved_minutes ? minutes(thisWeek(p)!.saved_minutes) : <span className="text-faint/45">—</span>}
+                      {thisWeek(p)?.saved_minutes ? minutes(thisWeek(p)!.saved_minutes) : <span className="text-faint/45" aria-label="none">-</span>}
                     </td>
                   )}
                   {shown.map((ch) => (
@@ -858,7 +947,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
                     </td>
                   )}
                   {has.alerts && <td className="px-2.5 py-2 text-right"><Figure n={p.alerts + p.tasks} /></td>}
-                  {has.reply && <td className="whitespace-nowrap px-2.5 py-2 text-right num text-fg">{minutes(replyOf(p, period)) || <span className="text-faint/45">—</span>}</td>}
+                  {has.reply && <td className="whitespace-nowrap px-2.5 py-2 text-right num text-fg">{minutes(replyOf(p, period)) || <span className="text-faint/45" aria-label="none">-</span>}</td>}
                   {has.trend && <td className="px-2.5 py-2"><Spark values={p.trend ?? []} /></td>}
                   {has.hours && (
                     <td className="whitespace-nowrap px-2.5 py-2 pr-4" title={busiest(p.hours) ? `Busiest: ${busiest(p.hours)}` : undefined}>
@@ -893,6 +982,7 @@ export function TeamDashboard({ data, person = "" }: { data: TeamView; person?: 
             )}
           </div>
         )}
+        </div>
       </div>
 
       {data.scope === "everyone" && accounts.length > 0 && (
@@ -988,8 +1078,8 @@ export function WeekTracker({ weeks, waiting }: { weeks: TeamTrackerWeek[]; wait
                 <td className={cn(cell, "font-medium text-fg")}>{w.done.toLocaleString("en-US")}</td>
                 <td className={cell}>{w.received.toLocaleString("en-US")}</td>
                 <td className={cell}>{w.closed ?? 0}</td>
-                <td className={cn(cell, "whitespace-nowrap")}>{w.reply_minutes != null ? <>{minutes(w.reply_minutes)}<span className="ml-1 text-[12px] text-muted">({w.replies})</span></> : <span className="text-faint/45">—</span>}</td>
-                {saved && <td className={cn(cell, "pr-0")}>{w.saved_minutes ? minutes(w.saved_minutes) : <span className="text-faint/45">—</span>}</td>}
+                <td className={cn(cell, "whitespace-nowrap")}>{w.reply_minutes != null ? <>{minutes(w.reply_minutes)}<span className="ml-1 text-[12px] text-muted">({w.replies})</span></> : <span className="text-faint/45" aria-label="none">-</span>}</td>
+                {saved && <td className={cn(cell, "pr-0")}>{w.saved_minutes ? minutes(w.saved_minutes) : <span className="text-faint/45" aria-label="none">-</span>}</td>}
               </tr>
             ))}
           </tbody>
@@ -1050,7 +1140,7 @@ function PersonSheet({
             <Link
               href={`/ask?q=${encodeURIComponent(`What is ${shownName} working on right now?`)}`}
               onClick={onClose}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12.5px] font-medium text-bg transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.98]"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-fg px-3 text-[12.5px] font-medium text-bg transition-opacity duration-150 hover:opacity-90"
             >
               <MessageCircle className="size-3.5" aria-hidden />
               Ask about {shownName}
@@ -1058,7 +1148,7 @@ function PersonSheet({
             <Link
               href={`/meetings?view=follow-ups&person=${encodeURIComponent(p.name ?? shownName)}`}
               onClick={onClose}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg active:scale-[0.98]"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[12.5px] font-medium text-muted transition-colors duration-150 hover:bg-hover hover:text-fg"
             >
               <CalendarClock className="size-3.5" aria-hidden />
               Meeting follow-ups
@@ -1215,7 +1305,7 @@ function PersonSheet({
                           ) : (
                             <span className="min-w-0 flex-1 max-w-[160px] truncate text-fg" title={x.name}>{displayName(x.name)}</span>
                           )}
-                          <span className="h-1.5 shrink-0 rounded-sm bg-[#5c9ce6]/75" style={{ width: `${barPx}px` }} />
+                          <span className="h-1.5 shrink-0 rounded-sm bg-accent/75" style={{ width: `${barPx}px` }} />
                           <span className="num shrink-0 text-[12px] text-muted">{count}</span>
                         </li>
                       );
@@ -1252,7 +1342,7 @@ function Timeline({ days, fallbackTrend }: { days: { day: string; counts?: Recor
                 className="flex-1 rounded-[2px]"
                 style={{
                   height: `${n > 0 ? Math.max(12, Math.round((n / max) * 100)) : 6}%`,
-                  background: n > 0 ? "#5c9ce6" : "var(--surface-2)",
+                  background: n > 0 ? "var(--accent)" : "var(--surface-2)",
                   opacity: n > 0 ? 0.35 + 0.65 * (n / max) : 1,
                 }}
               />

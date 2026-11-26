@@ -4,11 +4,13 @@ import type { InsightInfo, InsightList } from "@/lib/types";
 
 const getMeasureCandidates = vi.fn();
 const getInsight = vi.fn();
+const createAssistWorkflow = vi.fn();
 vi.mock("@/lib/api", () => ({
   getMeasureCandidates: (...a: unknown[]) => getMeasureCandidates(...a),
   approveMeasureCandidate: vi.fn(),
   dismissMeasureCandidate: vi.fn(),
   getInsight: (...a: unknown[]) => getInsight(...a),
+  createAssistWorkflow: (...a: unknown[]) => createAssistWorkflow(...a),
 }));
 
 import { OntologyAndMeasuresPanel, buildNormalizedMeasures, buildOntologyGraph, recordsHrefFor } from "./ontology-map";
@@ -67,6 +69,23 @@ beforeEach(() => {
     counts: undefined,
     candidates: [],
   });
+  createAssistWorkflow.mockReset().mockResolvedValue({
+    workflow_id: "wf-1",
+    name: "Revenue invoiced monitor",
+    instruction: "Check Revenue invoiced",
+    trigger_kind: "schedule",
+    trigger: { cadence: "weekdays", hour: 8, minute: 0 },
+    trigger_summary: "Weekdays at 8:00 AM ET",
+    source_kind: "plain_language",
+    source_ref: "",
+    status: "active",
+    pause_reason: "",
+    created_at: "2026-11-26T12:00:00Z",
+    updated_at: "2026-11-26T12:00:00Z",
+    consecutive_failures: 0,
+    last_error: "",
+    runs: [],
+  });
   getInsight.mockReset().mockResolvedValue({
     ...sampleItems[0],
     sql: "SELECT month, SUM(net_amount) AS revenue FROM biz.sales_invoices GROUP BY 1",
@@ -94,7 +113,7 @@ describe("OntologyAndMeasuresPanel", () => {
     expect(recordsHrefFor("biz.sales_invoices", "Finance")).toBe("/records?kind=documents");
   });
 
-  it("renders interactive DotGridCanvas, instant search, domain filter, live SQL + Copy, Add to Dashboard, Ask, and Explore data", async () => {
+  it("renders side-by-side Split Explorer immediately with Measures catalog, dotted grid Lineage canvas, and docked SQL Inspector", async () => {
     const onToggleCanvas = vi.fn();
     const onJumpToTile = vi.fn();
     render(
@@ -107,6 +126,24 @@ describe("OntologyAndMeasuresPanel", () => {
       />,
     );
 
+    // Side-by-side Split Explorer mounts BOTH left catalog AND right dotted grid canvas + docked inspector immediately
+    expect(screen.getByTestId("measures-catalog-table")).toBeTruthy();
+    expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
+    expect(screen.getByTestId("ontology-inspector")).toBeTruthy();
+    expect(screen.getByTestId("measure-row-revenue_invoiced")).toHaveTextContent("Net line revenue on posted sales invoices.");
+
+    // 1-click Pin to canvas from catalog
+    fireEvent.click(screen.getByTestId("measure-add-canvas-revenue_invoiced"));
+    expect(onToggleCanvas).toHaveBeenCalledWith(sampleItems[0]);
+
+    // 1-click Set trigger opens the in-page trigger modal prefilled for the measure
+    fireEvent.click(screen.getByTestId("measure-set-trigger-revenue_invoiced"));
+    expect(screen.getByTestId("create-trigger-modal")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Close trigger builder"));
+    expect(screen.queryByTestId("create-trigger-modal")).toBeNull();
+
+    // 1-click Inspect selects the measure and keeps both catalog & dotted grid Lineage canvas visible
+    fireEvent.click(screen.getByTestId("measure-inspect-lineage-revenue_invoiced"));
     expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
     expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("Revenue invoiced");
     expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("biz.sales_invoices");
@@ -117,9 +154,19 @@ describe("OntologyAndMeasuresPanel", () => {
       expect(screen.getByTestId("ontology-inspector")).toHaveTextContent("SUM(net_amount)"),
     );
 
-    // Add to Dashboard triggers toggle callback
+    // Docked SQL inspector collapses and re-expands cleanly
+    fireEvent.click(screen.getByTestId("inspector-collapse-toggle"));
+    expect(screen.queryByTestId("inspector-copy-sql")).toBeNull();
+    fireEvent.click(screen.getByTestId("inspector-collapse-toggle"));
+    expect(screen.getByTestId("inspector-copy-sql")).toBeTruthy();
+
+    // Pin to canvas from inspector triggers toggle callback
     fireEvent.click(screen.getByTestId("inspector-pin-btn"));
-    expect(onToggleCanvas).toHaveBeenCalledWith(sampleItems[0]);
+    expect(onToggleCanvas).toHaveBeenCalledTimes(2);
+
+    // Expand graph toggle focuses full-width canvas while keeping search and filters usable
+    fireEvent.click(screen.getByTestId("subtab-ontology-graph"));
+    expect(screen.getByTestId("dot-grid-canvas")).toBeTruthy();
 
     // Live instant search narrows graph & inspector immediately
     fireEvent.change(screen.getByTestId("ontology-search"), { target: { value: "purchase" } });
@@ -157,7 +204,6 @@ describe("OntologyAndMeasuresPanel", () => {
       />,
     );
 
-    fireEvent.click(screen.getByTestId("subtab-measures-catalog"));
     const table = screen.getByTestId("measures-catalog-table");
     expect(table.querySelectorAll("tbody tr")).toHaveLength(12);
     fireEvent.click(screen.getByTestId("measures-show-more"));
